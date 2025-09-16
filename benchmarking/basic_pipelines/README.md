@@ -1,0 +1,1 @@
+This is a collection of basic 'gold standard' pipelines to compare CARIBOU's performance against
