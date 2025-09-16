@@ -39,7 +39,7 @@ from pathlib import Path
 # ── Paths & constants (for InteractiveAgentTester.py) ─────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
 SIF_PATH = SCRIPT_DIR / "sandbox.sif"
-CONTAINER_URL = "https://huggingface.co/datasets/djriffle/caribou_sandbox_files/resolve/main/sandbox.sif?download=true"
+CONTAINER_URL = "https://huggingface.co/datasets/djriffle/olaf_sandbox_files/resolve/main/sandbox.sif?download=true"
 
 INSTANCE_NAME = "benchmarking_sandbox_instance"
 API_PORT_INSIDE = 8000

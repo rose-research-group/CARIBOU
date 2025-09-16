@@ -23,33 +23,6 @@ PACKAGE_AUTO_METRICS_DIR = PACKAGE_ROOT / "auto_metrics"
 SANDBOX_DATA_PATH = "/workspace/dataset.h5ad"
 SANDBOX_REF_DATA_PATH = "/workspace/reference.h5ad"
 
-def _prompt_for_file(
-    console: Console, user_dir: Path, package_dir: Path, extension: str, prompt_title: str
-) -> Path:
-    """
-    Generic helper to find files in both user and package directories and prompt for a selection.
-    """
-    console.print(f"[bold]Select {prompt_title}:[/bold]")
-    found_files = []
-    seen_filenames = set()
-    if user_dir.exists():
-        for file_path in sorted(list(user_dir.glob(f"**/*{extension}"))):
-            if file_path.name not in seen_filenames:
-                found_files.append({"path": file_path, "label": "User"})
-                seen_filenames.add(file_path.name)
-    if package_dir.exists():
-        for file_path in sorted(list(package_dir.glob(f"**/*{extension}"))):
-            if file_path.name not in seen_filenames:
-                found_files.append({"path": file_path, "label": "Package"})
-                seen_filenames.add(file_path.name)
-    if not found_files:
-        console.print(f"[bold red]No '{extension}' files found.[/bold red]")
-        raise typer.Exit(1)
-    for i, file_info in enumerate(found_files, 1):
-        console.print(f"  [cyan]{i}[/cyan]: {file_info['path'].name} [yellow]({file_info['label']})[/yellow]")
-    choice_str = Prompt.ask("Enter the number of your choice", choices=[str(i) for i in range(1, len(found_files) + 1)])
-    return found_files[int(choice_str) - 1]['path']
-
 def _prompt_for_driver(console: Console, system: 'AgentSystem') -> str:
     """Prompts the user to select a driver agent from the loaded system."""
     console.print("[bold]Select a driver agent:[/bold]")
@@ -118,7 +91,7 @@ def main_run_callback(
 ):
     # --- Heavy imports are deferred to here ---
     from caribou.agents.AgentSystem import AgentSystem
-    from caribou.core.io_helpers import collect_resources
+    from caribou.core.io_helpers import collect_resources, prompt_for_file
     from caribou.core.sandbox_management import init_docker, init_singularity_exec
     from caribou.datasets.czi_datasets import get_datasets_dir
 
@@ -128,7 +101,7 @@ def main_run_callback(
     ctx.obj = app_context
 
     if blueprint is None:
-        blueprint = _prompt_for_file(console, DEFAULT_AGENT_DIR, PACKAGE_AGENTS_DIR, ".json", "Agent System Blueprint")
+        blueprint = prompt_for_file(console, DEFAULT_AGENT_DIR, PACKAGE_AGENTS_DIR, ".json", "Agent System Blueprint")
     app_context.agent_system = AgentSystem.load_from_json(str(blueprint))
     
     if driver_agent is None:
@@ -139,12 +112,12 @@ def main_run_callback(
     app_context.roster_instructions = app_context.agent_system.get_instructions()
     
     if dataset is None:
-        dataset = _prompt_for_file(console, get_datasets_dir(), PACKAGE_DATASETS_DIR, ".h5ad", "Primary Dataset")
+        dataset = prompt_for_file(console, get_datasets_dir(), PACKAGE_DATASETS_DIR, ".h5ad", "Primary Dataset")
     app_context.dataset_path = dataset
 
     if reference_dataset is None:
         if Prompt.ask("Do you want to add a reference dataset?", choices=["y", "n"], default="n").lower() == 'y':
-            reference_dataset = _prompt_for_file(console, get_datasets_dir(), PACKAGE_DATASETS_DIR, ".h5ad", "Reference Dataset")
+            reference_dataset = prompt_for_file(console, get_datasets_dir(), PACKAGE_DATASETS_DIR, ".h5ad", "Reference Dataset")
     app_context.reference_dataset_path = reference_dataset
 
     if sandbox is None:
@@ -305,4 +278,4 @@ def run_auto(
         is_auto=True,
         max_turns=turns,
         benchmark_modules=[benchmark_module] if benchmark_module else None
-    )
+)

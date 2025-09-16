@@ -182,6 +182,53 @@ def format_execute_response(resp: dict, output_dir) -> str:
         lines.append("Saved images: " + ", ".join(img_paths))
     return "\n".join(lines)
 
+def prompt_for_file(
+    console: Console, user_dir: Path, package_dir: Path, extension: str, prompt_title: str
+) -> Path:
+    """
+    Generic helper to find files, or prompt for a custom path if none are suitable.
+    """
+    console.print(f"[bold]Select {prompt_title}:[/bold]")
+    found_files = []
+    seen_filenames = set()
+    if user_dir.exists():
+        for file_path in sorted(list(user_dir.glob(f"**/*{extension}"))):
+            if file_path.name not in seen_filenames:
+                found_files.append({"path": file_path, "label": "User"})
+                seen_filenames.add(file_path.name)
+    if package_dir.exists():
+        for file_path in sorted(list(package_dir.glob(f"**/*{extension}"))):
+            if file_path.name not in seen_filenames:
+                found_files.append({"path": file_path, "label": "Package"})
+                seen_filenames.add(file_path.name)
+    
+    # Display any found files
+    for i, file_info in enumerate(found_files, 1):
+        console.print(f"  [cyan]{i}[/cyan]: {file_info['path'].name} [yellow]({file_info['label']})[/yellow]")
+
+    # Add the custom path option at the end of the list
+    custom_path_option_index = len(found_files) + 1
+    console.print(f"  [cyan]{custom_path_option_index}[/cyan]: Provide a custom file path...")
+    
+    choices = [str(i) for i in range(1, custom_path_option_index + 1)]
+    choice_str = Prompt.ask("Enter the number of your choice", choices=choices)
+    choice_idx = int(choice_str) - 1
+
+    if choice_idx == len(found_files):  # User selected the "Provide custom path" option
+        while True:
+            custom_path_str = Prompt.ask(f"Enter the path to your {extension} file").strip()
+            if not custom_path_str:
+                console.print("[yellow]Path cannot be empty. Please try again.[/yellow]")
+                continue
+            
+            custom_path = Path(custom_path_str).expanduser().resolve()
+            if custom_path.exists() and custom_path.is_file():
+                return custom_path
+            else:
+                console.print(f"[bold red]Error: File not found at '{custom_path}'. Please check the path and try again.[/bold red]")
+    else:  # User selected a pre-listed file
+        return found_files[choice_idx]['path']
+
 def save_chat_history_as_json(console: Console, history: list, file_path: Path):
     """Saves the interactive chat history to a user-specified JSON file."""
     try:
