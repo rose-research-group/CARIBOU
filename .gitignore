@@ -8,3 +8,5 @@ agent_systems/
 *.pyc
 **/*.pyc
 bin/
+benchmarking/datasets/*.h5ad
+dev/
