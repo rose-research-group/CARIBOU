@@ -58,7 +58,7 @@ class Agent:
             full_prompt += f"\n  - Example: `query_rag_<scvi model setup>`"
             
         if self.code_samples:
-            full_prompt += "\n\n  - Code Samples Available:"
+            full_prompt += "\n\n  - Code Samples Available for Reference and Adapation (MUST BE REWRITTEN TO BE USED):"
             for sample_name in self.code_samples.keys():
                 full_prompt += f"\n    - `{sample_name}`"
   
