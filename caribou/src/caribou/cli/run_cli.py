@@ -278,4 +278,4 @@ def run_auto(
         is_auto=True,
         max_turns=turns,
         benchmark_modules=[benchmark_module] if benchmark_module else None
-    )
+)
