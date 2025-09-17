@@ -50,3 +50,5 @@ harmonypy
 # Additional Tools
 # rapids-singlecell
 scib-metrics
+biomart
+gseapy
