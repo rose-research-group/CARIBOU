@@ -49,11 +49,18 @@ This guide will walk you through setting up your API key, downloading a dataset,
 
 ### Step 1: Configure Your API Key
 
-First, tell CARIBOU about your OpenAI API key. This is a one-time setup.
+First, tell CARIBOU about your OpenAI or DeepSeek API key. This is a one-time setup.
 
 ```bash
 caribou config set-openai-key "sk-YourSecretKeyGoesHere"
 ```
+  
+or  
+  
+```bash
+caribou config set-deepseek-key "sk-YourSecretKeyGoesHere"
+```
+
 
 Your key will be stored securely in a local `.env` file within the CARIBOU configuration directory.
 
@@ -147,6 +154,10 @@ Manage your CARIBOU configuration.
   * **Set your OpenAI API key:**
     ```bash
     caribou config set-openai-key "sk-..."
+    ```
+  * **Set your DeepSeek API key:**
+    ```bash
+    caribou config set-deepseek-key "sk-..."
     ```
 
 -----
