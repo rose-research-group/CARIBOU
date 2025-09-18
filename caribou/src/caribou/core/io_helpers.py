@@ -27,12 +27,13 @@ def extract_python_code(txt: str) -> Optional[str]:
         r'^[ \t]*```[ \t]*$',             # closing fence
         re.MULTILINE
     )
-    match = _FENCE_RE.search(txt)
-    if not match:
+    code_blocks = _FENCE_RE.findall(txt)
+    if not code_blocks:
         return None
-    # Dedent to normalise indentation inside the block
-    code = textwrap.dedent(match.group(1))
-    return code.strip() or None
+    
+    full_script = "\n\n".join(textwrap.dedent(block).strip() for block in code_blocks)
+    
+    return full_script if full_script else None
 
 # Rich display wrappers
 
@@ -44,7 +45,7 @@ def _panel(console, role: str, content: str):
 def display(console, role: str, content: str):
     if "assistant" in role.lower():
         code = extract_python_code(content) or ""
-        text_part = re.sub(r"```python[\s\S]+?```", "", content, count=1).strip()
+        text_part = re.sub(r"```python[\s\S]+?```", "", content).strip()
         if text_part:
             _panel(console, "assistant", text_part)
         if code:
