@@ -37,10 +37,10 @@ Coming soon!
 To install the latest development version, you can clone the repository and install it in editable mode:
 
 ```bash
-git clone https://github.com/OpenTechBio/CARIBOU
-cd CARIBOU/cli/CARIBOU
+git clone https://github.com/OpenTechBio/caribou
+cd caribou/cli/caribou
 pip install -e .
-CARIBOU
+caribou
 ```
 
 -----
@@ -51,11 +51,18 @@ This guide will walk you through setting up your API key, downloading a dataset,
 
 ### Step 1: Configure Your API Key
 
-First, tell CARIBOU about your OpenAI API key. This is a one-time setup.
+First, tell CARIBOU about your OpenAI or DeepSeek API key. This is a one-time setup.
 
 ```bash
-CARIBOU config set-openai-key "sk-YourSecretKeyGoesHere"
+caribou config set-openai-key "sk-YourSecretKeyGoesHere"
 ```
+  
+or  
+  
+```bash
+caribou config set-deepseek-key "sk-YourSecretKeyGoesHere"
+```
+
 
 Your key will be stored securely in a local `.env` file within the CARIBOU configuration directory.
 
@@ -64,7 +71,8 @@ Your key will be stored securely in a local `.env` file within the CARIBOU confi
 Next, let's get some data for our agents to analyze. Run the `datasets` command to browse and download a sample dataset from the CZI CELLxGENE Census.
 
 ```bash
-CARIBOU datasets
+# This will start the interactive dataset browser
+caribou datasets
 ```
 
 Follow the prompts to list versions and datasets, then use the `download` command as instructed.
@@ -74,7 +82,7 @@ Follow the prompts to list versions and datasets, then use the `download` comman
 Now you're ready to run an agent system. The `run` command is fully interactive if you don't provide any flags. It will guide you through selecting a blueprint, a dataset, and a sandbox environment.
 
 ```bash
-CARIBOU run interactive
+caribou run interactive
 ```
 
 This will trigger a series of prompts:
@@ -93,61 +101,65 @@ After configuration, the session will begin, and you can start giving instructio
 
 CARIBOU's commands are organized into logical groups.
 
-### `CARIBOU run`
+### `caribou run`
 
 The main command for executing an agent system.
 
   * **Run interactively (recommended for manual use):**
     ```bash
-    CARIBOU run interactive
+    caribou run interactive
     ```
   * **Run automatically for 5 turns:**
     ```bash
-    CARIBOU run auto --turns 5 --prompt "Analyze this dataset and generate a UMAP plot."
+    caribou run auto --turns 5 --prompt "Analyze this dataset and generate a UMAP plot."
     ```
   * **Run with all options specified (for scripting):**
     ```bash
-    CARIBOU run interactive \
-      --blueprint ~/.local/share/CARIBOU/agent_systems/my_custom_system.json \
+    caribou run interactive \
+      --blueprint ~/.local/share/caribou/agent_systems/my_custom_system.json \
       --driver-agent data_analyst \
-      --dataset ~/.local/share/CARIBOU/datasets/my_data.h5ad \
+      --dataset ~/.local/share/caribou/datasets/my_data.h5ad \
       --sandbox docker \
       --llm chatgpt
     ```
 
-### `CARIBOU create-system`
+### `caribou create-system`
 
 Tools for building new agent system blueprints.
 
   * **Start the interactive builder:**
     ```bash
-    CARIBOU create-system
+    caribou create-system
     ```
   * **Create a minimal blueprint quickly:**
     ```bash
-    CARIBOU create-system quick --name my-first-system
+    caribou create-system quick --name my-first-system
     ```
 
-### `CARIBOU datasets`
+### `caribou datasets`
 
 Tools for managing datasets.
 
   * **Start the interactive dataset browser:**
     ```bash
-    CARIBOU datasets
+    caribou datasets
     ```
   * **Download a specific dataset directly:**
     ```bash
-    CARIBOU datasets download --version stable --dataset-id "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    caribou datasets download --version stable --dataset-id "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
     ```
 
-### `CARIBOU config`
+### `caribou config`
 
 Manage your CARIBOU configuration.
 
   * **Set your OpenAI API key:**
     ```bash
-    CARIBOU config set-openai-key "sk-..."
+    caribou config set-openai-key "sk-..."
+    ```
+  * **Set your DeepSeek API key:**
+    ```bash
+    caribou config set-deepseek-key "sk-..."
     ```
 
 -----
@@ -157,9 +169,9 @@ Manage your CARIBOU configuration.
 CARIBOU stores all user-generated content and configuration in a central directory. You can override this location by setting the `CARIBOU_HOME` environment variable.
 
   * **Default Location:**
-      * **Linux:** `~/.local/share/CARIBOU/`
-      * **macOS:** `~/Library/Application Support/CARIBOU/`
-      * **Windows:** `C:\Users\<user>\AppData\Local\OpenTechBio\CARIBOU\`
+      * **Linux:** `~/.local/share/caribou/`
+      * **macOS:** `~/Library/Application Support/caribou/`
+      * **Windows:** `C:\Users\<user>\AppData\Local\OpenTechBio\caribou\`
   * **Configuration File:** API keys are stored in `$CARIBOU_HOME/.env`.
   * **Agent Systems:** Custom blueprints are saved to `$CARIBOU_HOME/agent_systems/`.
   * **Datasets:** Downloaded datasets are stored in `$CARIBOU_HOME/datasets/`.
