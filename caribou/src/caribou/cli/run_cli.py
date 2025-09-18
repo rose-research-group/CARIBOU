@@ -12,6 +12,7 @@ import typer
 from rich.console import Console
 from rich.prompt import Prompt, IntPrompt
 from dotenv import load_dotenv
+
 from caribou.config import DEFAULT_AGENT_DIR, ENV_FILE, CARIBOU_HOME
 
 
@@ -70,6 +71,7 @@ class AppContext:
         self.analysis_context: str | None = None
         self.sandbox_manager: 'SandboxManager' | None = None
         self.llm_client: object | None = None
+        self.model_name: str | None = None # <-- ADDED
         self.initial_history: List[dict] | None = None
         self.dataset_path: Path | None = None
         self.reference_dataset_path: Optional[Path] = None
@@ -84,12 +86,11 @@ def main_run_callback(
     dataset: Path = typer.Option(None, "--dataset", "-ds", help="Path to the primary dataset file (.h5ad).", readable=True),
     reference_dataset: Path = typer.Option(None, "--reference-dataset", "-ref", help="Path to an optional reference dataset file (.h5ad).", readable=True),
     resources_dir: Path = typer.Option(None, "--resources", help="Path to a directory of resource files to mount.", exists=True, file_okay=False),
-    llm_backend: str = typer.Option(None, "--llm", help="LLM backend to use: 'chatgpt' or 'ollama'."),
+    llm_backend: str = typer.Option(None, "--llm", help="LLM backend to use: 'chatgpt', 'ollama', or 'deepseek'."),
     ollama_host: str = typer.Option("http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."),
     sandbox: str = typer.Option(None, "--sandbox", help="Sandbox backend to use: 'docker' or 'singularity'."),
     force_refresh: bool = typer.Option(False, "--force-refresh", help="Force refresh/rebuild of the sandbox environment."),
 ):
-    # --- Heavy imports are deferred to here ---
     from caribou.agents.AgentSystem import AgentSystem
     from caribou.core.io_helpers import collect_resources, prompt_for_file
     from caribou.core.sandbox_management import init_docker, init_singularity_exec
@@ -132,22 +133,41 @@ def main_run_callback(
     elif sandbox == "singularity":
         manager_class, handle, copy_cmd, exec_endpoint, status_endpoint = init_singularity_exec(script_dir, SANDBOX_DATA_PATH, subprocess, console, force_refresh=force_refresh)
     else:
-        raise typer.BadParameter(f"Unknown sandbox type '{sandbox}'. Supported: 'docker', 'singularity'.")
+        raise typer.BadParameter(f"Unknown sandbox type '{sandbox}'.")
     app_context.sandbox_manager = manager_class()
     app_context.sandbox_details = {"handle": handle, "copy_cmd": copy_cmd, "is_exec_mode": sandbox == "singularity"}
 
+    # --- MODIFIED: LLM Backend Selection ---
     if llm_backend is None:
-        llm_backend = Prompt.ask("Choose an LLM backend", choices=["chatgpt", "ollama"], default="chatgpt")
-    if llm_backend == "ollama" and ollama_host == "http://localhost:11434":
-         ollama_host = Prompt.ask("Enter the Ollama base URL", default="http://localhost:11434")
-
+        llm_backend = Prompt.ask("Choose an LLM backend", choices=["chatgpt", "ollama", "deepseek"], default="chatgpt")
+    
     console.print(f"[cyan]Initializing LLM backend: {llm_backend}[/cyan]")
+
     if llm_backend == "chatgpt":
         from openai import OpenAI
+        if not os.getenv("OPENAI_API_KEY"):
+            console.print("[bold red]Error: OPENAI_API_KEY not set. Use 'caribou config set-openai-key'.[/bold red]")
+            raise typer.Exit(1)
         app_context.llm_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        app_context.model_name = "gpt-4o"
+    
+    elif llm_backend == "deepseek":
+        from openai import OpenAI
+        if not os.getenv("DEEPSEEK_API_KEY"):
+            console.print("[bold red]Error: DEEPSEEK_API_KEY not set. Use 'caribou config set-deepseek-key'.[/bold red]")
+            raise typer.Exit(1)
+        app_context.llm_client = OpenAI(
+            api_key=os.getenv("DEEPSEEK_API_KEY"),
+            base_url="https://api.deepseek.com"
+        )
+        app_context.model_name = "deepseek-chat"
+
     elif llm_backend == "ollama":
-        from caribou.core.ollama_wrapper import OllamaClient as OpenAI
-        app_context.llm_client = OpenAI(host=ollama_host)
+        if ollama_host == "http://localhost:11434":
+             ollama_host = Prompt.ask("Enter the Ollama base URL", default="http://localhost:11434")
+        from caribou.core.ollama_wrapper import OllamaClient
+        app_context.llm_client = OllamaClient(host=ollama_host)
+        app_context.model_name = "llama3"
     else:
         raise typer.BadParameter(f"Unknown LLM backend '{llm_backend}'.")
 
@@ -163,6 +183,7 @@ def main_run_callback(
     driver = app_context.agent_system.get_agent(driver_agent)
     system_prompt = (app_context.roster_instructions + "\n\n" + driver.get_full_prompt(app_context.agent_system.global_policy) + "\n\n" + app_context.analysis_context)
     app_context.initial_history = [{"role": "system", "content": system_prompt}]
+
 
 def _setup_and_run_session(context: AppContext, history: list, is_auto: bool, max_turns: int, benchmark_modules: Optional[List[Path]] = None):
     """Helper to start, run, and stop the sandbox session."""
@@ -201,7 +222,8 @@ def _setup_and_run_session(context: AppContext, history: list, is_auto: bool, ma
             history=history,
             is_auto=is_auto,
             max_turns=max_turns,
-            benchmark_modules=benchmark_modules
+            benchmark_modules=benchmark_modules,
+            model_name=cast(str, context.model_name) # <-- ADDED
         )
     finally:
         console.print("[cyan]Stopping sandbox...[/cyan]")
@@ -226,6 +248,7 @@ def _setup_and_run_session(context: AppContext, history: list, is_auto: bool, ma
                     save_chat_history_as_notebook(console, history, save_path)
                 else:
                     save_chat_history_as_json(console, history, save_path)
+
 
 @run_app.command("interactive")
 def run_interactive(ctx: typer.Context):
@@ -278,4 +301,4 @@ def run_auto(
         is_auto=True,
         max_turns=turns,
         benchmark_modules=[benchmark_module] if benchmark_module else None
-)
+    )
