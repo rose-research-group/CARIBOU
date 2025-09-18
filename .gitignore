@@ -10,3 +10,4 @@ agent_systems/
 bin/
 benchmarking/datasets/*.h5ad
 dev/
+*/dist/

@@ -3,13 +3,12 @@ requires = ["hatchling>=1.24"]
 build-backend = "hatchling.build"
 
 [project]
-name = "caribou"
-version = "0.1.0"
-description = "CLI + library for <what it does>"
+name = "caribou-cli"
+version = "0.1.1"
+description = "Computational AI Research Interface for Bioinformatics, Omics, and Unifying Agents"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "Your Name", email = "you@example.com" }]
-
+authors = [{ name = "Dylan Riffle"}, {name = "Nima Shirooni"}]
 # Core runtime deps (PyPI names!)
 dependencies = [
   "cellxgene-census",
