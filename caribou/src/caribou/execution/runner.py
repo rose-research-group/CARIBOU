@@ -158,6 +158,7 @@ def run_agent_session(
     history: List[Dict[str, str]],
     is_auto: bool,
     max_turns: int = 1,
+    model_name: str = "gpt-4.1",
     benchmark_modules: Optional[List[Path]] = None,
 ):
     """
@@ -187,7 +188,7 @@ def run_agent_session(
         
         try:
             resp = llm_client.chat.completions.create(
-                model="gpt-4.1",
+                model=model_name,
                 messages=history,
                 temperature=0.7,
             )
