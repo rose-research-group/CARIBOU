@@ -8,7 +8,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-
 from rich.console import Console
 from rich.table import Table
 
@@ -18,6 +17,7 @@ try:
     from caribou.agents.AgentSystem import Agent, AgentSystem
     from caribou.core.io_helpers import display, extract_python_code, format_execute_response
     from caribou.rag.RetrievalAugmentedGeneration import RetrievalAugmentedGeneration
+    from caribou.execution.MemoryManager import MemoryManager
 except ImportError as e:
     print(f"Failed to import a required CARIBOU module: {e}", file=sys.stderr)
     sys.exit(1)
@@ -156,6 +156,7 @@ def run_agent_session(
     llm_client: object,
     sandbox_manager: SandboxManager,
     history: List[Dict[str, str]],
+    compress_memory: bool = False,
     is_auto: bool,
     max_turns: int = 1,
     model_name: str = "gpt-4.1",
@@ -166,6 +167,11 @@ def run_agent_session(
     """
     from rich.prompt import Prompt
     _init_paths()
+
+    memory_manager: Optional[MemoryManager] = None
+    if compress_memory:
+        console.print("[bold cyan]🧠 Adaptive context memory is enabled.[/bold cyan]")
+        memory_manager = MemoryManager(llm_client=llm_client, model_name=model_name, initial_history=history)
     
     # --- Display the initial context provided by the CLI ---
     for message in history:
@@ -178,6 +184,7 @@ def run_agent_session(
     turn = 0
     last_code_snippet: str | None = None
 
+    
     while True:
         turn += 1
         if is_auto and turn > max_turns:
@@ -186,10 +193,15 @@ def run_agent_session(
 
         console.print(f"\n[bold]LLM call (turn {turn})…[/bold]")
         
+        if memory_manager:
+            context_to_send = memory_manager.get_context()
+        else:
+            context_to_send = history
+
         try:
             resp = llm_client.chat.completions.create(
                 model=model_name,
-                messages=history,
+                messages=context_to_send,
                 temperature=0.7,
             )
             msg = resp.choices[0].message.content
@@ -198,6 +210,8 @@ def run_agent_session(
             break
         
         history.append({"role": "assistant", "content": msg})
+        if memory_manager:
+            memory_manager.add_message("assistant", msg)
         display(console, f"assistant ({current_agent.name})", msg)  
 
         # --- RAG handling ---
@@ -209,6 +223,8 @@ def run_agent_session(
                 console.print(f"[green] RAG query successful. [/green]")
                 feedback = retrieved_docs
                 console.print(feedback)
+                if memory_manager:
+                    memory_manager.add_message("system", feedback)
                 history.append({"role": "system", "content": feedback}) 
             else:
                 console.print(f"[red] RAG query unsuccessful. [/red]")
@@ -236,6 +252,10 @@ def run_agent_session(
             console.print("[cyan]Executing code in sandbox…[/cyan]")
             exec_result = sandbox_manager.exec_code(code, timeout=300)
             feedback = format_execute_response(exec_result, _OUTPUTS_DIR)
+            if memory_manager:
+                memory_manager.add_message("system", feedback)
+                if exec_result.get("status") == "ok":
+                    memory_manager.add_pivotal_code(code)
             history.append({"role": "assistant", "content": feedback})
             display(console, "assistant", feedback)
 
@@ -276,6 +296,8 @@ def run_agent_session(
                     console, sandbox_manager, benchmark_modules[0],
                     is_auto=True, metadata={"name": "auto"}, agent_name=current_agent.name, code_snippet=last_code_snippet
                 )
+                if memory_manager:
+                    memory_manager.add_message("user", result_str)
                 history.append({"role": "user", "content": result_str})
                 display(console, "user", result_str)
             console.print(f"[yellow]Auto-continuing... {turn}/{max_turns} turns complete.[/yellow]")
@@ -301,6 +323,8 @@ def run_agent_session(
                         continue
                 
                 if user_input:
+                    if memory_manager:
+                        memory_manager.add_message("user", user_input)
                     history.append({"role": "user", "content": user_input})
                     display(console, "user", user_input)
                 break

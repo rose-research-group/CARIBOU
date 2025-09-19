@@ -90,6 +90,7 @@ def main_run_callback(
     ollama_host: str = typer.Option("http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."),
     sandbox: str = typer.Option(None, "--sandbox", help="Sandbox backend to use: 'docker' or 'singularity'."),
     force_refresh: bool = typer.Option(False, "--force-refresh", help="Force refresh/rebuild of the sandbox environment."),
+    compress_memory: bool = typer.Option(False, "--compress-memory", help="Enable episodic summarization to manage long-term context."),
 ):
     from caribou.agents.AgentSystem import AgentSystem
     from caribou.core.io_helpers import collect_resources, prompt_for_file
@@ -98,6 +99,7 @@ def main_run_callback(
 
     load_dotenv(dotenv_path=ENV_FILE)
     app_context = AppContext()
+    app_context.compress_memory = compress_memory 
     console = app_context.console
     ctx.obj = app_context
 
@@ -184,6 +186,7 @@ def main_run_callback(
     system_prompt = (app_context.roster_instructions + "\n\n" + driver.get_full_prompt(app_context.agent_system.global_policy) + "\n\n" + app_context.analysis_context)
     app_context.initial_history = [{"role": "system", "content": system_prompt}]
 
+    _setup_and_run_session(context=app_context, history=app_context.initial_history[:], is_auto=False, max_turns=-1)
 
 def _setup_and_run_session(context: AppContext, history: list, is_auto: bool, max_turns: int, benchmark_modules: Optional[List[Path]] = None):
     """Helper to start, run, and stop the sandbox session."""
@@ -223,7 +226,8 @@ def _setup_and_run_session(context: AppContext, history: list, is_auto: bool, ma
             is_auto=is_auto,
             max_turns=max_turns,
             benchmark_modules=benchmark_modules,
-            model_name=cast(str, context.model_name) # <-- ADDED
+            model_name=cast(str, context.model_name),
+            compress_memory=context.compress_memory
         )
     finally:
         console.print("[cyan]Stopping sandbox...[/cyan]")
