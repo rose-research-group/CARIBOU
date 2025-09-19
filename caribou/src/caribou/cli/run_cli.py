@@ -228,26 +228,25 @@ def _setup_and_run_session(context: AppContext, history: list, is_auto: bool, ma
     finally:
         console.print("[cyan]Stopping sandbox...[/cyan]")
         sandbox_manager.stop_container()
-        if not is_auto:
-            if Prompt.ask("\n[bold]Do you want to save the chat history?[/bold]", choices=["y", "n"], default="y").lower() == 'y':
-                log_dir = CARIBOU_HOME / "runs" / "chat_logs"
-                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-                
-                # --- NEW: Prompt for save format ---
-                save_format = Prompt.ask("Save format", choices=["json", "notebook"], default="notebook")
-                file_extension = ".ipynb" if save_format == "notebook" else ".json"
-                
-                default_path = log_dir / f"interactive_chat_{timestamp}{file_extension}"
-                save_path_str = Prompt.ask(
-                    "Enter the save path for the log",
-                    default=str(default_path)
-                )
-                save_path = Path(save_path_str).expanduser()
+        if Prompt.ask("\n[bold]Do you want to save the chat history?[/bold]", choices=["y", "n"], default="y").lower() == 'y':
+            log_dir = CARIBOU_HOME / "runs" / "chat_logs"
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            
+            # --- NEW: Prompt for save format ---
+            save_format = Prompt.ask("Save format", choices=["json", "notebook"], default="notebook")
+            file_extension = ".ipynb" if save_format == "notebook" else ".json"
+            
+            default_path = log_dir / f"interactive_chat_{timestamp}{file_extension}"
+            save_path_str = Prompt.ask(
+                "Enter the save path for the log",
+                default=str(default_path)
+            )
+            save_path = Path(save_path_str).expanduser()
 
-                if save_format == "notebook":
-                    save_chat_history_as_notebook(console, history, save_path)
-                else:
-                    save_chat_history_as_json(console, history, save_path)
+            if save_format == "notebook":
+                save_chat_history_as_notebook(console, history, save_path)
+            else:
+                save_chat_history_as_json(console, history, save_path)
 
 
 @run_app.command("interactive")

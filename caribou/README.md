@@ -1,3 +1,5 @@
+https://github.com/OpenTechBio/CARIBOU
+
 # CARIBOU CLI: The Open-source Language Agent Framework 🚀
 
 **The CARIBOU CLI is a powerful command-line interface for building, testing, and running sandboxed, multi-agent AI systems.** 

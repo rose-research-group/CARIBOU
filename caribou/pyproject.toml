@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "caribou-cli"
-version = "0.1.1"
+version = "0.1.2"
 description = "Computational AI Research Interface for Bioinformatics, Omics, and Unifying Agents"
 readme = "README.md"
 requires-python = ">=3.10"
