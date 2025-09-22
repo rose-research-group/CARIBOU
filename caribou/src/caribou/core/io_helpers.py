@@ -13,6 +13,13 @@ import textwrap
 import base64
 from datetime import datetime
 
+_FENCE_RE = re.compile(
+    r'^[ \t]*```(?:python)?[ \t]*\n'   # opening fence, with optional "python"
+    r'([\s\S]*?)'                     # capture all lines
+    r'^[ \t]*```[ \t]*$',             # closing fence
+    re.MULTILINE
+)
+
 def extract_python_code(txt: str) -> Optional[str]:
     """Return the *first* fenced code block, or None if absent.
 
@@ -37,27 +44,52 @@ def extract_python_code(txt: str) -> Optional[str]:
 
 # Rich display wrappers
 
-def _panel(console, role: str, content: str):
-    titles = {"system": "SYSTEM", "user": "USER", "assistant": "ASSISTANT"}
-    styles = {"system": "dim blue", "user": "cyan", "assistant": "green"}
-    console.print(Panel(content, title=titles.get(role, role.upper()), border_style=styles.get(role, "white")))
+def _panel(console: Console, title: str, content: str, style: str):
+    """A helper to print a consistent rich Panel."""
+    # The content is now wrapped in Markdown for better formatting
+    from rich.markdown import Markdown
+    console.print(Panel(Markdown(content, code_theme="monokai"), title=title, border_style=style, highlight=True))
 
-def display(console, role: str, content: str):
+def display(console: Console, role: str, content: str):
+    """
+    Formats and displays messages, correctly separating all code blocks from text
+    and showing the current agent's name in the panel title.
+    """
+    role_styles = {
+        "system": "dim blue",
+        "user": "cyan",
+        "assistant": "green",
+        "code execution result": "magenta"
+    }
+    
+    # Default title and style
+    title = role.upper()
+    style = role_styles.get(role, "white")
+
+    # Special handling for dynamic assistant roles like "assistant (coder)"
+    if role.startswith("assistant (") and role.endswith(")"):
+        style = role_styles["assistant"]
+        match = re.search(r'\((.*?)\)', role)
+        agent_name = match.group(1) if match else "agent"
+        title = f"ASSISTANT ({agent_name})"
+    
+    # Logic to separate text and code for assistant messages
     if "assistant" in role.lower():
-        code = extract_python_code(content) or ""
-        text_part = re.sub(r"```python[\s\S]+?```", "", content).strip()
+        code = extract_python_code(content)
+        text_part = _FENCE_RE.sub("", content).strip()
+        
         if text_part:
-            _panel(console, "assistant", text_part)
+            _panel(console, title, text_part, style)
         if code:
             console.print(
                 Panel(
-                    Syntax(code, "python", line_numbers=True),
-                    title="ASSISTANT (code)",
-                    border_style="green",
+                    Syntax(code, "python", theme="monokai", line_numbers=True),
+                    title=f"{title} (code)",
+                    border_style=style,
                 )
             )
     else:
-        _panel(console, role, content)
+        _panel(console, title, content, style)
 
 def select_dataset(console, dataset_dir) -> Tuple[Path, dict]:
     if not dataset_dir.exists():

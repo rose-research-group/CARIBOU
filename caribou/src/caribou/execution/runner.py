@@ -8,7 +8,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-
 from rich.console import Console
 from rich.table import Table
 
@@ -18,6 +17,7 @@ try:
     from caribou.agents.AgentSystem import Agent, AgentSystem
     from caribou.core.io_helpers import display, extract_python_code, format_execute_response
     from caribou.rag.RetrievalAugmentedGeneration import RetrievalAugmentedGeneration
+    from caribou.execution.MemoryManager import MemoryManager
 except ImportError as e:
     print(f"Failed to import a required CARIBOU module: {e}", file=sys.stderr)
     sys.exit(1)
@@ -151,11 +151,11 @@ def run_agent_session(
     console: Console,
     agent_system: AgentSystem,
     driver_agent: Agent,
-    roster_instructions: str,
     analysis_context: str,
     llm_client: object,
     sandbox_manager: SandboxManager,
     history: List[Dict[str, str]],
+    compress_memory: bool = False,
     is_auto: bool,
     max_turns: int = 1,
     model_name: str = "gpt-4.1",
@@ -166,6 +166,11 @@ def run_agent_session(
     """
     from rich.prompt import Prompt
     _init_paths()
+
+    memory_manager: Optional[MemoryManager] = None
+    if compress_memory:
+        console.print("[bold cyan]🧠 Adaptive context memory is enabled.[/bold cyan]")
+        memory_manager = MemoryManager(llm_client=llm_client, model_name=model_name, initial_history=history)
     
     # --- Display the initial context provided by the CLI ---
     for message in history:
@@ -178,6 +183,7 @@ def run_agent_session(
     turn = 0
     last_code_snippet: str | None = None
 
+    
     while True:
         turn += 1
         if is_auto and turn > max_turns:
@@ -186,10 +192,15 @@ def run_agent_session(
 
         console.print(f"\n[bold]LLM call (turn {turn})…[/bold]")
         
+        if memory_manager:
+            context_to_send = memory_manager.get_context()
+        else:
+            context_to_send = history
+
         try:
             resp = llm_client.chat.completions.create(
                 model=model_name,
-                messages=history,
+                messages=context_to_send,
                 temperature=0.7,
             )
             msg = resp.choices[0].message.content
@@ -198,6 +209,8 @@ def run_agent_session(
             break
         
         history.append({"role": "assistant", "content": msg})
+        if memory_manager:
+            memory_manager.add_message("assistant", msg)
         display(console, f"assistant ({current_agent.name})", msg)  
 
         # --- RAG handling ---
@@ -209,6 +222,8 @@ def run_agent_session(
                 console.print(f"[green] RAG query successful. [/green]")
                 feedback = retrieved_docs
                 console.print(feedback)
+                if memory_manager:
+                    memory_manager.add_message("system", feedback)
                 history.append({"role": "system", "content": feedback}) 
             else:
                 console.print(f"[red] RAG query unsuccessful. [/red]")
@@ -219,16 +234,19 @@ def run_agent_session(
             target_agent_name = current_agent.commands[cmd].target_agent
             new_agent = agent_system.get_agent(target_agent_name)
             if new_agent:
-                console.print(f"[yellow]🔄 Routing to '{target_agent_name}' via {cmd}[/yellow]")
-                history.append({"role": "assistant", "content": f"🔄 Routing to **{target_agent_name}** (command `{cmd}`)"})
+                routing_message = f"🔄 Routing to '{target_agent_name}' via {cmd}"
+                system_prompt = (current_agent.get_full_prompt(agent_system.global_policy) + "\n\n" + analysis_context)
                 current_agent = new_agent
-                system_prompt = (roster_instructions + "\n\n" + current_agent.get_full_prompt(agent_system.global_policy) + "\n\n" + analysis_context)
+                console.print(f"[yellow]{routing_message}[/yellow]")
+                history.append({"role": "assistant", "content": f"🔄 Routing to **{target_agent_name}** (command `{cmd}`)"})
+                if memory_manager:
+                    memory_manager.add_message("assistant", routing_message)
+                    memory_manager.update_system_prompt(system_prompt)
                 # We replace the last system prompt with the new one for the new agent
-                history.insert(0, {"role": "system", "content": system_prompt})
+                history.insert(1, {"role": "system", "content": system_prompt}) # agent prompt is second message
                 # Remove the old system prompt to avoid confusion
-                if len(history) > 1 and history[1].get("role") == "system":
-                    history.pop(1)
-                continue
+                if len(history) > 2 and history[2].get("role") == "system":
+                    history.pop(2)
 
         code = extract_python_code(msg)
         if code:
@@ -236,8 +254,12 @@ def run_agent_session(
             console.print("[cyan]Executing code in sandbox…[/cyan]")
             exec_result = sandbox_manager.exec_code(code, timeout=300)
             feedback = format_execute_response(exec_result, _OUTPUTS_DIR)
+            if memory_manager:
+                memory_manager.add_message("system", feedback)
+                if exec_result.get("status") == "ok":
+                    memory_manager.add_pivotal_code(code)
             history.append({"role": "assistant", "content": feedback})
-            display(console, "assistant", feedback)
+            display(console, "code execution result", feedback)
 
             stderr = exec_result.get('stderr', '')
             if stderr and current_agent.is_rag_enabled:
@@ -276,6 +298,8 @@ def run_agent_session(
                     console, sandbox_manager, benchmark_modules[0],
                     is_auto=True, metadata={"name": "auto"}, agent_name=current_agent.name, code_snippet=last_code_snippet
                 )
+                if memory_manager:
+                    memory_manager.add_message("user", result_str)
                 history.append({"role": "user", "content": result_str})
                 display(console, "user", result_str)
             console.print(f"[yellow]Auto-continuing... {turn}/{max_turns} turns complete.[/yellow]")
@@ -301,6 +325,8 @@ def run_agent_session(
                         continue
                 
                 if user_input:
+                    if memory_manager:
+                        memory_manager.add_message("user", user_input)
                     history.append({"role": "user", "content": user_input})
                     display(console, "user", user_input)
                 break
