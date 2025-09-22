@@ -151,7 +151,6 @@ def run_agent_session(
     console: Console,
     agent_system: AgentSystem,
     driver_agent: Agent,
-    roster_instructions: str,
     analysis_context: str,
     llm_client: object,
     sandbox_manager: SandboxManager,
@@ -235,16 +234,19 @@ def run_agent_session(
             target_agent_name = current_agent.commands[cmd].target_agent
             new_agent = agent_system.get_agent(target_agent_name)
             if new_agent:
-                console.print(f"[yellow]🔄 Routing to '{target_agent_name}' via {cmd}[/yellow]")
-                history.append({"role": "assistant", "content": f"🔄 Routing to **{target_agent_name}** (command `{cmd}`)"})
+                routing_message = f"🔄 Routing to '{target_agent_name}' via {cmd}"
+                system_prompt = (current_agent.get_full_prompt(agent_system.global_policy) + "\n\n" + analysis_context)
                 current_agent = new_agent
-                system_prompt = (roster_instructions + "\n\n" + current_agent.get_full_prompt(agent_system.global_policy) + "\n\n" + analysis_context)
+                console.print(f"[yellow]{routing_message}[/yellow]")
+                history.append({"role": "assistant", "content": f"🔄 Routing to **{target_agent_name}** (command `{cmd}`)"})
+                if memory_manager:
+                    memory_manager.add_message("assistant", routing_message)
+                    memory_manager.update_system_prompt(system_prompt)
                 # We replace the last system prompt with the new one for the new agent
-                history.insert(0, {"role": "system", "content": system_prompt})
+                history.insert(1, {"role": "system", "content": system_prompt}) # agent prompt is second message
                 # Remove the old system prompt to avoid confusion
-                if len(history) > 1 and history[1].get("role") == "system":
-                    history.pop(1)
-                continue
+                if len(history) > 2 and history[2].get("role") == "system":
+                    history.pop(2)
 
         code = extract_python_code(msg)
         if code:
@@ -257,7 +259,7 @@ def run_agent_session(
                 if exec_result.get("status") == "ok":
                     memory_manager.add_pivotal_code(code)
             history.append({"role": "assistant", "content": feedback})
-            display(console, "assistant", feedback)
+            display(console, "code execution result", feedback)
 
             stderr = exec_result.get('stderr', '')
             if stderr and current_agent.is_rag_enabled:

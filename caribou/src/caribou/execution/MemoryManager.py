@@ -17,6 +17,7 @@ class MemoryManager:
         chunk_size_to_summarize: int = 10
     ):
         self.llm_client = llm_client
+        self.model_name = model_name
         self.config = {
             "working_history_size": working_history_size,
             "summarization_threshold": summarization_threshold,
@@ -27,10 +28,7 @@ class MemoryManager:
         self._full_history: List[Dict[str, str]] = list(initial_history)
         self._summarized_log: List[Dict[str, str]] = []
         self._pivotal_code: List[Dict[str, str]] = []
-        self.model_name = model_name
-        
-        # Pin the system prompt and the very first user message
-        self._pinned_messages: List[Dict[str, str]] = self._full_history[:2]
+        self._pinned_messages: List[Dict[str, str]] = self._full_history[:3]
 
     def add_message(self, role: str, content: str):
         """Adds a new message to the full, unabridged history."""
@@ -44,16 +42,31 @@ class MemoryManager:
         }
         self._pivotal_code.append(formatted_message)
 
+    # --- ADDED: Method to update the agent-specific system prompt ---
+    def update_system_prompt(self, new_prompt_content: str):
+        """
+        Replaces the agent-specific prompt (at index 1) upon delegation,
+        leaving the global policy (at index 0) intact.
+        """
+        # Ensure there are enough messages to have a separate agent prompt
+        if len(self._pinned_messages) > 1:
+            # The agent-specific prompt is now the second message
+            self._pinned_messages[1]["content"] = new_prompt_content
+            self._full_history[1]["content"] = new_prompt_content
+        else:
+            # Fallback for unexpected history structures
+            new_prompt = {"role": "system", "content": new_prompt_content}
+            self._pinned_messages.insert(1, new_prompt)
+            self._full_history.insert(1, new_prompt)
+
+
     def _summarize_chunk(self):
         """Internal method to summarize a chunk of the history."""
-        # Determine the chunk of old messages to summarize
-        # We start after the pinned messages and any existing summaries
         start_index = len(self._pinned_messages) + len(self._summarized_log)
         end_index = start_index + self.config["chunk_size_to_summarize"]
         
-        # Ensure we don't try to summarize messages that are part of the recent working history
         if end_index > len(self._full_history) - self.config["working_history_size"]:
-            return # Not enough old messages to form a new chunk yet
+            return
 
         chunk_to_summarize = self._full_history[start_index:end_index]
         if not chunk_to_summarize:
@@ -63,7 +76,7 @@ class MemoryManager:
         
         try:
             response = self.llm_client.chat.completions.create(
-                model=self.model_name, # Using a fast model for summarization is efficient
+                model=self.model_name,
                 messages=[
                     {"role": "system", "content": summary_prompt},
                     {"role": "user", "content": json.dumps(chunk_to_summarize)}
@@ -71,25 +84,21 @@ class MemoryManager:
                 temperature=0.2
             )
             summary_text = response.choices[0].message.content
-            # Append the new summary to our log of past episodes
+            print(f"Generated summary: {summary_text}")
             self._summarized_log.append({"role": "system", "content": f"EPISODIC SUMMARY:\n{summary_text}"})
+            print(self._summarized_log)
         except Exception as e:
-            # If summarization fails, we just log it and continue without summarizing
             print(f"Warning: Could not summarize context chunk: {e}")
 
     def get_context(self) -> List[Dict[str, str]]:
         """
         Dynamically assembles the context to be sent to the LLM.
-        This is the main public method of the class.
         """
-        # 1. Check if it's time to create a new summary
         if len(self._full_history) > self.config["summarization_threshold"] + len(self._summarized_log):
             self._summarize_chunk()
 
-        # 2. Get the most recent, unsummarized messages
         working_history = self._full_history[-self.config["working_history_size"]:]
 
-        # 3. Assemble the final context from all components
         context_to_send = (
             self._pinned_messages +
             self._pivotal_code +
