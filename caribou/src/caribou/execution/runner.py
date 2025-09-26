@@ -235,8 +235,8 @@ def run_agent_session(
             new_agent = agent_system.get_agent(target_agent_name)
             if new_agent:
                 routing_message = f"🔄 Routing to '{target_agent_name}' via {cmd}"
-                system_prompt = (current_agent.get_full_prompt(agent_system.global_policy) + "\n\n" + analysis_context)
                 current_agent = new_agent
+                system_prompt = (current_agent.get_full_prompt(agent_system.global_policy) + "\n\n" + analysis_context)
                 console.print(f"[yellow]{routing_message}[/yellow]")
                 history.append({"role": "assistant", "content": f"🔄 Routing to **{target_agent_name}** (command `{cmd}`)"})
                 if memory_manager:

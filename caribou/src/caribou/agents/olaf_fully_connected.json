@@ -86,10 +86,6 @@
         "enabled": true
       },
       "neighbors": {
-        "delegate_to_input": {
-          "target_agent": "input_agent",
-          "description": "input_agent will load and inspect the data"
-        },
         "delegate_to_QC_metrics": {
           "target_agent": "QC_metrics_agent",
           "description": "QC_metrics_agent will calculate QC metrics and provide QC information through informative plots"
@@ -139,10 +135,6 @@
           "target_agent": "input_agent",
           "description": "input_agent will load and inspect the data"
         },
-        "delegate_to_QC_metrics": {
-          "target_agent": "QC_metrics_agent",
-          "description": "QC_metrics_agent will calculate QC metrics and provide QC information through informative plots"
-        },
         "delegate_to_doublets": {
           "target_agent": "doublet_agent",
           "description": "doublet_agent will calculate doublets using Scrublet and removing them as well"
@@ -190,10 +182,6 @@
           "target_agent": "QC_metrics_agent",
           "description": "QC_metrics_agent will calculate QC metrics and provide QC information through informative plots"
         },
-        "delegate_to_doublets": {
-          "target_agent": "doublet_agent",
-          "description": "doublet_agent will calculate doublets using Scrublet and removing them as well"
-        },
         "delegate_to_downstream": {
           "target_agent": "downstream_agent",
           "description": "downstream agent will run standard scanpy processing steps"
@@ -240,10 +228,6 @@
         "delegate_to_doublets": {
           "target_agent": "doublet_agent",
           "description": "doublet_agent will calculate doublets using Scrublet and removing them as well"
-        },
-        "delegate_to_downstream": {
-          "target_agent": "downstream_agent",
-          "description": "downstream agent will run standard scanpy processing steps"
         },
         "delegate_to_QCEmbedding": {
           "target_agent": "QCEmbedding_agent",
@@ -293,10 +277,6 @@
           "target_agent": "downstream_agent",
           "description": "downstream agent will run standard scanpy processing steps"
         },
-        "delegate_to_QCEmbedding": {
-          "target_agent": "QCEmbedding_agent",
-          "description": "QCEmbedding_agent will show QC metrics on embeddings"
-        },
         "delegate_to_MAD": {
           "target_agent": "MAD_agent",
           "description": "MAD_agent will calculate median absolute deviation for QC metrics and filter cells accordingly"
@@ -344,10 +324,6 @@
           "target_agent": "QCEmbedding_agent",
           "description": "QCEmbedding_agent will show QC metrics on embeddings"
         },
-        "delegate_to_MAD": {
-          "target_agent": "MAD_agent",
-          "description": "MAD_agent will calculate median absolute deviation for QC metrics and filter cells accordingly"
-        },
         "delegate_to_Reprocess": {
           "target_agent": "Reprocess_agent",
           "description": "Reprocess_agent will re-analyze the data after QC has been applied"
@@ -394,10 +370,6 @@
         "delegate_to_MAD": {
           "target_agent": "MAD_agent",
           "description": "MAD_agent will calculate median absolute deviation for QC metrics and filter cells accordingly"
-        },
-        "delegate_to_Reprocess": {
-          "target_agent": "Reprocess_agent",
-          "description": "Reprocess_agent will re-analyze the data after QC has been applied"
         },
         "delegate_to_Celltyping": {
           "target_agent": "Celltyping_agent",
@@ -447,10 +419,6 @@
           "target_agent": "Reprocess_agent",
           "description": "Reprocess_agent will re-analyze the data after QC has been applied"
         },
-        "delegate_to_Celltyping": {
-          "target_agent": "Celltyping_agent",
-          "description": "Celltyping_agent will use CellTypist or provided markers to annotate data"
-        },
         "delegate_to_Integration": {
           "target_agent": "Integration_agent",
           "description": "Integration_agent will use scVI or Harmony to integrate data"
@@ -498,10 +466,6 @@
         "delegate_to_Celltyping": {
           "target_agent": "Celltyping_agent",
           "description": "Celltyping_agent will use CellTypist or provided markers to annotate data"
-        },
-        "delegate_to_Integration": {
-          "target_agent": "Integration_agent",
-          "description": "Integration_agent will use scVI or Harmony to integrate data"
         }
       },
       "code_samples": [
