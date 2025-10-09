@@ -151,7 +151,10 @@ class AgentSystem:
         return self.agents
 
     def get_instructions(self) -> str:
-        """Generates a summary of the system's instructions, including the global policy."""
+        """
+        Generates a summary of the system's instructions, including the global policy.
+        Not typically used in prompts anymore, but useful for debugging and logging.
+        """
         instructions = f"**GLOBAL POLICY FOR ALL AGENTS**: {self.global_policy}\n\n---\n\n"
         instructions += "**SYSTEM AGENTS**:\n"
         for agent in self.agents.values():
