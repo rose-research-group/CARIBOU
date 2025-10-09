@@ -56,6 +56,10 @@ class Agent:
             full_prompt += f"\n- Command: `query_rag_<function>`"
             full_prompt += f"\n  - Description: Retrieves relevant information about a specific <function> from your knowledge base. Replace <function> with a concise, descriptive search query (e.g., function names, task you are trying to complete)."
             full_prompt += f"\n  - Example: `query_rag_<scvi model setup>`"
+            full_prompt += (
+                "\n\n**You can only delegate to one agent at a time. "
+                "Never wrap delegation or RAG calls in backticks as if they are code.**"
+            )
             
         if self.code_samples:
             full_prompt += "\n\n  - Code Samples Available for Reference and Adapation (MUST BE REWRITTEN TO BE USED):"
