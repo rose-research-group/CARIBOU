@@ -29,4 +29,7 @@ class IntegrationMetric(AutoMetric):
 
         return results.to_dict()
     
+    def requirements(self) -> str:
+        return f"Requires an AnnData object with '{BATCH_KEY}' and '{LABEL_KEY}' in .obs and an embedding '{EMBED}' in .obsm."
+
 IntegrationMetric().run(adata)

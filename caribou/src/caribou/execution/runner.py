@@ -139,8 +139,8 @@ def run_benchmark(
             table.add_row("Error", error_message)
         
         console.print(table)
-        return "Benchmark results:\n" + json.dumps(result_dict or {"error": "see console logs"})
-    
+        return "Benchmark results:\n" + json.dumps(result_dict)
+
     except Exception as exc:
         err_msg = f"Benchmark execution failed: {exc}"
         console.print(f"[red]{err_msg}[/red]")
@@ -299,8 +299,8 @@ def run_agent_session(
                     is_auto=True, metadata={"name": "auto"}, agent_name=current_agent.name, code_snippet=last_code_snippet
                 )
                 if memory_manager:
-                    memory_manager.add_message("user", result_str)
-                history.append({"role": "user", "content": result_str})
+                    memory_manager.add_message("system", result_str)
+                history.append({"role": "system", "content": result_str})
                 display(console, "user", result_str)
             console.print(f"[yellow]Auto-continuing... {turn}/{max_turns} turns complete.[/yellow]")
         else:

@@ -26,5 +26,8 @@ class CellTypingMetric(AutoMetric):
         bm.benchmark()
         bm.plot_results_table(min_max_scale=False)
         bm.get_results()
+    
+    def requirements(self) -> str:
+        return "Requires an AnnData object with 'batch' and 'majority_voting' in .obs and PCA embeddings in .obsm."
 
 CellTypingMetric().run(adata)

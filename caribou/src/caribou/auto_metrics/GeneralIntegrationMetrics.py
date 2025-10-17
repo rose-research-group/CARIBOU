@@ -3,8 +3,6 @@ from scib_metrics.benchmark import Benchmarker
 from typing import Dict
 import anndata
 import numpy as np
-import numba
-numba.config.CACHE = False
 
 EMBED = "integration"        # The embedding key in adata.obsm
 BATCH_KEY = "batch"     # The batch key in adata.obs
@@ -30,5 +28,8 @@ class IntegrationMetric(AutoMetric):
         results = bm.get_results()
 
         return results.to_dict()
+    
+    def requirements(self) -> str:
+        return f"Requires an AnnData object with '{BATCH_KEY}' and '{LABEL_KEY}' in .obs and an embedding '{EMBED}' in .obsm."
     
 IntegrationMetric().run(adata)

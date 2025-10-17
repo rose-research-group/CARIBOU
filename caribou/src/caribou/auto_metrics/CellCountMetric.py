@@ -15,5 +15,8 @@ class CellCountMetric(AutoMetric):
             "Number of Genes": num_genes
         }
     
+    def requirements(self) -> str:
+        return "Requires an AnnData object with .n_obs and .n_vars attributes."
+    
 # must run it here
 CellCountMetric().run(adata)
