@@ -58,11 +58,13 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
             self._binds: List[str] = []
             self._proc = None
 
-        def set_data(self, all_resources: List[Tuple[Path, str]]):
-                    """Configures all necessary bind mounts from a single list."""
+        def set_data(self, all_resources: List[Tuple[Path, str]], host_output_path: Path):
+                    """Configures all necessary bind mounts, including the output directory."""
                     binds = []
                     for host_path, container_path in all_resources:
                         binds.extend(["--bind", f"{host_path.resolve()}:{container_path}"])
+                    
+                    binds.extend(["--bind", f"{host_output_path.resolve()}:/workspace/outputs"])
                     self._binds = binds
 
         # ------------------------------------------------------------------
@@ -150,6 +152,10 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
                 except json.JSONDecodeError:
                     # Non‑JSON noise; continue reading
                     continue
+        
+        def retrieve_output_files(self, host_destination_path: Path) -> None:
+            """For Singularity, files are already on the host. This method just confirms."""
+            console.print(f"[bold green]✓ Session outputs are already saved in:[/bold green] {host_destination_path}")
 
     _BackendManager = _SingExecBackend
 
