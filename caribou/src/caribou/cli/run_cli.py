@@ -118,7 +118,6 @@ def _prompt_for_benchmark_module(console: Console) -> Optional[Path]:
 # --------------------------------------------------------------------------------------
 # Core Runner
 # --------------------------------------------------------------------------------------
-
 def _setup_and_run_session(
     context: AppContext,
     history: list,
@@ -132,26 +131,35 @@ def _setup_and_run_session(
     from caribou.execution.runner import run_agent_session, SandboxManager
     from caribou.agents.AgentSystem import AgentSystem
     from caribou.core.io_helpers import save_chat_history_as_json, save_chat_history_as_notebook
+    import shutil
 
     sandbox_manager = cast(SandboxManager, context.sandbox_manager)
     console = context.console
-
+    
+    # 1. Create a unique, temporary output directory on the host machine.
+    output_dir = CARIBOU_HOME / "runs" / "session_outputs"
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    host_output_path = output_dir / f"run_{timestamp}"
+    host_output_path.mkdir(parents=True, exist_ok=True)
+    
+    console.print(f"Session outputs will be staged in: [cyan]{host_output_path}[/cyan]")
+    
     console.print("[cyan]Starting sandbox...[/cyan]")
-
+    
     details = context.sandbox_details
     dataset_path = cast(Path, context.dataset_path)
 
-    # If "exec mode", attach data via manager API; otherwise copy to container after start
+    # 2. For Singularity, configure the shared output folder before starting.
     if details.get("is_exec_mode") and hasattr(sandbox_manager, "set_data"):
         all_resources = [(dataset_path, SANDBOX_DATA_PATH)] + list(context.resources)
-        sandbox_manager.set_data(all_resources)
+        sandbox_manager.set_data(all_resources, host_output_path)
 
     if not sandbox_manager.start_container():
         console.print("[bold red]Failed to start sandbox container.[/bold red]")
         raise typer.Exit(1)
-
+    
     try:
-        # In non-exec (e.g., docker) mode, copy data after container is ready
+        # For Docker, copy files into the running container.
         if not details.get("is_exec_mode"):
             copy_cmd = details["copy_cmd"]
             handle = details["handle"]
@@ -159,6 +167,7 @@ def _setup_and_run_session(
             for host_path, container_path in context.resources:
                 copy_cmd(str(host_path), f"{handle}:{container_path}")
 
+        # 3. Run the main agent session.
         run_agent_session(
             console=console,
             agent_system=cast(AgentSystem, context.agent_system),
@@ -174,26 +183,68 @@ def _setup_and_run_session(
             compress_memory=context.compress_memory,
         )
     finally:
+        # 4. Handle file retrieval and cleanup BEFORE stopping the container.
+        if not is_auto:
+            if details.get("is_exec_mode"):
+                # --- Singularity Workflow ---
+                console.print("\n[bold]Review generated files:[/bold]")
+                output_files = list(host_output_path.iterdir())
+                if output_files:
+                    for f in output_files:
+                        size_mb = f.stat().st_size / 1e6
+                        console.print(f"  - {f.name} ([yellow]{size_mb:.2f} MB[/yellow])")
+                    
+                    if Prompt.ask(f"\nDo you want to keep the output directory and its contents?", choices=["y", "n"], default="y").lower() == 'n':
+                        shutil.rmtree(host_output_path)
+                        console.print(f"[dim]Removed temporary output directory.[/dim]")
+                    else:
+                        console.print(f"[bold green]✓ Session outputs saved in:[/bold green] {host_output_path}")
+                else:
+                    console.print("[dim]No output files were generated.[/dim]")
+                    # Clean up the empty staging directory
+                    shutil.rmtree(host_output_path)
+            else:
+                # --- Docker Workflow ---
+                if hasattr(sandbox_manager, "list_output_files"):
+                    output_files = sandbox_manager.list_output_files()
+                    if output_files:
+                        console.print("\n[bold]The following files were generated in the sandbox:[/bold]")
+                        from rich.table import Table
+                        table = Table(title="Generated Output Files")
+                        table.add_column("Index", style="cyan")
+                        table.add_column("Filename")
+                        table.add_column("Size", style="yellow")
+                        for i, f in enumerate(output_files, 1):
+                            table.add_row(str(i), f["name"], f["size"])
+                        console.print(table)
+                        
+                        if Prompt.ask("\n[bold]Do you want to save any of these files?[/bold]", choices=["y", "n"], default="y").lower() == 'y':
+                            files_to_copy = [f["name"] for f in output_files]
+                            sandbox_manager.retrieve_output_files(host_output_path, files_to_copy)
+                        else:
+                            console.print("Generated files will be discarded.")
+                    else:
+                        console.print("\n[dim]No output files were generated in the sandbox.[/dim]")
+
         console.print("[cyan]Stopping sandbox...[/cyan]")
         sandbox_manager.stop_container()
 
-        if Prompt.ask("\n[bold]Do you want to save the chat history?[/bold]", choices=["y", "n"], default="y").lower() == "y":
-            log_dir = CARIBOU_HOME / "runs" / "chat_logs"
-            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        # 5. Handle chat history saving AFTER the container is stopped.
+        if not is_auto:
+            if Prompt.ask("\n[bold]Do you want to save the chat history?[/bold]", choices=["y", "n"], default="y").lower() == "y":
+                log_dir = CARIBOU_HOME / "runs" / "chat_logs"
+                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                save_format = Prompt.ask("Save format", choices=["json", "notebook"], default="notebook")
+                file_extension = ".ipynb" if save_format == "notebook" else ".json"
+                
+                default_path = log_dir / f"interactive_chat_{timestamp}{file_extension}"
+                save_path_str = Prompt.ask("Enter the save path for the log", default=str(default_path))
+                save_path = Path(save_path_str).expanduser()
 
-            save_format = Prompt.ask("Save format", choices=["json", "notebook"], default="notebook")
-            file_extension = ".ipynb" if save_format == "notebook" else ".json"
-
-            default_name = f"interactive_chat_{timestamp}{file_extension}"
-            default_path = log_dir / default_name
-
-            save_path_str = Prompt.ask("Enter the save path for the log", default=str(default_path))
-            save_path = Path(save_path_str).expanduser()
-
-            if save_format == "notebook":
-                save_chat_history_as_notebook(console, history, save_path)
-            else:
-                save_chat_history_as_json(console, history, save_path)
+                if save_format == "notebook":
+                    save_chat_history_as_notebook(console, history, save_path)
+                else:
+                    save_chat_history_as_json(console, history, save_path)
 
 # --------------------------------------------------------------------------------------
 # Initialization (shared for callback and subcommands)
@@ -317,13 +368,16 @@ def initialize_context(
     analysis_context_str = f"Primary dataset path: **{SANDBOX_DATA_PATH}**\n"
     if context.reference_dataset_path:
         analysis_context_str += f"Reference dataset path: **{SANDBOX_REF_DATA_PATH}**\n"
+    
+    # Add the crucial instruction for the agent
+    analysis_context_str += "\n**IMPORTANT**: Please save all generated output files (plots, .h5ad, .csv) to the `/workspace/outputs/` directory."
+    
     context.analysis_context = textwrap.dedent(analysis_context_str)
-
-    driver = context.agent_system.get_agent(context.driver_agent_name)
-    global_policy = context.agent_system.global_policy
-    system_prompt = "\n" + driver.get_full_prompt() + "\n\n" + context.analysis_context
+    
+    driver = context.agent_system.get_agent(driver_agent)
+    system_prompt = (driver.get_full_prompt(context.agent_system.global_policy) + "\n\n" + context.analysis_context)
     context.initial_history = [
-        {"role": "system", "content": f"**GLOBAL POLICY**: {global_policy}\n"},
+        {"role": "system", "content": f"**GLOBAL POLICY**: {context.agent_system.global_policy}\n"},
         {"role": "system", "content": system_prompt},
     ]
 
