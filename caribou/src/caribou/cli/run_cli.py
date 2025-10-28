@@ -6,6 +6,7 @@ import textwrap
 from pathlib import Path
 from typing import List, Tuple, Optional, cast, Dict, Any
 import subprocess
+import json
 from datetime import datetime
 
 import typer
@@ -59,7 +60,7 @@ class AppContext:
         self.resources: List[Tuple[Path, str]] = []
         self.sandbox_details: dict = {}
         self.compress_memory: bool = False
-        # holds any callback-provided options to merge in subcommands
+        self.output_dir: Optional[Path] = None
         self.parent_params: Dict[str, Any] = {}
 
 # --------------------------------------------------------------------------------------
@@ -127,6 +128,7 @@ def _setup_and_run_session(
 ) -> None:
     """
     Start, run, and stop the sandbox session with proper resource handling and logging.
+    Manages output saving based on whether context.output_dir is set.
     """
     from caribou.execution.runner import run_agent_session, SandboxManager
     from caribou.agents.AgentSystem import AgentSystem
@@ -136,20 +138,23 @@ def _setup_and_run_session(
     sandbox_manager = cast(SandboxManager, context.sandbox_manager)
     console = context.console
     
-    # 1. Create a unique, temporary output directory on the host machine.
-    output_dir = CARIBOU_HOME / "runs" / "session_outputs"
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    host_output_path = output_dir / f"run_{timestamp}"
-    host_output_path.mkdir(parents=True, exist_ok=True)
-    
-    console.print(f"Session outputs will be staged in: [cyan]{host_output_path}[/cyan]")
-    
+    if context.output_dir:
+        host_output_path = context.output_dir
+        host_output_path.mkdir(parents=True, exist_ok=True) # Ensure it exists
+        console.print(f"Session outputs will be saved to specified directory: [cyan]{host_output_path}[/cyan]")
+    else:
+        # Default behavior: create a timestamped temporary directory
+        temp_output_dir = CARIBOU_HOME / "runs" / "session_outputs"
+        host_output_path = temp_output_dir / f"run_{timestamp}"
+        host_output_path.mkdir(parents=True, exist_ok=True)
+        console.print(f"Session outputs will be staged in temporary directory: [cyan]{host_output_path}[/cyan]")
+
     console.print("[cyan]Starting sandbox...[/cyan]")
     
     details = context.sandbox_details
     dataset_path = cast(Path, context.dataset_path)
 
-    # 2. For Singularity, configure the shared output folder before starting.
     if details.get("is_exec_mode") and hasattr(sandbox_manager, "set_data"):
         all_resources = [(dataset_path, SANDBOX_DATA_PATH)] + list(context.resources)
         sandbox_manager.set_data(all_resources, host_output_path)
@@ -159,7 +164,6 @@ def _setup_and_run_session(
         raise typer.Exit(1)
     
     try:
-        # For Docker, copy files into the running container.
         if not details.get("is_exec_mode"):
             copy_cmd = details["copy_cmd"]
             handle = details["handle"]
@@ -167,7 +171,6 @@ def _setup_and_run_session(
             for host_path, container_path in context.resources:
                 copy_cmd(str(host_path), f"{handle}:{container_path}")
 
-        # 3. Run the main agent session.
         run_agent_session(
             console=console,
             agent_system=cast(AgentSystem, context.agent_system),
@@ -181,70 +184,73 @@ def _setup_and_run_session(
             benchmark_modules=benchmark_modules,
             model_name=cast(str, context.model_name),
             compress_memory=context.compress_memory,
+            output_dir=host_output_path if context.output_dir else None,
         )
     finally:
-        # 4. Handle file retrieval and cleanup BEFORE stopping the container.
-        if not is_auto:
-            if details.get("is_exec_mode"):
-                # --- Singularity Workflow ---
-                console.print("\n[bold]Review generated files:[/bold]")
-                output_files = list(host_output_path.iterdir())
-                if output_files:
-                    for f in output_files:
-                        size_mb = f.stat().st_size / 1e6
-                        console.print(f"  - {f.name} ([yellow]{size_mb:.2f} MB[/yellow])")
-                    
-                    if Prompt.ask(f"\nDo you want to keep the output directory and its contents?", choices=["y", "n"], default="y").lower() == 'n':
-                        shutil.rmtree(host_output_path)
-                        console.print(f"[dim]Removed temporary output directory.[/dim]")
-                    else:
+        auto_save_mode = context.output_dir is not None
+
+        if hasattr(sandbox_manager, "list_output_files"):
+            output_files_info = sandbox_manager.list_output_files() if not details.get("is_exec_mode") else \
+                                [{"name": f.name, "size": f"{f.stat().st_size / 1e6:.2f} MB"} for f in host_output_path.iterdir() if f.is_file()]
+
+            if output_files_info:
+                if auto_save_mode:
+                    if details.get("is_exec_mode"):
                         console.print(f"[bold green]✓ Session outputs saved in:[/bold green] {host_output_path}")
-                else:
-                    console.print("[dim]No output files were generated.[/dim]")
-                    # Clean up the empty staging directory
-                    shutil.rmtree(host_output_path)
-            else:
-                # --- Docker Workflow ---
-                if hasattr(sandbox_manager, "list_output_files"):
-                    output_files = sandbox_manager.list_output_files()
-                    if output_files:
-                        console.print("\n[bold]The following files were generated in the sandbox:[/bold]")
+                    else: # Docker: retrieve files automatically
+                        files_to_copy = [f["name"] for f in output_files_info]
+                        sandbox_manager.retrieve_output_files(host_output_path, files_to_copy)
+                else: # Interactive prompting mode
+                    console.print("\n[bold]Review generated files:[/bold]")
+                    if details.get("is_exec_mode"): # Singularity
+                        if Prompt.ask(f"\nDo you want to keep the output directory and its contents?", choices=["y", "n"], default="y").lower() == 'n':
+                            shutil.rmtree(host_output_path)
+                            console.print(f"[dim]Removed temporary output directory.[/dim]")
+                        else:
+                            console.print(f"[bold green]✓ Session outputs saved in:[/bold green] {host_output_path}")
+                    else: # Docker
                         from rich.table import Table
                         table = Table(title="Generated Output Files")
-                        table.add_column("Index", style="cyan")
-                        table.add_column("Filename")
-                        table.add_column("Size", style="yellow")
-                        for i, f in enumerate(output_files, 1):
-                            table.add_row(str(i), f["name"], f["size"])
+                        table.add_column("Index", style="cyan"); table.add_column("Filename"); table.add_column("Size", style="yellow")
+                        for i, f in enumerate(output_files_info, 1): table.add_row(str(i), f["name"], f["size"])
                         console.print(table)
-                        
                         if Prompt.ask("\n[bold]Do you want to save any of these files?[/bold]", choices=["y", "n"], default="y").lower() == 'y':
-                            files_to_copy = [f["name"] for f in output_files]
+                            files_to_copy = [f["name"] for f in output_files_info]
                             sandbox_manager.retrieve_output_files(host_output_path, files_to_copy)
                         else:
                             console.print("Generated files will be discarded.")
-                    else:
-                        console.print("\n[dim]No output files were generated in the sandbox.[/dim]")
+                            shutil.rmtree(host_output_path) # Clean up staging dir if Docker outputs aren't saved
+            else:
+                 console.print("\n[dim]No output files were generated.[/dim]")
+                 # Clean up the empty staging directory if nothing was produced
+                 if host_output_path.exists(): shutil.rmtree(host_output_path)
 
         console.print("[cyan]Stopping sandbox...[/cyan]")
         sandbox_manager.stop_container()
 
-        # 5. Handle chat history saving AFTER the container is stopped.
-        if not is_auto:
-            if Prompt.ask("\n[bold]Do you want to save the chat history?[/bold]", choices=["y", "n"], default="y").lower() == "y":
-                log_dir = CARIBOU_HOME / "runs" / "chat_logs"
-                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-                save_format = Prompt.ask("Save format", choices=["json", "notebook"], default="notebook")
+        save_chat = auto_save_mode or \
+                    (not is_auto and Prompt.ask("\n[bold]Do you want to save the chat history?[/bold]", choices=["y", "n"], default="y").lower() == "y")
+
+        if save_chat:
+            log_dir = host_output_path if auto_save_mode else (CARIBOU_HOME / "runs" / "chat_logs")
+            log_dir.mkdir(parents=True, exist_ok=True) # Ensure log dir exists, especially if output_dir was used
+
+            if auto_save_mode:
+                # Default to notebook format when using --output-dir
+                save_format = "notebook"
+                file_extension = ".ipynb"
+                save_path = log_dir / f"chat_log_{timestamp}{file_extension}"
+            else: # Interactive prompt for format and location
+                save_format = Prompt.ask("Save chat log format", choices=["json", "notebook"], default="notebook")
                 file_extension = ".ipynb" if save_format == "notebook" else ".json"
-                
                 default_path = log_dir / f"interactive_chat_{timestamp}{file_extension}"
-                save_path_str = Prompt.ask("Enter the save path for the log", default=str(default_path))
+                save_path_str = Prompt.ask("Enter the save path for the chat log", default=str(default_path))
                 save_path = Path(save_path_str).expanduser()
 
-                if save_format == "notebook":
-                    save_chat_history_as_notebook(console, history, save_path)
-                else:
-                    save_chat_history_as_json(console, history, save_path)
+            if save_format == "notebook":
+                save_chat_history_as_notebook(console, history, save_path)
+            else:
+                save_chat_history_as_json(console, history, save_path)
 
 # --------------------------------------------------------------------------------------
 # Initialization (shared for callback and subcommands)
@@ -263,6 +269,7 @@ def initialize_context(
     sandbox: Optional[str],
     force_refresh: bool,
     compress_memory: bool,
+    output_dir: Optional[Path], # <-- ADDED
 ) -> None:
     """
     Build out the AppContext with all shared resources and configuration.
@@ -272,12 +279,13 @@ def initialize_context(
     from caribou.core.io_helpers import collect_resources, prompt_for_file
     from caribou.core.sandbox_management import init_docker, init_singularity_exec
     from caribou.datasets.czi_datasets import get_datasets_dir
-    from openai import OpenAI  # Used for both OpenAI and DeepSeek-compatible clients
+    from openai import OpenAI
 
     load_dotenv(dotenv_path=ENV_FILE)
 
     console = context.console
     context.compress_memory = compress_memory
+    context.output_dir = output_dir # <-- Store output dir
 
     # ---- Agent System Blueprint ----
     if blueprint is None:
@@ -296,7 +304,7 @@ def initialize_context(
         dataset = prompt_for_file(console, get_datasets_dir(), PACKAGE_DATASETS_DIR, ".h5ad", "Primary Dataset")
     context.dataset_path = dataset
 
-    if reference_dataset is None:
+    if reference_dataset is None and output_dir is None: # Only prompt if not in auto-save mode
         if Prompt.ask("Do you want to add a reference dataset?", choices=["y", "n"], default="n").lower() == "y":
             reference_dataset = prompt_for_file(console, get_datasets_dir(), PACKAGE_DATASETS_DIR, ".h5ad", "Reference Dataset")
     context.reference_dataset_path = reference_dataset
@@ -349,9 +357,8 @@ def initialize_context(
             raise typer.Exit(1)
         context.llm_client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com")
         context.model_name = "deepseek-chat"
-
     elif llm_backend == "ollama":
-        if ollama_host == "http://localhost:11434":
+        if ollama_host == "http://localhost:11434" and output_dir is None:
             ollama_host = Prompt.ask("Enter the Ollama base URL", default="http://localhost:11434")
         from caribou.core.ollama_wrapper import OllamaClient
         context.llm_client = OllamaClient(host=ollama_host)
@@ -368,13 +375,10 @@ def initialize_context(
     analysis_context_str = f"Primary dataset path: **{SANDBOX_DATA_PATH}**\n"
     if context.reference_dataset_path:
         analysis_context_str += f"Reference dataset path: **{SANDBOX_REF_DATA_PATH}**\n"
-    
-    # Add the crucial instruction for the agent
     analysis_context_str += "\n**IMPORTANT**: Please save all generated output files (plots, .h5ad, .csv) to the `/workspace/outputs/` directory."
-    
     context.analysis_context = textwrap.dedent(analysis_context_str)
     
-    driver = context.agent_system.get_agent(driver_agent)
+    driver = context.agent_system.get_agent(context.driver_agent_name)
     system_prompt = (driver.get_full_prompt(context.agent_system.global_policy) + "\n\n" + context.analysis_context)
     context.initial_history = [
         {"role": "system", "content": f"**GLOBAL POLICY**: {context.agent_system.global_policy}\n"},
@@ -382,69 +386,65 @@ def initialize_context(
     ]
 
 # --------------------------------------------------------------------------------------
-# Helpers to merge options from callback (parent) and subcommand
+# Helpers to merge options
 # --------------------------------------------------------------------------------------
 
 def _merge(parent: Dict[str, Any], **child: Any) -> Dict[str, Any]:
-    """Merge subcommand options with callback options; child takes precedence if not None."""
+    """Merge options, child takes precedence if not None."""
     merged = dict(parent)
     for k, v in child.items():
         if v is not None:
-            merged[k] = v
+            if isinstance(v, bool) and not v: 
+                if k not in parent or parent[k] is False:
+                    merged[k] = v
+            else:
+                 merged[k] = v
     return merged
 
 def _extract_common_kwargs(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Pick only the shared options from a params dict for initialize_context."""
+    """Pick only the shared options for initialize_context."""
     keys = [
         "blueprint", "driver_agent", "dataset", "reference_dataset",
         "resources_dir", "llm_backend", "ollama_host", "sandbox",
-        "force_refresh", "compress_memory",
+        "force_refresh", "compress_memory", "output_dir", # <-- ADDED
     ]
-    out: Dict[str, Any] = {}
-    for k in keys:
-        out[k] = params.get(k, None)
-    # booleans default to False if absent
+    out = {k: params.get(k, None) for k in keys}
     out["force_refresh"] = bool(out.get("force_refresh", False))
     out["compress_memory"] = bool(out.get("compress_memory", False))
-    # default ollama_host if missing
-    if out.get("ollama_host") is None:
-        out["ollama_host"] = "http://localhost:11434"
+    if out.get("ollama_host") is None: out["ollama_host"] = "http://localhost:11434"
     return out
 
 # --------------------------------------------------------------------------------------
-# Callback: capture flags (for caribou run --flag) and default behavior if no subcommand
+# Callback
 # --------------------------------------------------------------------------------------
 
 @run_app.callback(invoke_without_command=True)
 def main_run_callback(
     ctx: typer.Context,
-    blueprint: Path = typer.Option(None, "--blueprint", "-bp", help="Path to the agent system JSON blueprint.", readable=True),
-    driver_agent: str = typer.Option(None, "--driver-agent", "-d", help="Name of the agent to start with."),
-    dataset: Path = typer.Option(None, "--dataset", "-ds", help="Path to the primary dataset file (.h5ad).", readable=True),
-    reference_dataset: Path = typer.Option(None, "--reference-dataset", "-ref", help="Path to an optional reference dataset file (.h5ad).", readable=True),
-    resources_dir: Path = typer.Option(None, "--resources", help="Path to a directory of resource files to mount.", exists=True, file_okay=False),
-    llm_backend: str = typer.Option(None, "--llm", help="LLM backend to use: 'chatgpt', 'ollama', or 'deepseek'."),
+    blueprint: Optional[Path] = typer.Option(None, "--blueprint", "-bp", help="Path to the agent system JSON blueprint.", readable=True),
+    driver_agent: Optional[str] = typer.Option(None, "--driver-agent", "-d", help="Name of the agent to start with."),
+    dataset: Optional[Path] = typer.Option(None, "--dataset", "-ds", help="Path to the primary dataset file (.h5ad).", readable=True),
+    reference_dataset: Optional[Path] = typer.Option(None, "--reference-dataset", "-ref", help="Path to an optional reference dataset file (.h5ad).", readable=True),
+    resources_dir: Optional[Path] = typer.Option(None, "--resources", help="Path to a directory of resource files to mount.", exists=True, file_okay=False),
+    llm_backend: Optional[str] = typer.Option(None, "--llm", help="LLM backend: 'chatgpt', 'ollama', or 'deepseek'."),
     ollama_host: str = typer.Option("http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."),
-    sandbox: str = typer.Option(None, "--sandbox", help="Sandbox backend to use: 'docker' or 'singularity'."),
+    sandbox: Optional[str] = typer.Option(None, "--sandbox", help="Sandbox backend: 'docker' or 'singularity'."),
     force_refresh: bool = typer.Option(False, "--force-refresh", help="Force refresh/rebuild of the sandbox environment."),
     compress_memory: bool = typer.Option(False, "--compress-memory", help="Enable episodic summarization to manage long-term context."),
+    output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Directory to save ALL outputs (files and logs) non-interactively.", file_okay=False, writable=True, resolve_path=True),
 ) -> None:
     """
-    Captures top-level flags for `caribou run --flag` and stores them.
-    If no subcommand is invoked, default to interactive (so `caribou run --flag` works).
+    Captures top-level flags and defaults to interactive mode if no subcommand.
     """
     app_context = getattr(ctx, "obj", None)
     if app_context is None:
         app_context = AppContext()
         ctx.obj = app_context
 
-    # Save parent (callback) params so subcommands can merge them with their own flags.
     parent_params = _extract_common_kwargs(locals())
-    # remove ctx itself from locals-based capture
     parent_params.pop("ctx", None)
     app_context.parent_params = parent_params
 
-    # If a subcommand is specified, DO NOT run anything here.
     if ctx.invoked_subcommand is not None:
         return
 
@@ -456,12 +456,9 @@ def main_run_callback(
 
     console = app_context.console
     console.print("\n[bold blue]🚀 Starting Interactive Mode...[/bold blue]")
-
     benchmark_module = _prompt_for_benchmark_module(console)
-
     history = list(app_context.initial_history or [])
     history.append({"role": "user", "content": "Beginning interactive session. What is the plan?"})
-
     _setup_and_run_session(
         context=app_context,
         history=history,
@@ -471,7 +468,7 @@ def main_run_callback(
     )
 
 # --------------------------------------------------------------------------------------
-# Subcommands (also accept flags so `caribou run interactive --flag` works)
+# Subcommands
 # --------------------------------------------------------------------------------------
 
 @run_app.command("interactive")
@@ -488,6 +485,7 @@ def run_interactive(
     sandbox: str = typer.Option(None, "--sandbox", help="Sandbox backend to use: 'docker' or 'singularity'."),
     force_refresh: bool = typer.Option(False, "--force-refresh", help="Force refresh/rebuild of the sandbox environment."),
     compress_memory: bool = typer.Option(False, "--compress-memory", help="Enable episodic summarization to manage long-term context."),
+    output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Directory to save ALL outputs (files and logs) non-interactively.", file_okay=False, writable=True, resolve_path=True),
 ) -> None:
     """
     Run the agent system in a manual, interactive chat session.
@@ -505,12 +503,9 @@ def run_interactive(
 
     console = context.console
     console.print("\n[bold blue]🚀 Starting Interactive Mode...[/bold blue]")
-
     benchmark_module = _prompt_for_benchmark_module(console)
-
     history = list(context.initial_history or [])
     history.append({"role": "user", "content": "Beginning interactive session. What is the plan?"})
-
     _setup_and_run_session(
         context=context,
         history=history,
@@ -533,7 +528,7 @@ def run_auto(
     sandbox: str = typer.Option(None, "--sandbox", help="Sandbox backend to use: 'docker' or 'singularity'."),
     force_refresh: bool = typer.Option(False, "--force-refresh", help="Force refresh/rebuild of the sandbox environment."),
     compress_memory: bool = typer.Option(False, "--compress-memory", help="Enable episodic summarization to manage long-term context."),
-    # auto-specific options
+    output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Directory to save ALL outputs (files and logs) non-interactively.", file_okay=False, writable=True, resolve_path=True),
     prompt: Optional[str] = typer.Option(None, "--prompt", "-p", help="Initial prompt for the auto run."),
     turns: Optional[int] = typer.Option(None, "--turns", "-t", help="Number of turns to run automatically."),
     benchmark_module: Optional[Path] = typer.Option(None, "--benchmark-module", "-bm", help="Path to the auto metric script.", readable=True, exists=True),
@@ -553,20 +548,26 @@ def run_auto(
     initialize_context(context, **merged)
 
     console = context.console
-
-    if prompt is None:
-        prompt = Prompt.ask("Enter the initial prompt for the automated run", default="Analyze this dataset.")
-
-    if turns is None:
-        turns = IntPrompt.ask("Enter the number of turns for the automated run", default=3)
-
-    if benchmark_module is None:
-        benchmark_module = _prompt_for_benchmark_module(console)
+    
+    if context.output_dir is None:
+        if prompt is None:
+            prompt = Prompt.ask("Enter the initial prompt", default="Analyze this dataset.")
+        if turns is None:
+            turns = IntPrompt.ask("Enter the number of turns", default=3)
+        if benchmark_module is None:
+            benchmark_module = _prompt_for_benchmark_module(console)
+    else: # If output_dir IS set, require prompt and turns via flags
+        if prompt is None:
+            console.print("[bold red]Error: --prompt is required when using --output-dir for automated runs.[/bold red]")
+            raise typer.Exit(1)
+        if turns is None:
+            turns = 3 # Default turns if not specified in pure auto mode
+            console.print(f"[yellow]--turns not specified, defaulting to {turns}.[/yellow]")
 
     console.print(f"\n[bold green]🚀 Starting Automated Mode for {turns} turns...[/bold green]")
 
     history = list(context.initial_history or [])
-    history.append({"role": "user", "content": prompt})
+    history.append({"role": "user", "content": str(prompt)})
 
     _setup_and_run_session(
         context=context,

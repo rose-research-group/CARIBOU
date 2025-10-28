@@ -37,19 +37,31 @@ class SandboxManager:
 
 # --- Constants and Path Setup ---
 _DELEG_RE = re.compile(r"delegate_to_([A-Za-z0-9_]+)")
-_OUTPUTS_DIR = CARIBOU_HOME / "runs"
-_SNIPPET_DIR = _OUTPUTS_DIR / "snippets"
-_LEDGER_PATH = _OUTPUTS_DIR / f"benchmark_history_{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.jsonl"
 _RAG_RE = re.compile(r"query_rag_<([^>]+)>")
-RAG = RetrievalAugmentedGeneration()
 
+# Default output directories if --output-dir is NOT specified
+_DEFAULT_RUNS_DIR = CARIBOU_HOME / "runs"
+_DEFAULT_SNIPPET_DIR = _DEFAULT_RUNS_DIR / "snippets"
+_DEFAULT_BENCHMARK_LEDGER_PATH = _DEFAULT_RUNS_DIR / f"benchmark_history_{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.jsonl"
 
-def _init_paths():
+# --- Lazily initialize RAG ---
+_RAG_SINGLETON = None
+def get_rag_client(console: Console) -> RetrievalAugmentedGeneration:
+    global _RAG_SINGLETON
+    if _RAG_SINGLETON is None:
+        console.print("[cyan]Initializing RAG model (this may take a moment)...[/cyan]")
+        _RAG_SINGLETON = RetrievalAugmentedGeneration()
+    return _RAG_SINGLETON
+
+def _init_paths(output_dir: Optional[Path] = None):
     """Ensure output directories exist before writing."""
-    _SNIPPET_DIR.mkdir(exist_ok=True, parents=True)
-    _LEDGER_PATH.parent.mkdir(exist_ok=True, parents=True)
+    snippet_dir = output_dir / "snippets" if output_dir else _DEFAULT_SNIPPET_DIR
+    ledger_path = output_dir / "benchmark_results.jsonl" if output_dir else _DEFAULT_BENCHMARK_LEDGER_PATH
+    
+    snippet_dir.mkdir(exist_ok=True, parents=True)
+    ledger_path.parent.mkdir(exist_ok=True, parents=True)
 
-# --- Helper Functions (from original script) ---
+# --- Helper Functions ---
 def detect_delegation(msg: str) -> Optional[str]:
     """Return the *full* command name (e.g. 'delegate_to_coder') if present."""
     m = _DELEG_RE.search(msg)
@@ -58,16 +70,21 @@ def detect_delegation(msg: str) -> Optional[str]:
 def detect_rag(msg: str) -> Optional[str]:
     """Return the *partial* RAG command if present."""
     m = _RAG_RE.search(msg)
-    return f"{m.group(1)}" if m else None
+    return m.group(1) if m else None
 
-def _dump_code_snippet(run_id: str, code: str) -> str:
-    """Write <run_id>.py under outputs/snippets/ and return the relative path."""
-    snippet_path = _SNIPPET_DIR / f"{run_id}.py"
+def _dump_code_snippet(run_id: str, code: str, output_dir: Optional[Path] = None) -> str:
+    """Write <run_id>.py under the appropriate snippets dir and return the relative path."""
+    base_output_dir = output_dir if output_dir else _DEFAULT_RUNS_DIR
+    snippet_dir = base_output_dir / "snippets"
+    snippet_dir.mkdir(exist_ok=True, parents=True) # Ensure it exists
+    
+    snippet_path = snippet_dir / f"{run_id}.py"
     snippet_path.write_text(code, encoding="utf-8")
-    return str(snippet_path.relative_to(_OUTPUTS_DIR))
+    # Return path relative to the main output directory for consistency in the log
+    return str(snippet_path.relative_to(base_output_dir))
 
-def _save_benchmark_record(*, run_id: str, results: dict, meta: dict, code: str | None):
-    """Append a JSONL record for the benchmark run."""
+def _save_benchmark_record(*, run_id: str, results: dict, meta: dict, code: str | None, output_dir: Optional[Path] = None):
+    """Append a JSONL record for the benchmark run to the correct ledger file."""
     record = {
         "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "run": run_id,
@@ -75,11 +92,14 @@ def _save_benchmark_record(*, run_id: str, results: dict, meta: dict, code: str 
         "results": results,
     }
     if code:
-        record["code_path"] = _dump_code_snippet(run_id, code)
-    with _LEDGER_PATH.open("a") as fh:
+        record["code_path"] = _dump_code_snippet(run_id, code, output_dir)
+        
+    # Determine the correct ledger path
+    ledger_path = output_dir / "benchmark_results.jsonl" if output_dir else _DEFAULT_BENCHMARK_LEDGER_PATH
+    
+    with ledger_path.open("a") as fh:
         fh.write(json.dumps(record) + "\n")
     
-        
 # --- Core Runner Functions ---
 def run_benchmark(
     console: Console,
@@ -87,6 +107,7 @@ def run_benchmark(
     benchmark_module: Path,
     *,
     is_auto: bool,
+    output_dir: Optional[Path] = None,
     metadata: Optional[Dict] = None,
     agent_name: Optional[str] = None,
     code_snippet: Optional[str] = None,
@@ -133,6 +154,7 @@ def run_benchmark(
                     results=result_dict,
                     meta=metadata if metadata else {},
                     code=code_snippet,
+                    output_dir=output_dir,
                 )
         else:
             error_message = exec_result.get("stderr") or "An unknown error occurred."
@@ -155,17 +177,18 @@ def run_agent_session(
     llm_client: object,
     sandbox_manager: SandboxManager,
     history: List[Dict[str, str]],
-    compress_memory: bool = False,
     is_auto: bool,
+    compress_memory: bool = False,
     max_turns: int = 1,
     model_name: str = "gpt-4.1",
     benchmark_modules: Optional[List[Path]] = None,
+    output_dir: Optional[Path] = None, # <-- ADDED output_dir parameter
 ):
     """
-    Main driver for both interactive and automated agent execution sessions.
+    Main driver for agent execution sessions, passing output_dir for benchmark saving.
     """
     from rich.prompt import Prompt
-    _init_paths()
+    _init_paths(output_dir)
 
     memory_manager: Optional[MemoryManager] = None
     if compress_memory:
@@ -217,7 +240,8 @@ def run_agent_session(
         query_from_re = detect_rag(msg)
         if query_from_re and current_agent.is_rag_enabled:
             console.print(f"[yellow]🔍 Triggering RAG query: {query_from_re}[/yellow]")
-            retrieved_docs = RAG.query(query_from_re)
+            rag_client = get_rag_client(console)
+            retrieved_docs = rag_client.query(query_from_re)
             if retrieved_docs:
                 console.print(f"[green] RAG query successful. [/green]")
                 feedback = retrieved_docs
@@ -253,7 +277,7 @@ def run_agent_session(
             last_code_snippet = code
             console.print("[cyan]Executing code in sandbox…[/cyan]")
             exec_result = sandbox_manager.exec_code(code, timeout=300)
-            feedback = format_execute_response(exec_result, _OUTPUTS_DIR)
+            feedback = format_execute_response(exec_result, output_dir if output_dir else _DEFAULT_RUNS_DIR)
             if memory_manager:
                 memory_manager.add_message("system", feedback)
                 if exec_result.get("status") == "ok":
@@ -282,7 +306,8 @@ def run_agent_session(
                 if function_name:
                     function_name = function_name[0]
                     console.print(f"[yellow]🔍 Incorrect function signature detected: {function_name}, function database search...[/yellow]")
-                    retrieved_docs = RAG.retrieve_function(function_name)
+                    rag_client = get_rag_client(console)
+                    retrieved_docs = rag_client.retrieve_function(function_name)
                     if retrieved_docs:
                         console.print(f"[green] Query successful - Function signature found. [/green]")
                         feedback += f"\n {function_name} produced an error. The correct function signature for {function_name} is:\n{retrieved_docs}"
@@ -296,7 +321,7 @@ def run_agent_session(
             if benchmark_modules:
                 result_str = run_benchmark(
                     console, sandbox_manager, benchmark_modules[0],
-                    is_auto=True, metadata={"name": "auto"}, agent_name=current_agent.name, code_snippet=last_code_snippet
+                    is_auto=True, metadata={"name": "auto"}, agent_name=current_agent.name, code_snippet=last_code_snippet, output_dir=output_dir
                 )
                 if memory_manager:
                     memory_manager.add_message("system", result_str)
@@ -318,7 +343,7 @@ def run_agent_session(
                 if user_input.lower() == "benchmark":
                     if benchmark_modules:
                         for bm_module in benchmark_modules:
-                            run_benchmark(console, sandbox_manager, bm_module, is_auto=False)
+                            run_benchmark(console, sandbox_manager, bm_module, is_auto=False, output_dir=output_dir)
                         continue
                     else:
                         console.print("[yellow]No benchmark modules were specified at startup.[/yellow]")
