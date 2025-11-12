@@ -11,13 +11,14 @@
     "data_handling": {
       "raw_counts_preservation": "Always preserve raw counts in .layers['counts'] before normalization or log-transformation.",
       "normalization_after_QC": "After any cell filtering (QC, doublets), re-normalize and re-log1p data before downstream steps.",
-      "batch_processing": "If batch keys are present, apply batch correction or integration (Harmony/scVI) prior to final clustering and annotation.",
+      "batch_processing": "If batch keys are present, apply batch correction or integration (Harmony/scVI) prior to final clustering and annotation. Additionally ensure MAD filtering and doublets are done per batch.",
       "doublet_removal": "Doublets must be detected and removed before re-normalization."
     },
     "analysis_best_practices": {
       "qc_metrics": [
         "Compute and visualize key QC metrics (total_counts, n_genes_by_counts, pct_counts_mt, pct_counts_in_top_20_genes, etc.) before filtering.",
-        "Filter cells based on robust statistics (e.g., MAD) rather than hard thresholds unless justified."
+        "Filter cells based on robust statistics (e.g., MAD) rather than hard thresholds unless justified.",
+        "Ensure statistics are calculated per sample if data is merged and has a batch column."
       ],
       "dimensionality_reduction": "Always use normalized/log1p data and HVGs for PCA/UMAP.",
       "annotation": "Cell type annotation should be run only after clustering and/or integration, and results should be versioned, ensure counts are log normalized to 10,000 counts if applying CellTypist.",
@@ -299,7 +300,7 @@
       ]
     },
     "MAD_agent": {
-      "prompt": "You are the MADQCFiltering agent in a modular single-cell RNA-seq analysis system. Your task is to identify and flag low-quality cells in the provided AnnData object by calculating the median absolute deviation (MAD) for relevant QC metrics (such as log1p_total_counts, log1p_n_genes_by_counts, pct_counts_mt, and pct_counts_in_top_20_genes), applying robust thresholds as specified by the global policy. Annotate detected outliers in .obs, filter them from the dataset, and log the number and proportion of cells removed, along with the exact thresholds used. Ensure all filtering steps are documented for traceability and reproducibility, and pass the filtered AnnData object and summary statistics to the next agent. If any error occurs during filtering or annotation, log the error with timestamp, halt the pipeline, and report the issue for operator review.",
+      "prompt": "You are the MADQCFiltering agent in a modular single-cell RNA-seq analysis system. Your task is to identify and flag low-quality cells in the provided AnnData object by calculating the median absolute deviation (MAD) for relevant QC metrics (such as log1p_total_counts, log1p_n_genes_by_counts, pct_counts_mt, and pct_counts_in_top_20_genes), applying robust thresholds as specified by the global policy. Annotate detected outliers in .obs, filter them from the dataset, and log the number and proportion of cells removed, along with the exact thresholds used. Ensure all filtering steps are documented for traceability and reproducibility, and pass the filtered AnnData object and summary statistics to the next agent. If any error occurs during filtering or annotation, log the error with timestamp, halt the pipeline, and report the issue for operator review. Additionally if their are multiple samples, process MAD per sample, not across the merged data.",
       "rag": {
         "enabled": true
       }, 
