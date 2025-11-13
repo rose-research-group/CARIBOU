@@ -10,6 +10,7 @@
     },
     "data_handling": {
       "raw_counts_preservation": "Always preserve raw counts in .layers['counts'] before normalization or log-transformation.",
+      "initial_filtering": "Ensure a small filtering of atleast genes being in 3 or more cells and each cell having atleast 200 counts, do this right after loading the data and tracking the initial amount of cell x genes.", 
       "normalization_after_QC": "After any cell filtering (QC, doublets), re-normalize and re-log1p data before downstream steps.",
       "batch_processing": "If batch keys are present, apply batch correction or integration (Harmony/scVI) prior to final clustering and annotation. Additionally ensure MAD filtering and doublets are done per batch.",
       "doublet_removal": "Doublets must be detected and removed before re-normalization."
@@ -18,7 +19,9 @@
       "qc_metrics": [
         "Compute and visualize key QC metrics (total_counts, n_genes_by_counts, pct_counts_mt, pct_counts_in_top_20_genes, etc.) before filtering.",
         "Filter cells based on robust statistics (e.g., MAD) rather than hard thresholds unless justified.",
-        "Ensure statistics are calculated per sample if data is merged and has a batch column."
+        "Ensure statistics are calculated per sample if data is merged and has a batch column.",
+        "Please ensure that the MAD code is rigorously followed and only applied once. MAD should be applied to the following statistics: log1p_total_counts, log1p_n_genes_by_counts, pct_counts_in_top_20_genes, and pct_counts_mt. Only use upper for pct_counts_mt, additionally use 3 MADs for pct_counts_mt and 5 for all others unless strictly noted by user.",
+          "Ensure log1p metrics are also calculated for QC metrics."
       ],
       "dimensionality_reduction": "Always use normalized/log1p data and HVGs for PCA/UMAP.",
       "annotation": "Cell type annotation should be run only after clustering and/or integration, and results should be versioned, ensure counts are log normalized to 10,000 counts if applying CellTypist.",
@@ -127,7 +130,7 @@
       ]
     },
     "QC_metrics_agent": {
-      "prompt": "You are the QCCalculationAndPlot agent in a modular single-cell RNA-seq analysis system. Your task is to calculate standard QC metrics (such as n_genes_by_counts, total_counts, pct_counts_mt, and pct_counts_in_top_20_genes) for the provided AnnData object, using raw counts from .layers['counts'] if available. Generate informative QC plots (such as violin plots, scatter plots, and percent_top plots) to visualize these metrics and assess data quality. Log all calculations and plots, including summary statistics and any warnings about outlier distributions or missing QC data. Ensure that QC results and visualizations are available for downstream review and meet global policy requirements for transparency and traceability. Return the updated AnnData object with new QC metrics in .obs, and paths or handles to generated plots for use by the next agent. If any step fails, log the error with timestamp, halt the pipeline, and report the issue for operator review.",
+      "prompt": "You are the QCCalculationAndPlot agent in a modular single-cell RNA-seq analysis system. Your task is to calculate standard QC metrics (such as n_genes_by_counts, total_counts, pct_counts_mt, and pct_counts_in_top_20_genes) as well as  the log1p for the metrics as well for the provided AnnData object, using raw counts from .layers['counts'] if available. Generate informative QC plots (such as violin plots, scatter plots, and percent_top plots) to visualize these metrics and assess data quality. Log all calculations and plots, including summary statistics and any warnings about outlier distributions or missing QC data. Ensure that QC results and visualizations are available for downstream review and meet global policy requirements for transparency and traceability. Return the updated AnnData object with new QC metrics in .obs, and paths or handles to generated plots for use by the next agent. If any step fails, log the error with timestamp, halt the pipeline, and report the issue for operator review. Rigorously follow the code sample for determing MAD.",
       "rag": {
         "enabled": true
       },
