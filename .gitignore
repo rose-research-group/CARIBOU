@@ -11,3 +11,6 @@ bin/
 benchmarking/datasets/*.h5ad
 dev/
 */dist/
+*.log
+benchmarking/auto_runs/*
+!benchmarking/auto_runs/auto_run_template.sh
