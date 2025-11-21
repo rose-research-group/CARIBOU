@@ -1,6 +1,6 @@
 
 import time
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 from pathlib import Path
 
 import json
@@ -57,15 +57,17 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
         def __init__(self):
             self._binds: List[str] = []
             self._proc = None
+            self._host_output_path: Optional[Path] = None
 
         def set_data(self, all_resources: List[Tuple[Path, str]], host_output_path: Path):
-                    """Configures all necessary bind mounts, including the output directory."""
-                    binds = []
-                    for host_path, container_path in all_resources:
-                        binds.extend(["--bind", f"{host_path.resolve()}:{container_path}"])
-                    
-                    binds.extend(["--bind", f"{host_output_path.resolve()}:/workspace/outputs"])
-                    self._binds = binds
+            """Configures all necessary bind mounts, including the output directory."""
+            binds = []
+            for host_path, container_path in all_resources:
+                binds.extend(["--bind", f"{host_path.resolve()}:{container_path}"])
+
+            binds.extend(["--bind", f"{host_output_path.resolve()}:/workspace/outputs"])
+            self._binds = binds
+            self._host_output_path = host_output_path
 
         # ------------------------------------------------------------------
         # Container lifecycle
@@ -153,10 +155,46 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
                 except json.JSONDecodeError:
                     # Non‑JSON noise; continue reading
                     continue
-        
-        def retrieve_output_files(self, host_destination_path: Path) -> None:
-            """For Singularity, files are already on the host. This method just confirms."""
-            console.print(f"[bold green]✓ Session outputs are already saved in:[/bold green] {host_destination_path}")
+
+        # ------------------------------------------------------------------
+        # Output collection helpers
+        # ------------------------------------------------------------------
+        def list_output_files(self) -> List[Dict]:
+            """
+            For Singularity, outputs live on the host; list them if available.
+            """
+            out_dir = self._host_output_path
+            if not out_dir or not out_dir.exists():
+                return []
+            return [
+                {"name": f.name, "size": f"{f.stat().st_size / 1e6:.2f} MB"}
+                for f in out_dir.iterdir()
+                if f.is_file()
+            ]
+
+        def retrieve_output_files(self, host_destination_path: Path, file_names: Optional[List[str]] = None) -> None:
+            """
+            For Singularity, files are already on host_output_path; this confirms location
+            or copies a selected subset to another host directory if requested.
+            """
+            source_dir = self._host_output_path
+            if not source_dir or not source_dir.exists():
+                console.print("[yellow]No output directory available to retrieve from.[/yellow]")
+                return
+
+            # If the destination is the same as the source, just acknowledge
+            if host_destination_path.resolve() == source_dir.resolve():
+                console.print(f"[bold green]✓ Session outputs are already saved in:[/bold green] {host_destination_path}")
+                return
+
+            host_destination_path.mkdir(parents=True, exist_ok=True)
+            selected = file_names or [f.name for f in source_dir.iterdir() if f.is_file()]
+            for name in selected:
+                src = source_dir / name
+                if src.exists() and src.is_file():
+                    dest = host_destination_path / name
+                    dest.write_bytes(src.read_bytes())
+            console.print(f"[bold green]✓ Saved selected outputs to:[/bold green] {host_destination_path}")
 
     _BackendManager = _SingExecBackend
 

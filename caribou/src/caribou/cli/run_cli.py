@@ -188,42 +188,64 @@ def _setup_and_run_session(
         )
     finally:
         auto_save_mode = context.output_dir is not None
+        is_exec_mode = details.get("is_exec_mode")
 
+        # --- Gather output file info in a backend-agnostic way ---
+        output_files_info = []
         if hasattr(sandbox_manager, "list_output_files"):
-            output_files_info = sandbox_manager.list_output_files() if not details.get("is_exec_mode") else \
-                                [{"name": f.name, "size": f"{f.stat().st_size / 1e6:.2f} MB"} for f in host_output_path.iterdir() if f.is_file()]
+            try:
+                output_files_info = sandbox_manager.list_output_files() or []
+            except Exception as e:
+                console.print(f"[yellow]Warning: Could not list output files: {e}[/yellow]")
 
-            if output_files_info:
-                if auto_save_mode:
-                    if details.get("is_exec_mode"):
-                        console.print(f"[bold green]✓ Session outputs saved in:[/bold green] {host_output_path}")
-                    else: # Docker: retrieve files automatically
-                        files_to_copy = [f["name"] for f in output_files_info]
-                        sandbox_manager.retrieve_output_files(host_output_path, files_to_copy)
-                else: # Interactive prompting mode
-                    console.print("\n[bold]Review generated files:[/bold]")
-                    if details.get("is_exec_mode"): # Singularity
-                        if Prompt.ask(f"\nDo you want to keep the output directory and its contents?", choices=["y", "n"], default="y").lower() == 'n':
-                            shutil.rmtree(host_output_path)
-                            console.print(f"[dim]Removed temporary output directory.[/dim]")
-                        else:
-                            console.print(f"[bold green]✓ Session outputs saved in:[/bold green] {host_output_path}")
-                    else: # Docker
-                        from rich.table import Table
-                        table = Table(title="Generated Output Files")
-                        table.add_column("Index", style="cyan"); table.add_column("Filename"); table.add_column("Size", style="yellow")
-                        for i, f in enumerate(output_files_info, 1): table.add_row(str(i), f["name"], f["size"])
-                        console.print(table)
-                        if Prompt.ask("\n[bold]Do you want to save any of these files?[/bold]", choices=["y", "n"], default="y").lower() == 'y':
-                            files_to_copy = [f["name"] for f in output_files_info]
-                            sandbox_manager.retrieve_output_files(host_output_path, files_to_copy)
-                        else:
-                            console.print("Generated files will be discarded.")
-                            shutil.rmtree(host_output_path) # Clean up staging dir if Docker outputs aren't saved
+        # Fallback for exec-mode when outputs already live on host
+        if not output_files_info and is_exec_mode and host_output_path.exists():
+            output_files_info = [
+                {"name": f.name, "size": f"{f.stat().st_size / 1e6:.2f} MB"}
+                for f in host_output_path.iterdir()
+                if f.is_file()
+            ]
+
+        if output_files_info:
+            if auto_save_mode:
+                if is_exec_mode:
+                    console.print(f"[bold green]✓ Session outputs saved in:[/bold green] {host_output_path}")
+                else:
+                    files_to_copy = [f["name"] for f in output_files_info]
+                    sandbox_manager.retrieve_output_files(host_output_path, files_to_copy)
             else:
-                 console.print("\n[dim]No output files were generated.[/dim]")
-                 # Clean up the empty staging directory if nothing was produced
-                 if host_output_path.exists(): shutil.rmtree(host_output_path)
+                console.print("\n[bold]Review generated files:[/bold]")
+                from rich.table import Table
+                table = Table(title="Generated Output Files")
+                table.add_column("Index", style="cyan")
+                table.add_column("Filename")
+                table.add_column("Size", style="yellow")
+                for i, f in enumerate(output_files_info, 1):
+                    table.add_row(str(i), f.get("name", ""), f.get("size", ""))
+                console.print(table)
+
+                if is_exec_mode:
+                    keep = Prompt.ask(
+                        f"\nDo you want to keep the output directory and its contents?",
+                        choices=["y", "n"],
+                        default="y",
+                    ).lower() == "y"
+                    if not keep and not auto_save_mode:
+                        shutil.rmtree(host_output_path, ignore_errors=True)
+                        console.print(f"[dim]Removed temporary output directory.[/dim]")
+                    else:
+                        console.print(f"[bold green]✓ Session outputs saved in:[/bold green] {host_output_path}")
+                else:
+                    if Prompt.ask("\n[bold]Do you want to save these files?[/bold]", choices=["y", "n"], default="y").lower() == "y":
+                        files_to_copy = [f["name"] for f in output_files_info if "name" in f]
+                        sandbox_manager.retrieve_output_files(host_output_path, files_to_copy)
+                    else:
+                        console.print("Generated files will be discarded.")
+                        shutil.rmtree(host_output_path, ignore_errors=True)
+        else:
+            console.print("\n[dim]No output files were generated.[/dim]")
+            if host_output_path.exists() and not context.output_dir:
+                shutil.rmtree(host_output_path, ignore_errors=True)
 
         console.print("[cyan]Stopping sandbox...[/cyan]")
         sandbox_manager.stop_container()

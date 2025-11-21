@@ -4,10 +4,13 @@ import sys
 
 # --- Standard Library Imports ---
 import argparse
+import io
+import json
 import os
-import time
 import shlex
-from typing import Dict
+import tarfile
+import time
+from typing import Dict, List
 import requests
 # --- Third-Party Imports ---
 try:
@@ -271,6 +274,79 @@ class SandboxManager:
             except requests.RequestException as e:
                 console.print(f"[bold red]API request to sandbox failed: {e}[/bold red]")
                 return {"status": "error", "stdout": "", "stderr": f"Host-level request error: {e}"}
+
+    def list_output_files(self) -> List[Dict]:
+        """
+        Lists files under /workspace/outputs inside the container.
+        Returns a list of {"name": ..., "size": "... MB"} dicts.
+        """
+        container = self._find_container()
+        if not container:
+            _print_message("No running container found when listing outputs.", style="yellow")
+            return []
+
+        code = (
+            "import os, json\n"
+            "root='/workspace/outputs'\n"
+            "res=[]\n"
+            "if os.path.isdir(root):\n"
+            "    for name in os.listdir(root):\n"
+            "        p=os.path.join(root, name)\n"
+            "        if os.path.isfile(p):\n"
+            "            res.append({'name': name, 'size': os.path.getsize(p)})\n"
+            "print(json.dumps(res))\n"
+        )
+        try:
+            result = container.exec_run(["python", "-c", code])
+            if result.exit_code != 0:
+                _print_message(f"Failed to list outputs (exit {result.exit_code}).", style="yellow")
+                return []
+            output = result.output.decode("utf-8").strip()
+            files = json.loads(output or "[]")
+        except Exception as e:
+            _print_message(f"Error listing output files: {e}", style="red", is_error=True)
+            return []
+
+        formatted = []
+        for f in files:
+            try:
+                size_mb = f"{float(f.get('size', 0)) / 1e6:.2f} MB"
+                formatted.append({"name": f.get("name", ""), "size": size_mb})
+            except Exception:
+                continue
+        return formatted
+
+    def retrieve_output_files(self, host_destination_path, file_names: List[str]) -> None:
+        """
+        Copies selected files from /workspace/outputs in the container to the host directory.
+        """
+        container = self._find_container()
+        if not container:
+            _print_message("No running container found when retrieving outputs.", style="yellow")
+            return
+
+        host_destination_path = os.path.abspath(host_destination_path)
+        os.makedirs(host_destination_path, exist_ok=True)
+
+        for fname in file_names:
+            container_path = f"/workspace/outputs/{fname}"
+            try:
+                stream, _ = container.get_archive(container_path)
+                buf = io.BytesIO()
+                for chunk in stream:
+                    buf.write(chunk)
+                buf.seek(0)
+                with tarfile.open(fileobj=buf) as tar:
+                    # Extract the specific file to the destination dir
+                    safe_members = [m for m in tar.getmembers() if m.name == fname or m.name.endswith(f"/{fname}")]
+                    for member in safe_members:
+                        member.name = os.path.basename(member.name)  # Prevent path traversal
+                        tar.extract(member, path=host_destination_path)
+                _print_message(f"Saved '{fname}' to {host_destination_path}", style="green")
+            except docker.errors.NotFound:
+                _print_message(f"File not found in container: {fname}", style="yellow")
+            except Exception as e:
+                _print_message(f"Failed to copy '{fname}': {e}", style="red", is_error=True)
             
     def stop_container(self, remove=False, container_obj=None):
         """Stops the container and optionally removes it."""
