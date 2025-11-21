@@ -18,6 +18,7 @@ try:
     from caribou.core.io_helpers import display, extract_python_code, format_execute_response
     from caribou.rag.RetrievalAugmentedGeneration import RetrievalAugmentedGeneration
     from caribou.execution.MemoryManager import MemoryManager
+    from caribou.execution.ActionSpace import AgentActionSpace
 except ImportError as e:
     print(f"Failed to import a required CARIBOU module: {e}", file=sys.stderr)
     sys.exit(1)
@@ -168,6 +169,71 @@ def run_benchmark(
         console.print(f"[red]{err_msg}[/red]")
         return err_msg
 
+# --- Helpers to keep memory/history in sync ---
+def _extract_possible_actions(agent: Agent) -> List[Dict[str, str]]:
+    actions: List[Dict[str, str]] = [{"name": "continue", "detail": "Continue reasoning and generate next step."}]
+    for cmd_name, cmd in getattr(agent, "commands", {}).items():
+        detail = f"Delegate via command '{cmd_name}'"
+        target = getattr(cmd, "target_agent", None)
+        if target:
+            detail += f" to agent '{target}'"
+        actions.append({"name": cmd_name, "detail": detail})
+    return actions
+
+
+def _code_preview(code: str, max_chars: int = 200, max_lines: int = 4) -> str:
+    """Return a short, meaningful preview of a code block."""
+    lines = [ln.strip() for ln in code.splitlines() if ln.strip()]
+    snippet = "\n".join(lines[:max_lines])
+    if len(snippet) > max_chars:
+        snippet = snippet[: max_chars - 3] + "..."
+    return snippet or "(empty code block)"
+
+
+def _apply_agent_switch(
+    *,
+    new_agent_prompt: str,
+    analysis_context: str,
+    history: List[Dict[str, str]],
+    memory_manager: Optional[MemoryManager],
+    action_space: Optional[AgentActionSpace],
+    new_agent: Agent,
+) -> None:
+    """
+    Ensure both the raw history and the memory manager reflect the current agent prompt.
+    Replace the second system message and append a short reminder so identity survives summarization.
+    """
+    updated_prompt = {"role": "system", "content": new_agent_prompt + "\n\n" + analysis_context}
+
+    if len(history) >= 2 and history[1].get("role") == "system":
+        history[1] = updated_prompt
+    else:
+        history.insert(1, updated_prompt)
+
+    if memory_manager:
+        memory_manager.update_system_prompt(updated_prompt["content"])
+        reminder = {
+            "role": "system",
+            "content": "REMINDER: You are now following the above agent system prompt; stay in that role.",
+        }
+        history.append(reminder)
+        memory_manager.add_message(reminder["role"], reminder["content"])
+
+    if action_space:
+        action_space.agent_name = new_agent.name
+        action_space.set_possible_actions(_extract_possible_actions(new_agent))
+        action_space.add_action(
+            "agent_switch",
+            f"Switched to agent '{new_agent.name}' via delegation.",
+            status="ok",
+            meta={"prompt_refreshed": True},
+        )
+        summary_msg = action_space.to_message()
+        history.append({"role": "system", "content": summary_msg})
+        if memory_manager:
+            memory_manager.add_message("system", summary_msg)
+
+
 def run_agent_session(
     *,
     console: Console,
@@ -195,6 +261,13 @@ def run_agent_session(
         console.print("[bold cyan]🧠 Adaptive context memory is enabled.[/bold cyan]")
         memory_manager = MemoryManager(llm_client=llm_client, model_name=model_name, initial_history=history)
     
+    action_space = AgentActionSpace(driver_agent.name)
+    action_space.set_possible_actions(_extract_possible_actions(driver_agent))
+    action_init_msg = action_space.to_message()
+    history.append({"role": "system", "content": action_init_msg})
+    if memory_manager:
+        memory_manager.add_message("system", action_init_msg)
+
     # --- Display the initial context provided by the CLI ---
     for message in history:
         role = message.get("role", "unknown")
@@ -260,17 +333,19 @@ def run_agent_session(
             if new_agent:
                 routing_message = f"🔄 Routing to '{target_agent_name}' via {cmd}"
                 current_agent = new_agent
-                system_prompt = (current_agent.get_full_prompt(agent_system.global_policy) + "\n\n" + analysis_context)
+                system_prompt = current_agent.get_full_prompt(agent_system.global_policy)
                 console.print(f"[yellow]{routing_message}[/yellow]")
                 history.append({"role": "assistant", "content": f"🔄 Routing to **{target_agent_name}** (command `{cmd}`)"})
                 if memory_manager:
                     memory_manager.add_message("assistant", routing_message)
-                    memory_manager.update_system_prompt(system_prompt)
-                # We replace the last system prompt with the new one for the new agent
-                history.insert(1, {"role": "system", "content": system_prompt}) # agent prompt is second message
-                # Remove the old system prompt to avoid confusion
-                if len(history) > 2 and history[2].get("role") == "system":
-                    history.pop(2)
+                _apply_agent_switch(
+                    new_agent_prompt=system_prompt,
+                    analysis_context=analysis_context,
+                    history=history,
+                    memory_manager=memory_manager,
+                    action_space=action_space,
+                    new_agent=new_agent,
+                )
 
         code = extract_python_code(msg)
         if code:
@@ -282,6 +357,15 @@ def run_agent_session(
                 memory_manager.add_message("system", feedback)
                 if exec_result.get("status") == "ok":
                     memory_manager.add_pivotal_code(code)
+            action_space.add_action(
+                "code_execution",
+                f"Ran code block:\n{_code_preview(code)}",
+                status=exec_result.get("status"),
+            )
+            summary_msg = action_space.to_message()
+            history.append({"role": "system", "content": summary_msg})
+            if memory_manager:
+                memory_manager.add_message("system", summary_msg)
             history.append({"role": "assistant", "content": feedback})
             display(console, "code execution result", feedback)
 
