@@ -86,6 +86,7 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
                 "python",
                 "/opt/offline_kernel.py",
                 "--repl",
+                "--nv"
             ]
             self._proc = subprocess.Popen(
                 cmd,
