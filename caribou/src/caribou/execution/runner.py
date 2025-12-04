@@ -19,6 +19,7 @@ try:
     from caribou.rag.RetrievalAugmentedGeneration import RetrievalAugmentedGeneration
     from caribou.execution.MemoryManager import MemoryManager
     from caribou.execution.ActionSpace import AgentActionSpace
+    from caribou.execution.artifacts import SessionArtifacts
 except ImportError as e:
     print(f"Failed to import a required CARIBOU module: {e}", file=sys.stderr)
     sys.exit(1)
@@ -100,6 +101,64 @@ def _save_benchmark_record(*, run_id: str, results: dict, meta: dict, code: str 
     
     with ledger_path.open("a") as fh:
         fh.write(json.dumps(record) + "\n")
+
+
+def _render_todos(console: Console, todos: List[dict]) -> None:
+    """Pretty-print todo list to the console."""
+    if not todos:
+        console.print("[dim]No TODOs recorded yet.[/dim]")
+        return
+
+    table = Table(title="TODOs")
+    table.add_column("ID", style="cyan")
+    table.add_column("Status", style="magenta")
+    table.add_column("Text")
+    table.add_column("Added By", style="green")
+    table.add_column("Turn", style="yellow")
+    for item in todos:
+        status = "[green]✓[/green]" if item.get("status") == "done" else "[yellow]·[/yellow]"
+        table.add_row(str(item.get("id")), status, item.get("text", ""), item.get("added_by", ""), str(item.get("turn", "")))
+    console.print(table)
+
+
+def _extract_artifacts_from_msg(msg: str) -> Tuple[List[str], List[str]]:
+    """Return (notes, todos) extracted from assistant content."""
+    notes: List[str] = []
+    todos: List[str] = []
+
+    # Code fences for bulk capture
+    fence_patterns = [
+        (r"```notes\n([\s\S]*?)```", notes),
+        (r"```todo\n([\s\S]*?)```", todos),
+        (r"```todos\n([\s\S]*?)```", todos),
+    ]
+    for pattern, bucket in fence_patterns:
+        for m in re.finditer(pattern, msg, flags=re.IGNORECASE):
+            content = m.group(1).strip()
+            if not content:
+                continue
+            lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+            for ln in lines:
+                bucket.append(ln)
+
+    for raw_line in msg.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        upper = line.upper()
+        if upper.startswith("NOTE:"):
+            notes.append(line[len("NOTE:"):].strip())
+            continue
+        if upper.startswith("TODO:"):
+            todos.append(line[len("TODO:"):].strip())
+            continue
+        if line.startswith("- [ ]"):
+            todos.append(line[len("- [ ]"):].strip())
+            continue
+        if line.startswith("- [x]") or line.startswith("- [X]"):
+            todos.append(line[len("- [x]"):].strip())
+
+    return notes, todos
     
 # --- Core Runner Functions ---
 def run_benchmark(
@@ -172,6 +231,11 @@ def run_benchmark(
 # --- Helpers to keep memory/history in sync ---
 def _extract_possible_actions(agent: Agent) -> List[Dict[str, str]]:
     actions: List[Dict[str, str]] = [{"name": "continue", "detail": "Continue reasoning and generate next step."}]
+    if getattr(agent, "is_rag_enabled", False):
+        actions.append({
+            "name": "query_rag_<topic>",
+            "detail": "Retrieve context from knowledge base for a specific topic or function (replace <topic> accordingly).",
+        })
     for cmd_name, cmd in getattr(agent, "commands", {}).items():
         detail = f"Delegate via command '{cmd_name}'"
         target = getattr(cmd, "target_agent", None)
@@ -256,6 +320,10 @@ def run_agent_session(
     from rich.prompt import Prompt
     _init_paths(output_dir)
 
+    run_id = f"run_{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+    artifacts_dir = output_dir if output_dir else (_DEFAULT_RUNS_DIR / "session_notes" / run_id)
+    artifacts = SessionArtifacts(run_id=run_id, base_dir=artifacts_dir)
+
     memory_manager: Optional[MemoryManager] = None
     if compress_memory:
         console.print("[bold cyan]🧠 Adaptive context memory is enabled.[/bold cyan]")
@@ -309,6 +377,25 @@ def run_agent_session(
             memory_manager.add_message("assistant", msg)
         display(console, f"assistant ({current_agent.name})", msg)  
 
+        # --- Artifact extraction (notes, TODOs) ---
+        extracted_notes, extracted_todos = _extract_artifacts_from_msg(msg)
+        if extracted_notes:
+            for note in extracted_notes:
+                artifacts.add_note(note, current_agent.name, turn)
+                note_msg = f"Captured note (turn {turn}, agent {current_agent.name}): {note}"
+                history.append({"role": "system", "content": note_msg})
+                if memory_manager:
+                    memory_manager.add_message("system", note_msg)
+            action_space.add_action("note_logged", f"Logged {len(extracted_notes)} note(s).", status="ok")
+        if extracted_todos:
+            for todo_text in extracted_todos:
+                item = artifacts.add_todo(todo_text, current_agent.name, turn)
+                todo_msg = f"TODO added (#{item.id}) by {current_agent.name}: {item.text}"
+                history.append({"role": "system", "content": todo_msg})
+                if memory_manager:
+                    memory_manager.add_message("system", todo_msg)
+            action_space.add_action("todo_logged", f"Logged {len(extracted_todos)} TODO(s).", status="ok")
+
         # --- RAG handling ---
         query_from_re = detect_rag(msg)
         if query_from_re and current_agent.is_rag_enabled:
@@ -333,7 +420,8 @@ def run_agent_session(
             if new_agent:
                 routing_message = f"🔄 Routing to '{target_agent_name}' via {cmd}"
                 current_agent = new_agent
-                system_prompt = current_agent.get_full_prompt(agent_system.global_policy)
+                # Global policy lives in the pinned first system message; skip re-embedding here.
+                system_prompt = current_agent.get_full_prompt(None)
                 console.print(f"[yellow]{routing_message}[/yellow]")
                 history.append({"role": "assistant", "content": f"🔄 Routing to **{target_agent_name}** (command `{cmd}`)"})
                 if memory_manager:
@@ -423,6 +511,51 @@ def run_agent_session(
                 if user_input.lower() in {"exit", "quit"}:
                     console.print("[bold yellow]Exiting session.[/bold yellow]")
                     return
+
+                # --- Quick commands for TODO management ---
+                if user_input.lower().startswith("/todo"):
+                    todo_text = user_input[len("/todo"):].strip()
+                    if todo_text:
+                        item = artifacts.add_todo(todo_text, "user", turn)
+                        msg = f"TODO added (#{item.id}) by user: {item.text}"
+                        history.append({"role": "system", "content": msg})
+                        if memory_manager:
+                            memory_manager.add_message("system", msg)
+                        console.print(f"[green]Added TODO #[/green]{item.id}: {item.text}")
+                    else:
+                        console.print("[yellow]Usage: /todo <task>[/yellow]")
+                    continue
+
+                if user_input.lower().startswith("/done"):
+                    parts = user_input.split()
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        todo_id = int(parts[1])
+                        item = artifacts.complete_todo(todo_id)
+                        if item:
+                            msg = f"TODO completed (#{item.id}) by user"
+                            history.append({"role": "system", "content": msg})
+                            if memory_manager:
+                                memory_manager.add_message("system", msg)
+                            console.print(f"[green]Marked TODO #[/green]{todo_id} as done")
+                        else:
+                            console.print(f"[yellow]No TODO found with id {todo_id}[/yellow]")
+                    else:
+                        console.print("[yellow]Usage: /done <id>[/yellow]")
+                    continue
+
+                if user_input.lower() in {"/todos", "todos"}:
+                    todo_items = [
+                        {
+                            "id": t.id,
+                            "text": t.text,
+                            "status": t.status,
+                            "added_by": t.added_by,
+                            "turn": t.turn,
+                        }
+                        for t in artifacts.list_todos()
+                    ]
+                    _render_todos(console, todo_items)
+                    continue
 
                 if user_input.lower() == "benchmark":
                     if benchmark_modules:

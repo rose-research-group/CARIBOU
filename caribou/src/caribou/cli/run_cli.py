@@ -401,7 +401,8 @@ def initialize_context(
     context.analysis_context = textwrap.dedent(analysis_context_str)
     
     driver = context.agent_system.get_agent(context.driver_agent_name)
-    system_prompt = (driver.get_full_prompt(context.agent_system.global_policy) + "\n\n" + context.analysis_context)
+    # Global policy is already provided as a separate system message; avoid duplicating it in the agent prompt.
+    system_prompt = (driver.get_full_prompt(None) + "\n\n" + context.analysis_context)
     context.initial_history = [
         {"role": "system", "content": f"**GLOBAL POLICY**: {context.agent_system.global_policy}\n"},
         {"role": "system", "content": system_prompt},
