@@ -60,6 +60,12 @@ class Agent:
                 "\n\n**You can only delegate to one agent at a time. "
                 "Never wrap delegation or RAG calls in backticks as if they are code.**"
             )
+
+        full_prompt += (
+            "\n\nNotes & TODOs: When you learn something important, emit a line starting with `NOTE:`. "
+            "When you decide an action item, emit `TODO:` or a checklist item `- [ ] task`. "
+            "Mark completed items with `- [x] task`. These will be persisted automatically."
+        )
             
         if self.code_samples:
             full_prompt += "\n\n  - Code Samples Available for Reference and Adapation (MUST BE REWRITTEN TO BE USED):"
