@@ -81,6 +81,7 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
             cmd = [
                 SING_BIN,
                 "exec",
+                "--nv",
                 "--containall",
                 "--cleanenv",
                 *self._binds,

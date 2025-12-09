@@ -62,6 +62,7 @@ class AppContext:
         self.compress_memory: bool = False
         self.output_dir: Optional[Path] = None
         self.parent_params: Dict[str, Any] = {}
+        self.make_report: bool = False
 
 # --------------------------------------------------------------------------------------
 # Prompt Helpers
@@ -185,6 +186,7 @@ def _setup_and_run_session(
             model_name=cast(str, context.model_name),
             compress_memory=context.compress_memory,
             output_dir=host_output_path if context.output_dir else None,
+            make_report=context.make_report,
         )
     finally:
         auto_save_mode = context.output_dir is not None
@@ -292,6 +294,7 @@ def initialize_context(
     force_refresh: bool,
     compress_memory: bool,
     output_dir: Optional[Path], # <-- ADDED
+    make_report: bool,
 ) -> None:
     """
     Build out the AppContext with all shared resources and configuration.
@@ -308,6 +311,7 @@ def initialize_context(
     console = context.console
     context.compress_memory = compress_memory
     context.output_dir = output_dir # <-- Store output dir
+    context.make_report = bool(make_report)
 
     # ---- Agent System Blueprint ----
     if blueprint is None:
@@ -421,7 +425,7 @@ def _merge(parent: Dict[str, Any], **child: Any) -> Dict[str, Any]:
                 if k not in parent or parent[k] is False:
                     merged[k] = v
             else:
-                 merged[k] = v
+                merged[k] = v
     return merged
 
 def _extract_common_kwargs(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -429,11 +433,12 @@ def _extract_common_kwargs(params: Dict[str, Any]) -> Dict[str, Any]:
     keys = [
         "blueprint", "driver_agent", "dataset", "reference_dataset",
         "resources_dir", "llm_backend", "ollama_host", "sandbox",
-        "force_refresh", "compress_memory", "output_dir", # <-- ADDED
+        "force_refresh", "compress_memory", "output_dir", "make_report", # <-- ADDED
     ]
     out = {k: params.get(k, None) for k in keys}
     out["force_refresh"] = bool(out.get("force_refresh", False))
     out["compress_memory"] = bool(out.get("compress_memory", False))
+    out["make_report"] = bool(out.get("make_report", False))
     if out.get("ollama_host") is None: out["ollama_host"] = "http://localhost:11434"
     return out
 
@@ -455,6 +460,7 @@ def main_run_callback(
     force_refresh: bool = typer.Option(False, "--force-refresh", help="Force refresh/rebuild of the sandbox environment."),
     compress_memory: bool = typer.Option(False, "--compress-memory", help="Enable episodic summarization to manage long-term context."),
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Directory to save ALL outputs (files and logs) non-interactively.", file_okay=False, writable=True, resolve_path=True),
+    make_report: bool = typer.Option(False, "--make-report", help="Save a session report with runtime statistics."),
 ) -> None:
     """
     Captures top-level flags and defaults to interactive mode if no subcommand.
@@ -509,6 +515,7 @@ def run_interactive(
     force_refresh: bool = typer.Option(False, "--force-refresh", help="Force refresh/rebuild of the sandbox environment."),
     compress_memory: bool = typer.Option(False, "--compress-memory", help="Enable episodic summarization to manage long-term context."),
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Directory to save ALL outputs (files and logs) non-interactively.", file_okay=False, writable=True, resolve_path=True),
+    make_report: bool = typer.Option(False, "--make-report", help="Save a session report with runtime statistics."),
 ) -> None:
     """
     Run the agent system in a manual, interactive chat session.
@@ -555,6 +562,7 @@ def run_auto(
     prompt: Optional[str] = typer.Option(None, "--prompt", "-p", help="Initial prompt for the auto run."),
     turns: Optional[int] = typer.Option(None, "--turns", "-t", help="Number of turns to run automatically."),
     benchmark_module: Optional[Path] = typer.Option(None, "--benchmark-module", "-bm", help="Path to the auto metric script.", readable=True, exists=True),
+    make_report: bool = typer.Option(False, "--make-report", help="Save a session report with runtime statistics."),
 ) -> None:
     """
     Run the agent system automatically for a set number of turns.

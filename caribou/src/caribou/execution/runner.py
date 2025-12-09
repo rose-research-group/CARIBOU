@@ -45,6 +45,7 @@ _RAG_RE = re.compile(r"query_rag_<([^>]+)>")
 _DEFAULT_RUNS_DIR = CARIBOU_HOME / "runs"
 _DEFAULT_SNIPPET_DIR = _DEFAULT_RUNS_DIR / "snippets"
 _DEFAULT_BENCHMARK_LEDGER_PATH = _DEFAULT_RUNS_DIR / f"benchmark_history_{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.jsonl"
+_CODE_BLOCK_RE = re.compile(r"```(?:python)?[ \t]*\n[\s\S]*?\n```", re.MULTILINE)
 
 # --- Lazily initialize RAG ---
 _RAG_SINGLETON = None
@@ -102,7 +103,6 @@ def _save_benchmark_record(*, run_id: str, results: dict, meta: dict, code: str 
     with ledger_path.open("a") as fh:
         fh.write(json.dumps(record) + "\n")
 
-
 def _render_todos(console: Console, todos: List[dict]) -> None:
     """Pretty-print todo list to the console."""
     if not todos:
@@ -159,6 +159,30 @@ def _extract_artifacts_from_msg(msg: str) -> Tuple[List[str], List[str]]:
             todos.append(line[len("- [x]"):].strip())
 
     return notes, todos
+
+def _count_code_blocks(msg: str) -> int:
+    """Count fenced code blocks in an assistant message."""
+    if not msg:
+        return 0
+    return len(_CODE_BLOCK_RE.findall(msg))
+
+def _write_session_report(
+    console: Console,
+    *,
+    output_dir: Optional[Path],
+    stats: Dict[str, object],
+) -> Optional[Path]:
+    """Persist session statistics to disk."""
+    report_dir = output_dir if output_dir else (_DEFAULT_RUNS_DIR / "reports")
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / f"session_report_{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.json"
+    try:
+        report_path.write_text(json.dumps(stats, indent=2))
+        console.print(f"[bold green]✓ Session report saved to:[/bold green] {report_path}")
+        return report_path
+    except Exception as exc:
+        console.print(f"[yellow]Warning: Failed to write session report: {exc}[/yellow]")
+        return None
     
 # --- Core Runner Functions ---
 def run_benchmark(
@@ -313,6 +337,7 @@ def run_agent_session(
     model_name: str = "gpt-4.1",
     benchmark_modules: Optional[List[Path]] = None,
     output_dir: Optional[Path] = None, # <-- ADDED output_dir parameter
+    make_report: bool = False,
 ):
     """
     Main driver for agent execution sessions, passing output_dir for benchmark saving.
@@ -344,16 +369,20 @@ def run_agent_session(
             display(console, role, content)
             
     current_agent = driver_agent
-    turn = 0
+    turns_completed = 0
+    code_block_count = 0
+    session_start_ts = datetime.utcnow()
+    session_start_time = time.time()
+    session_end_reason = "completed"
     last_code_snippet: str | None = None
 
     
     while True:
-        turn += 1
-        if is_auto and turn > max_turns:
+        if is_auto and turns_completed >= max_turns:
             console.print("[bold green]Auto run finished: Max turns reached.[/bold green]")
+            session_end_reason = "max_turns_reached"
             break
-
+        turn = turns_completed + 1
         console.print(f"\n[bold]LLM call (turn {turn})…[/bold]")
         
         if memory_manager:
@@ -370,12 +399,18 @@ def run_agent_session(
             msg = resp.choices[0].message.content
         except Exception as e:
             console.print(f"[red]LLM API error: {e}[/red]")
+            session_end_reason = "llm_error"
             break
         
         history.append({"role": "assistant", "content": msg})
         if memory_manager:
             memory_manager.add_message("assistant", msg)
         display(console, f"assistant ({current_agent.name})", msg)  
+        turns_completed += 1
+
+        blocks_found = _count_code_blocks(msg)
+        if blocks_found:
+            code_block_count += blocks_found
 
         # --- Artifact extraction (notes, TODOs) ---
         extracted_notes, extracted_todos = _extract_artifacts_from_msg(msg)
@@ -499,76 +534,101 @@ def run_agent_session(
                     memory_manager.add_message("system", result_str)
                 history.append({"role": "system", "content": result_str})
                 display(console, "user", result_str)
-            console.print(f"[yellow]Auto-continuing... {turn}/{max_turns} turns complete.[/yellow]")
-        else:
-            while True:
-                prompt_text = "\n[bold]Next message ('benchmark' to run selected benchmark, 'exit' to quit)[/bold]"
-                try:
-                    user_input = Prompt.ask(prompt_text, default="").strip()
-                except (EOFError, KeyboardInterrupt):
-                    user_input = "exit"
+            console.print(f"[yellow]Auto-continuing... {turns_completed}/{max_turns} turns complete.[/yellow]")
+            continue
 
-                if user_input.lower() in {"exit", "quit"}:
-                    console.print("[bold yellow]Exiting session.[/bold yellow]")
-                    return
+        # Interactive mode: prompt user for next action
+        while True:
+            prompt_text = "\n[bold]Next message ('benchmark' to run selected benchmark, 'exit' to quit)[/bold]"
+            try:
+                user_input = Prompt.ask(prompt_text, default="").strip()
+            except (EOFError, KeyboardInterrupt):
+                user_input = "exit"
 
-                # --- Quick commands for TODO management ---
-                if user_input.lower().startswith("/todo"):
-                    todo_text = user_input[len("/todo"):].strip()
-                    if todo_text:
-                        item = artifacts.add_todo(todo_text, "user", turn)
-                        msg = f"TODO added (#{item.id}) by user: {item.text}"
+            if user_input.lower() in {"exit", "quit"}:
+                console.print("[bold yellow]Exiting session.[/bold yellow]")
+                session_end_reason = "user_exit"
+                break
+
+            # --- Quick commands for TODO management ---
+            if user_input.lower().startswith("/todo"):
+                todo_text = user_input[len("/todo"):].strip()
+                if todo_text:
+                    item = artifacts.add_todo(todo_text, "user", turn)
+                    msg = f"TODO added (#{item.id}) by user: {item.text}"
+                    history.append({"role": "system", "content": msg})
+                    if memory_manager:
+                        memory_manager.add_message("system", msg)
+                    console.print(f"[green]Added TODO #[/green]{item.id}: {item.text}")
+                else:
+                    console.print("[yellow]Usage: /todo <task>[/yellow]")
+                continue
+
+            if user_input.lower().startswith("/done"):
+                parts = user_input.split()
+                if len(parts) >= 2 and parts[1].isdigit():
+                    todo_id = int(parts[1])
+                    item = artifacts.complete_todo(todo_id)
+                    if item:
+                        msg = f"TODO completed (#{item.id}) by user"
                         history.append({"role": "system", "content": msg})
                         if memory_manager:
                             memory_manager.add_message("system", msg)
-                        console.print(f"[green]Added TODO #[/green]{item.id}: {item.text}")
+                        console.print(f"[green]Marked TODO #[/green]{todo_id} as done")
                     else:
-                        console.print("[yellow]Usage: /todo <task>[/yellow]")
-                    continue
+                        console.print(f"[yellow]No TODO found with id {todo_id}[/yellow]")
+                else:
+                    console.print("[yellow]Usage: /done <id>[/yellow]")
+                continue
 
-                if user_input.lower().startswith("/done"):
-                    parts = user_input.split()
-                    if len(parts) >= 2 and parts[1].isdigit():
-                        todo_id = int(parts[1])
-                        item = artifacts.complete_todo(todo_id)
-                        if item:
-                            msg = f"TODO completed (#{item.id}) by user"
-                            history.append({"role": "system", "content": msg})
-                            if memory_manager:
-                                memory_manager.add_message("system", msg)
-                            console.print(f"[green]Marked TODO #[/green]{todo_id} as done")
-                        else:
-                            console.print(f"[yellow]No TODO found with id {todo_id}[/yellow]")
-                    else:
-                        console.print("[yellow]Usage: /done <id>[/yellow]")
-                    continue
+            if user_input.lower() in {"/todos", "todos"}:
+                todo_items = [
+                    {
+                        "id": t.id,
+                        "text": t.text,
+                        "status": t.status,
+                        "added_by": t.added_by,
+                        "turn": t.turn,
+                    }
+                    for t in artifacts.list_todos()
+                ]
+                _render_todos(console, todo_items)
+                continue
 
-                if user_input.lower() in {"/todos", "todos"}:
-                    todo_items = [
-                        {
-                            "id": t.id,
-                            "text": t.text,
-                            "status": t.status,
-                            "added_by": t.added_by,
-                            "turn": t.turn,
-                        }
-                        for t in artifacts.list_todos()
-                    ]
-                    _render_todos(console, todo_items)
+            if user_input.lower() == "benchmark":
+                if benchmark_modules:
+                    for bm_module in benchmark_modules:
+                        run_benchmark(console, sandbox_manager, bm_module, is_auto=False, output_dir=output_dir)
                     continue
+                else:
+                    console.print("[yellow]No benchmark modules were specified at startup.[/yellow]")
+                    continue
+            
+            if user_input:
+                if memory_manager:
+                    memory_manager.add_message("user", user_input)
+                history.append({"role": "user", "content": user_input})
+                display(console, "user", user_input)
+            break
 
-                if user_input.lower() == "benchmark":
-                    if benchmark_modules:
-                        for bm_module in benchmark_modules:
-                            run_benchmark(console, sandbox_manager, bm_module, is_auto=False, output_dir=output_dir)
-                        continue
-                    else:
-                        console.print("[yellow]No benchmark modules were specified at startup.[/yellow]")
-                        continue
-                
-                if user_input:
-                    if memory_manager:
-                        memory_manager.add_message("user", user_input)
-                    history.append({"role": "user", "content": user_input})
-                    display(console, "user", user_input)
-                break
+        # if we broke out of the inner prompt loop due to exit, stop the session
+        if session_end_reason == "user_exit":
+            break
+
+    session_end_ts = datetime.utcnow()
+    duration_seconds = round(time.time() - session_start_time, 2)
+
+    if make_report:
+        session_stats = {
+            "mode": "auto" if is_auto else "interactive",
+            "driver_agent": driver_agent.name,
+            "model": model_name,
+            "agent_turns": turns_completed,
+            "code_blocks_produced": code_block_count,
+            "session_start": session_start_ts.isoformat(),
+            "session_end": session_end_ts.isoformat(),
+            "duration_seconds": duration_seconds,
+            "max_turns_requested": max_turns if is_auto else None,
+            "end_reason": session_end_reason,
+        }
+        _write_session_report(console, output_dir=output_dir, stats=session_stats)
