@@ -213,11 +213,47 @@ def run_benchmark(
         console.print(f"[red]{err}[/red]")
         return err if is_auto else ""
 
-    code_to_execute = f"# --- Code from AutoMetric.py ---\n{autometric_code}\n# --- Code from {benchmark_module.name} ---\n{benchmark_code}"
     console.print("[cyan]Executing benchmark code...[/cyan]")
+
+    payload = f"""
+import json, sys, types
+try:
+    import anndata
+except ImportError:
+    anndata = None
+
+# Load AutoMetric into a module to satisfy imports inside the metric script
+_auto_mod = types.ModuleType("AutoMetric")
+sys.modules["AutoMetric"] = _auto_mod
+exec({autometric_code!r}, _auto_mod.__dict__)
+
+# Load the benchmark module code into its own module namespace
+_metric_mod = types.ModuleType("{benchmark_module.stem}")
+sys.modules["{benchmark_module.stem}"] = _metric_mod
+exec({benchmark_code!r}, _metric_mod.__dict__)
+
+# Identify the first AutoMetric subclass defined in the benchmark module
+_AM = _auto_mod.__dict__.get("AutoMetric")
+_metric_cls = None
+for _name, _obj in list(_metric_mod.__dict__.items()):
+    if _AM and isinstance(_obj, type) and issubclass(_obj, _AM):
+        _metric_cls = _obj
+        break
+
+if _metric_cls is None:
+    raise RuntimeError("No AutoMetric subclass found in benchmark module.")
+if "adata" not in globals():
+    raise RuntimeError("No adata available in the sandbox session for benchmark execution.")
+if anndata is not None and not isinstance(adata, anndata.AnnData):
+    raise RuntimeError(f"'adata' is {{type(adata)}}; expected an AnnData object.")
+
+_metric = _metric_cls()
+_results = _metric.metric(adata)
+print(json.dumps(_results))
+"""
     
     try:
-        exec_result = mgr.exec_code(code_to_execute, timeout=300)
+        exec_result = mgr.exec_code(payload, timeout=300)
 
         table = Table(title="Benchmark Results")
         table.add_column("Metric", style="cyan")

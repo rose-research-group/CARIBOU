@@ -4,6 +4,8 @@ from typing import Dict
 import anndata
 import numpy as np
 
+from AutoMetric import AutoMetric
+
 EMBED = "integration"        # The embedding key in adata.obsm
 BATCH_KEY = "batch"     # The batch key in adata.obs
 LABEL_KEY = "cell_type" # The cell type key in adata.obs
@@ -31,5 +33,3 @@ class IntegrationMetric(AutoMetric):
     
     def requirements(self) -> str:
         return f"Requires an AnnData object with '{BATCH_KEY}' and '{LABEL_KEY}' in .obs and an embedding '{EMBED}' in .obsm."
-    
-IntegrationMetric().run(adata)
