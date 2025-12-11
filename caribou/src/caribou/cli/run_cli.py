@@ -63,6 +63,7 @@ class AppContext:
         self.output_dir: Optional[Path] = None
         self.parent_params: Dict[str, Any] = {}
         self.make_report: bool = False
+        self.agent_report_memory: bool = False
 
 # --------------------------------------------------------------------------------------
 # Prompt Helpers
@@ -187,6 +188,7 @@ def _setup_and_run_session(
             compress_memory=context.compress_memory,
             output_dir=host_output_path if context.output_dir else None,
             make_report=context.make_report,
+            agent_report_memory=context.agent_report_memory,
         )
     finally:
         auto_save_mode = context.output_dir is not None
@@ -295,6 +297,7 @@ def initialize_context(
     compress_memory: bool,
     output_dir: Optional[Path], # <-- ADDED
     make_report: bool,
+    agent_report_memory: bool,
 ) -> None:
     """
     Build out the AppContext with all shared resources and configuration.
@@ -312,6 +315,7 @@ def initialize_context(
     context.compress_memory = compress_memory
     context.output_dir = output_dir # <-- Store output dir
     context.make_report = bool(make_report)
+    context.agent_report_memory = bool(agent_report_memory)
 
     # ---- Agent System Blueprint ----
     if blueprint is None:
@@ -433,12 +437,13 @@ def _extract_common_kwargs(params: Dict[str, Any]) -> Dict[str, Any]:
     keys = [
         "blueprint", "driver_agent", "dataset", "reference_dataset",
         "resources_dir", "llm_backend", "ollama_host", "sandbox",
-        "force_refresh", "compress_memory", "output_dir", "make_report", # <-- ADDED
+        "force_refresh", "compress_memory", "output_dir", "make_report", "agent_report_memory",
     ]
     out = {k: params.get(k, None) for k in keys}
     out["force_refresh"] = bool(out.get("force_refresh", False))
     out["compress_memory"] = bool(out.get("compress_memory", False))
     out["make_report"] = bool(out.get("make_report", False))
+    out["agent_report_memory"] = bool(out.get("agent_report_memory", False))
     if out.get("ollama_host") is None: out["ollama_host"] = "http://localhost:11434"
     return out
 
@@ -461,6 +466,7 @@ def main_run_callback(
     compress_memory: bool = typer.Option(False, "--compress-memory", help="Enable episodic summarization to manage long-term context."),
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Directory to save ALL outputs (files and logs) non-interactively.", file_okay=False, writable=True, resolve_path=True),
     make_report: bool = typer.Option(False, "--make-report", help="Save a session report with runtime statistics."),
+    agent_report_memory: bool = typer.Option(False, "--agent-report-memory", help="Use agent handoff reports as memory between agents instead of full transcripts."),
 ) -> None:
     """
     Captures top-level flags and defaults to interactive mode if no subcommand.
@@ -516,6 +522,7 @@ def run_interactive(
     compress_memory: bool = typer.Option(False, "--compress-memory", help="Enable episodic summarization to manage long-term context."),
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Directory to save ALL outputs (files and logs) non-interactively.", file_okay=False, writable=True, resolve_path=True),
     make_report: bool = typer.Option(False, "--make-report", help="Save a session report with runtime statistics."),
+    agent_report_memory: bool = typer.Option(False, "--agent-report-memory", help="Use agent handoff reports as memory between agents instead of full transcripts."),
 ) -> None:
     """
     Run the agent system in a manual, interactive chat session.
@@ -563,6 +570,7 @@ def run_auto(
     turns: Optional[int] = typer.Option(None, "--turns", "-t", help="Number of turns to run automatically."),
     benchmark_module: Optional[Path] = typer.Option(None, "--benchmark-module", "-bm", help="Path to the auto metric script.", readable=True, exists=True),
     make_report: bool = typer.Option(False, "--make-report", help="Save a session report with runtime statistics."),
+    agent_report_memory: bool = typer.Option(False, "--agent-report-memory", help="Use agent handoff reports as memory between agents instead of full transcripts."),
 ) -> None:
     """
     Run the agent system automatically for a set number of turns.
