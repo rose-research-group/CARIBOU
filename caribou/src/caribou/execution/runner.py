@@ -1,25 +1,40 @@
 # caribou/execution/runner.py
 from __future__ import annotations
 
-import json
 import re
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
+
 from rich.console import Console
-from rich.table import Table
+from rich.prompt import Prompt
 
 # --- Project-specific Imports ---
 try:
-    from caribou.config import CARIBOU_HOME
     from caribou.agents.AgentSystem import Agent, AgentSystem
     from caribou.core.io_helpers import display, extract_python_code, format_execute_response
-    from caribou.rag.RetrievalAugmentedGeneration import RetrievalAugmentedGeneration
     from caribou.execution.MemoryManager import MemoryManager
     from caribou.execution.ActionSpace import AgentActionSpace
     from caribou.execution.artifacts import SessionArtifacts
+    from caribou.execution.agent_management import _extract_possible_actions, _apply_agent_switch
+    from caribou.execution.benchmark_runner import run_benchmark
+    from caribou.execution.message_utils import (
+        detect_delegation,
+        detect_rag,
+        _extract_artifacts_from_msg,
+        _count_code_blocks,
+        _code_preview,
+    )
+    from caribou.execution.path_utils import _init_paths, get_default_runs_dir
+    from caribou.execution.rag_client import get_rag_client
+    from caribou.execution.report_generation import (
+        AgentReportMemory,
+        _write_session_report,
+        _generate_agent_report,
+    )
+    from caribou.execution.ui_helpers import _render_todos
 except ImportError as e:
     print(f"Failed to import a required CARIBOU module: {e}", file=sys.stderr)
     sys.exit(1)
@@ -37,291 +52,8 @@ class SandboxManager:
     def exec_code(self, code: str, timeout: int) -> dict:
         raise NotImplementedError
 
-# --- Constants and Path Setup ---
-_DELEG_RE = re.compile(r"delegate_to_([A-Za-z0-9_]+)")
-_RAG_RE = re.compile(r"query_rag_<([^>]+)>")
 
-# Default output directories if --output-dir is NOT specified
-_DEFAULT_RUNS_DIR = CARIBOU_HOME / "runs"
-_DEFAULT_SNIPPET_DIR = _DEFAULT_RUNS_DIR / "snippets"
-_DEFAULT_BENCHMARK_LEDGER_PATH = _DEFAULT_RUNS_DIR / f"benchmark_history_{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.jsonl"
-_CODE_BLOCK_RE = re.compile(r"```(?:python)?[ \t]*\n[\s\S]*?\n```", re.MULTILINE)
-
-# --- Lazily initialize RAG ---
-_RAG_SINGLETON = None
-def get_rag_client(console: Console) -> RetrievalAugmentedGeneration:
-    global _RAG_SINGLETON
-    if _RAG_SINGLETON is None:
-        console.print("[cyan]Initializing RAG model (this may take a moment)...[/cyan]")
-        _RAG_SINGLETON = RetrievalAugmentedGeneration()
-    return _RAG_SINGLETON
-
-def _init_paths(output_dir: Optional[Path] = None):
-    """Ensure output directories exist before writing."""
-    snippet_dir = output_dir / "snippets" if output_dir else _DEFAULT_SNIPPET_DIR
-    ledger_path = output_dir / "benchmark_results.jsonl" if output_dir else _DEFAULT_BENCHMARK_LEDGER_PATH
-    
-    snippet_dir.mkdir(exist_ok=True, parents=True)
-    ledger_path.parent.mkdir(exist_ok=True, parents=True)
-
-# --- Helper Functions ---
-def detect_delegation(msg: str) -> Optional[str]:
-    """Return the *full* command name (e.g. 'delegate_to_coder') if present."""
-    m = _DELEG_RE.search(msg)
-    return f"delegate_to_{m.group(1)}" if m else None
-
-def detect_rag(msg: str) -> Optional[str]:
-    """Return the *partial* RAG command if present."""
-    m = _RAG_RE.search(msg)
-    return m.group(1) if m else None
-
-def _dump_code_snippet(run_id: str, code: str, output_dir: Optional[Path] = None) -> str:
-    """Write <run_id>.py under the appropriate snippets dir and return the relative path."""
-    base_output_dir = output_dir if output_dir else _DEFAULT_RUNS_DIR
-    snippet_dir = base_output_dir / "snippets"
-    snippet_dir.mkdir(exist_ok=True, parents=True) # Ensure it exists
-    
-    snippet_path = snippet_dir / f"{run_id}.py"
-    snippet_path.write_text(code, encoding="utf-8")
-    # Return path relative to the main output directory for consistency in the log
-    return str(snippet_path.relative_to(base_output_dir))
-
-def _save_benchmark_record(*, run_id: str, results: dict, meta: dict, code: str | None, output_dir: Optional[Path] = None):
-    """Append a JSONL record for the benchmark run to the correct ledger file."""
-    record = {
-        "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        "run": run_id,
-        "dataset": meta.get("name"),
-        "results": results,
-    }
-    if code:
-        record["code_path"] = _dump_code_snippet(run_id, code, output_dir)
-        
-    # Determine the correct ledger path
-    ledger_path = output_dir / "benchmark_results.jsonl" if output_dir else _DEFAULT_BENCHMARK_LEDGER_PATH
-    
-    with ledger_path.open("a") as fh:
-        fh.write(json.dumps(record) + "\n")
-
-def _render_todos(console: Console, todos: List[dict]) -> None:
-    """Pretty-print todo list to the console."""
-    if not todos:
-        console.print("[dim]No TODOs recorded yet.[/dim]")
-        return
-
-    table = Table(title="TODOs")
-    table.add_column("ID", style="cyan")
-    table.add_column("Status", style="magenta")
-    table.add_column("Text")
-    table.add_column("Added By", style="green")
-    table.add_column("Turn", style="yellow")
-    for item in todos:
-        status = "[green]✓[/green]" if item.get("status") == "done" else "[yellow]·[/yellow]"
-        table.add_row(str(item.get("id")), status, item.get("text", ""), item.get("added_by", ""), str(item.get("turn", "")))
-    console.print(table)
-
-
-def _extract_artifacts_from_msg(msg: str) -> Tuple[List[str], List[str]]:
-    """Return (notes, todos) extracted from assistant content."""
-    notes: List[str] = []
-    todos: List[str] = []
-
-    # Code fences for bulk capture
-    fence_patterns = [
-        (r"```notes\n([\s\S]*?)```", notes),
-        (r"```todo\n([\s\S]*?)```", todos),
-        (r"```todos\n([\s\S]*?)```", todos),
-    ]
-    for pattern, bucket in fence_patterns:
-        for m in re.finditer(pattern, msg, flags=re.IGNORECASE):
-            content = m.group(1).strip()
-            if not content:
-                continue
-            lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
-            for ln in lines:
-                bucket.append(ln)
-
-    for raw_line in msg.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        upper = line.upper()
-        if upper.startswith("NOTE:"):
-            notes.append(line[len("NOTE:"):].strip())
-            continue
-        if upper.startswith("TODO:"):
-            todos.append(line[len("TODO:"):].strip())
-            continue
-        if line.startswith("- [ ]"):
-            todos.append(line[len("- [ ]"):].strip())
-            continue
-        if line.startswith("- [x]") or line.startswith("- [X]"):
-            todos.append(line[len("- [x]"):].strip())
-
-    return notes, todos
-
-def _count_code_blocks(msg: str) -> int:
-    """Count fenced code blocks in an assistant message."""
-    if not msg:
-        return 0
-    return len(_CODE_BLOCK_RE.findall(msg))
-
-def _write_session_report(
-    console: Console,
-    *,
-    output_dir: Optional[Path],
-    stats: Dict[str, object],
-) -> Optional[Path]:
-    """Persist session statistics to disk."""
-    report_dir = output_dir if output_dir else (_DEFAULT_RUNS_DIR / "reports")
-    report_dir.mkdir(parents=True, exist_ok=True)
-    report_path = report_dir / f"session_report_{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.json"
-    try:
-        report_path.write_text(json.dumps(stats, indent=2))
-        console.print(f"[bold green]✓ Session report saved to:[/bold green] {report_path}")
-        return report_path
-    except Exception as exc:
-        console.print(f"[yellow]Warning: Failed to write session report: {exc}[/yellow]")
-        return None
-    
 # --- Core Runner Functions ---
-def run_benchmark(
-    console: Console,
-    mgr: SandboxManager,
-    benchmark_module: Path,
-    *,
-    is_auto: bool,
-    output_dir: Optional[Path] = None,
-    metadata: Optional[Dict] = None,
-    agent_name: Optional[str] = None,
-    code_snippet: Optional[str] = None,
-) -> str:
-    """
-    Execute a benchmark module inside the sandbox.
-    In auto mode, saves results and returns a result string for the history.
-    In interactive mode, prints results to the console.
-    """
-    console.print(f"\n[bold cyan]Running benchmark module: {benchmark_module.name}[/bold cyan]")
-    autometric_base_path = benchmark_module.parent / "AutoMetric.py"
-    try:
-        with open(autometric_base_path, "r") as f:
-            autometric_code = f.read()
-        with open(benchmark_module, "r") as f:
-            benchmark_code = f.read()
-    except FileNotFoundError as e:
-        err = f"Benchmark module or AutoMetric.py not found: {e}"
-        console.print(f"[red]{err}[/red]")
-        return err if is_auto else ""
-
-    code_to_execute = f"# --- Code from AutoMetric.py ---\n{autometric_code}\n# --- Code from {benchmark_module.name} ---\n{benchmark_code}"
-    console.print("[cyan]Executing benchmark code...[/cyan]")
-    
-    try:
-        exec_result = mgr.exec_code(code_to_execute, timeout=300)
-
-        table = Table(title="Benchmark Results")
-        table.add_column("Metric", style="cyan")
-        table.add_column("Value", style="magenta")
-        stdout = exec_result.get("stdout", "")
-        result_dict = {}
-        try:
-            result_dict = json.loads(stdout.strip().splitlines()[-1])
-        except (json.JSONDecodeError, IndexError) as e:
-            console.print(f"[yellow]Warning: Could not parse JSON from stdout: {e}[/yellow]")
-
-        if exec_result.get("status") == "ok" and isinstance(result_dict, dict):
-            for key, value in result_dict.items():
-                table.add_row(str(key), str(value))
-            if is_auto:
-                _save_benchmark_record(
-                    run_id=f"{benchmark_module.stem}:{agent_name}:{int(time.time())}",
-                    results=result_dict,
-                    meta=metadata if metadata else {},
-                    code=code_snippet,
-                    output_dir=output_dir,
-                )
-        else:
-            error_message = exec_result.get("stderr") or "An unknown error occurred."
-            table.add_row("Error", error_message)
-        
-        console.print(table)
-        return "Benchmark results:\n" + json.dumps(result_dict)
-
-    except Exception as exc:
-        err_msg = f"Benchmark execution failed: {exc}"
-        console.print(f"[red]{err_msg}[/red]")
-        return err_msg
-
-# --- Helpers to keep memory/history in sync ---
-def _extract_possible_actions(agent: Agent) -> List[Dict[str, str]]:
-    actions: List[Dict[str, str]] = [{"name": "continue", "detail": "Continue reasoning and generate next step."}]
-    if getattr(agent, "is_rag_enabled", False):
-        actions.append({
-            "name": "query_rag_<topic>",
-            "detail": "Retrieve context from knowledge base for a specific topic or function (replace <topic> accordingly).",
-        })
-    for cmd_name, cmd in getattr(agent, "commands", {}).items():
-        detail = f"Delegate via command '{cmd_name}'"
-        target = getattr(cmd, "target_agent", None)
-        if target:
-            detail += f" to agent '{target}'"
-        actions.append({"name": cmd_name, "detail": detail})
-    return actions
-
-
-def _code_preview(code: str, max_chars: int = 200, max_lines: int = 4) -> str:
-    """Return a short, meaningful preview of a code block."""
-    lines = [ln.strip() for ln in code.splitlines() if ln.strip()]
-    snippet = "\n".join(lines[:max_lines])
-    if len(snippet) > max_chars:
-        snippet = snippet[: max_chars - 3] + "..."
-    return snippet or "(empty code block)"
-
-
-def _apply_agent_switch(
-    *,
-    new_agent_prompt: str,
-    analysis_context: str,
-    history: List[Dict[str, str]],
-    memory_manager: Optional[MemoryManager],
-    action_space: Optional[AgentActionSpace],
-    new_agent: Agent,
-) -> None:
-    """
-    Ensure both the raw history and the memory manager reflect the current agent prompt.
-    Replace the second system message and append a short reminder so identity survives summarization.
-    """
-    updated_prompt = {"role": "system", "content": new_agent_prompt + "\n\n" + analysis_context}
-
-    if len(history) >= 2 and history[1].get("role") == "system":
-        history[1] = updated_prompt
-    else:
-        history.insert(1, updated_prompt)
-
-    if memory_manager:
-        memory_manager.update_system_prompt(updated_prompt["content"])
-        reminder = {
-            "role": "system",
-            "content": "REMINDER: You are now following the above agent system prompt; stay in that role.",
-        }
-        history.append(reminder)
-        memory_manager.add_message(reminder["role"], reminder["content"])
-
-    if action_space:
-        action_space.agent_name = new_agent.name
-        action_space.set_possible_actions(_extract_possible_actions(new_agent))
-        action_space.add_action(
-            "agent_switch",
-            f"Switched to agent '{new_agent.name}' via delegation.",
-            status="ok",
-            meta={"prompt_refreshed": True},
-        )
-        summary_msg = action_space.to_message()
-        history.append({"role": "system", "content": summary_msg})
-        if memory_manager:
-            memory_manager.add_message("system", summary_msg)
-
-
 def run_agent_session(
     *,
     console: Console,
@@ -336,30 +68,45 @@ def run_agent_session(
     max_turns: int = 1,
     model_name: str = "gpt-4.1",
     benchmark_modules: Optional[List[Path]] = None,
-    output_dir: Optional[Path] = None, # <-- ADDED output_dir parameter
+    output_dir: Optional[Path] = None,
     make_report: bool = False,
+    agent_report_memory: bool = False,
 ):
     """
     Main driver for agent execution sessions, passing output_dir for benchmark saving.
     """
-    from rich.prompt import Prompt
     _init_paths(output_dir)
 
     run_id = f"run_{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
-    artifacts_dir = output_dir if output_dir else (_DEFAULT_RUNS_DIR / "session_notes" / run_id)
+    default_runs_dir = get_default_runs_dir()
+    artifacts_dir = output_dir if output_dir else (default_runs_dir / "session_notes" / run_id)
     artifacts = SessionArtifacts(run_id=run_id, base_dir=artifacts_dir)
+
+    if agent_report_memory and compress_memory:
+        console.print("[yellow]Agent report memory enabled; disabling episodic compression for this session.[/yellow]")
+        compress_memory = False
 
     memory_manager: Optional[MemoryManager] = None
     if compress_memory:
         console.print("[bold cyan]🧠 Adaptive context memory is enabled.[/bold cyan]")
         memory_manager = MemoryManager(llm_client=llm_client, model_name=model_name, initial_history=history)
-    
+
+    report_memory: Optional[AgentReportMemory] = None
+    current_agent_history_start = 0
+    if agent_report_memory:
+        base_globals = [history[0]] if history else []
+        agent_prompt_content = history[1]["content"] if len(history) > 1 else ""
+        report_memory = AgentReportMemory(base_globals, agent_prompt_content)
+        current_agent_history_start = min(len(history), 2)
+
     action_space = AgentActionSpace(driver_agent.name)
     action_space.set_possible_actions(_extract_possible_actions(driver_agent))
     action_init_msg = action_space.to_message()
     history.append({"role": "system", "content": action_init_msg})
     if memory_manager:
         memory_manager.add_message("system", action_init_msg)
+    if agent_report_memory:
+        current_agent_history_start = min(len(history), 2)
 
     # --- Display the initial context provided by the CLI ---
     for message in history:
@@ -367,7 +114,7 @@ def run_agent_session(
         content = message.get("content", "")
         if role in ["system", "user"]:
             display(console, role, content)
-            
+
     current_agent = driver_agent
     turns_completed = 0
     code_block_count = 0
@@ -376,7 +123,6 @@ def run_agent_session(
     session_end_reason = "completed"
     last_code_snippet: str | None = None
 
-    
     while True:
         if is_auto and turns_completed >= max_turns:
             console.print("[bold green]Auto run finished: Max turns reached.[/bold green]")
@@ -384,8 +130,11 @@ def run_agent_session(
             break
         turn = turns_completed + 1
         console.print(f"\n[bold]LLM call (turn {turn})…[/bold]")
-        
-        if memory_manager:
+
+        if report_memory:
+            working_history = history[current_agent_history_start:]
+            context_to_send = report_memory.build_context(working_history)
+        elif memory_manager:
             context_to_send = memory_manager.get_context()
         else:
             context_to_send = history
@@ -401,11 +150,11 @@ def run_agent_session(
             console.print(f"[red]LLM API error: {e}[/red]")
             session_end_reason = "llm_error"
             break
-        
+
         history.append({"role": "assistant", "content": msg})
         if memory_manager:
             memory_manager.add_message("assistant", msg)
-        display(console, f"assistant ({current_agent.name})", msg)  
+        display(console, f"assistant ({current_agent.name})", msg)
         turns_completed += 1
 
         blocks_found = _count_code_blocks(msg)
@@ -443,20 +192,33 @@ def run_agent_session(
                 console.print(feedback)
                 if memory_manager:
                     memory_manager.add_message("system", feedback)
-                history.append({"role": "system", "content": feedback}) 
+                history.append({"role": "system", "content": feedback})
             else:
                 console.print(f"[red] RAG query unsuccessful. [/red]")
-            
 
         cmd = detect_delegation(msg)
         if cmd and cmd in current_agent.commands:
             target_agent_name = current_agent.commands[cmd].target_agent
             new_agent = agent_system.get_agent(target_agent_name)
             if new_agent:
+                if report_memory:
+                    agent_history_slice = history[current_agent_history_start:]
+                    agent_report = _generate_agent_report(
+                        console,
+                        llm_client=llm_client,
+                        model_name=model_name,
+                        agent_name=current_agent.name,
+                        history_slice=agent_history_slice,
+                    )
+                    if agent_report:
+                        report_memory.add_report(current_agent.name, agent_report)
+                        history.append({"role": "system", "content": f"Agent report from {current_agent.name}:\n{agent_report}"})
+                    current_agent_history_start = len(history)
                 routing_message = f"🔄 Routing to '{target_agent_name}' via {cmd}"
                 current_agent = new_agent
                 # Global policy lives in the pinned first system message; skip re-embedding here.
                 system_prompt = current_agent.get_full_prompt(None)
+                prompt_with_context = system_prompt + "\n\n" + analysis_context
                 console.print(f"[yellow]{routing_message}[/yellow]")
                 history.append({"role": "assistant", "content": f"🔄 Routing to **{target_agent_name}** (command `{cmd}`)"})
                 if memory_manager:
@@ -469,13 +231,16 @@ def run_agent_session(
                     action_space=action_space,
                     new_agent=new_agent,
                 )
+                if report_memory:
+                    report_memory.update_agent_prompt(prompt_with_context)
+                    current_agent_history_start = len(history)
 
         code = extract_python_code(msg)
         if code:
             last_code_snippet = code
             console.print("[cyan]Executing code in sandbox…[/cyan]")
             exec_result = sandbox_manager.exec_code(code, timeout=300)
-            feedback = format_execute_response(exec_result, output_dir if output_dir else _DEFAULT_RUNS_DIR)
+            feedback = format_execute_response(exec_result, output_dir if output_dir else get_default_runs_dir())
             if memory_manager:
                 memory_manager.add_message("system", feedback)
                 if exec_result.get("status") == "ok":
@@ -495,21 +260,21 @@ def run_agent_session(
             stderr = exec_result.get('stderr', '')
             if stderr and current_agent.is_rag_enabled:
                 func_error_patterns = [
-                r"(\w+)\(.*\) missing \d+ required positional argument", # TypeError missing arguments
-                r"NameError: name '(\w+)' is not defined",             # NameError
-                r"AttributeError: .* has no attribute '(\w+)'",       # AttributeError
-                r"'(\w+)\(.*\) got an unexpected keyword argument"         # Unexpected keyword argument
-            ]
-                
+                    r"(\w+)\(.*\) missing \d+ required positional argument",  # TypeError missing arguments
+                    r"NameError: name '(\w+)' is not defined",  # NameError
+                    r"AttributeError: .* has no attribute '(\w+)'",  # AttributeError
+                    r"'(\w+)\(.*\) got an unexpected keyword argument"  # Unexpected keyword argument
+                ]
+
                 function_name = ""
                 retrieved_docs = ""
-                
+
                 for pat in func_error_patterns:
                     match = re.search(pat, stderr)
                     if match:
                         function_name = [g for g in match.groups() if g]
                         break
-                            
+
                 if function_name:
                     function_name = function_name[0]
                     console.print(f"[yellow]🔍 Incorrect function signature detected: {function_name}, function database search...[/yellow]")
@@ -522,13 +287,15 @@ def run_agent_session(
                         continue
                     else:
                         print(f"Error Query unsuccessful - Function signature does not exist in the current database.")
-                 
 
         if is_auto:
             if benchmark_modules:
+                # Determine output_dir for benchmark
+                bench_output_dir = output_dir if output_dir else get_default_runs_dir()
                 result_str = run_benchmark(
                     console, sandbox_manager, benchmark_modules[0],
-                    is_auto=True, metadata={"name": "auto"}, agent_name=current_agent.name, code_snippet=last_code_snippet, output_dir=output_dir
+                    is_auto=True, metadata={"name": "auto"}, agent_name=current_agent.name,
+                    code_snippet=last_code_snippet, output_dir=bench_output_dir
                 )
                 if memory_manager:
                     memory_manager.add_message("system", result_str)
@@ -597,13 +364,14 @@ def run_agent_session(
 
             if user_input.lower() == "benchmark":
                 if benchmark_modules:
+                    bench_output_dir = output_dir if output_dir else get_default_runs_dir()
                     for bm_module in benchmark_modules:
-                        run_benchmark(console, sandbox_manager, bm_module, is_auto=False, output_dir=output_dir)
+                        run_benchmark(console, sandbox_manager, bm_module, is_auto=False, output_dir=bench_output_dir)
                     continue
                 else:
                     console.print("[yellow]No benchmark modules were specified at startup.[/yellow]")
                     continue
-            
+
             if user_input:
                 if memory_manager:
                     memory_manager.add_message("user", user_input)
@@ -631,4 +399,5 @@ def run_agent_session(
             "max_turns_requested": max_turns if is_auto else None,
             "end_reason": session_end_reason,
         }
-        _write_session_report(console, output_dir=output_dir, stats=session_stats)
+        report_output_dir = output_dir if output_dir else get_default_runs_dir()
+        _write_session_report(console, output_dir=report_output_dir, stats=session_stats)

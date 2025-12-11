@@ -1,5 +1,4 @@
-# Don't import AutomMetric
-# from AutoMetric import AutoMetric
+from AutoMetric import AutoMetric
 import scanpy as sc
 import celltypist
 from celltypist import models
@@ -29,5 +28,3 @@ class CellTypingMetric(AutoMetric):
     
     def requirements(self) -> str:
         return "Requires an AnnData object with 'batch' and 'majority_voting' in .obs and PCA embeddings in .obsm."
-
-CellTypingMetric().run(adata)
