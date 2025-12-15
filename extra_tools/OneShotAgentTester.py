@@ -505,9 +505,9 @@ While you can generate plots, please prioritize investigating via text as you do
             response_data = None # To store API response for saving
             try:
                 response = openai_client.chat.completions.create(
-                    model="gpt-4o", # Or your preferred model
+                    model="gpt-5.2", 
                     messages=conversation_history,
-                    temperature=0.7,
+                    temperature=0,
                 )
                 assistant_message = response.choices[0].message
                 assistant_content = assistant_message.content

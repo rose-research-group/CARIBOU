@@ -66,7 +66,7 @@ def run_agent_session(
     is_auto: bool,
     compress_memory: bool = False,
     max_turns: int = 1,
-    model_name: str = "gpt-4.1",
+    model_name: str = "gpt-5.2",
     benchmark_modules: Optional[List[Path]] = None,
     output_dir: Optional[Path] = None,
     make_report: bool = False,
@@ -143,7 +143,7 @@ def run_agent_session(
             resp = llm_client.chat.completions.create(
                 model=model_name,
                 messages=context_to_send,
-                temperature=0.7,
+                temperature=0.0,
             )
             msg = resp.choices[0].message.content
         except Exception as e:

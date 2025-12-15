@@ -115,7 +115,7 @@ class MemoryManager:
                     {"role": "system", "content": summary_prompt},
                     {"role": "user", "content": json.dumps(chunk_to_summarize)},
                 ],
-                temperature=0.2,
+                temperature=0.0,
             )
             summary_text = response.choices[0].message.content
             self._summarized_log.append(

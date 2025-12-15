@@ -178,7 +178,7 @@ def run_interactive(prompt: str, dataset: Path, metadata: dict, resources: List[
         console.print(f"\n[bold]OpenAI call (turn {turn})…[/bold]")
         try:
             rsp = openai.chat.completions.create(
-                model="gpt-4o", messages=history, temperature=0.7
+                model="gpt-5.2", messages=history, temperature=0
             )
         except APIError as e:
             console.print(f"[red]OpenAI error: {e}[/red]")

@@ -58,7 +58,7 @@ ENV_FILE = SCRIPT_DIR / ".env"
 # --- Configuration Loading ---
 load_dotenv(dotenv_path=ENV_FILE)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = "gpt-4o" # Or your preferred model for evaluation
+OPENAI_MODEL = "gpt-5.2" # Or your preferred model for evaluation
 
 if not OPENAI_API_KEY:
     if console: console.print(f"[bold red]Error:[/bold red] OPENAI_API_KEY not found in {ENV_FILE}.")
