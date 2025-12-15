@@ -124,9 +124,9 @@ STATUS_ENDPOINT = f"{API_BASE_URL}/status"
 load_dotenv(dotenv_path=ENV_FILE)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # Define models for different roles
-AGENT_MODEL = "gpt-4o" # Model for the agent being tested
-EVALUATOR_MODEL = "gpt-4o" # Model for evaluating the agent's performance
-EVOLVER_MODEL = "gpt-4o" # Model for evolving the prompt
+AGENT_MODEL = "gpt-5.2" # Model for the agent being tested
+EVALUATOR_MODEL = "gpt-5.2" # Model for evaluating the agent's performance
+EVOLVER_MODEL = "gpt-5.2" # Model for evolving the prompt
 
 if not OPENAI_API_KEY:
     if console: console.print(f"[bold red]Error:[/bold red] OPENAI_API_KEY not found in {ENV_FILE}.")

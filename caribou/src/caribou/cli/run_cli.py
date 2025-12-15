@@ -379,7 +379,7 @@ def initialize_context(
             console.print("[bold red]Error: OPENAI_API_KEY not set. Use 'caribou config set-openai-key'.[/bold red]")
             raise typer.Exit(1)
         context.llm_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        context.model_name = "gpt-4o"
+        context.model_name = "gpt-5.2"
 
     elif llm_backend == "deepseek":
         if not os.getenv("DEEPSEEK_API_KEY"):
