@@ -138,11 +138,18 @@ def run_agent_session(
             context_to_send = memory_manager.get_context()
         else:
             context_to_send = history
+        # Claude requires that assistant messages don't end with trailing whitespace
+        cleaned_context = []
+        for msg in context_to_send:
+            cleaned_msg = msg.copy()
+            if "content" in cleaned_msg and isinstance(cleaned_msg["content"], str):
+                cleaned_msg["content"] = cleaned_msg["content"].rstrip()
+            cleaned_context.append(cleaned_msg)
 
         try:
             resp = llm_client.chat.completions.create(
                 model=model_name,
-                messages=context_to_send,
+                messages=cleaned_context,
                 temperature=0.0,
             )
             msg = resp.choices[0].message.content
@@ -301,6 +308,13 @@ def run_agent_session(
                     memory_manager.add_message("system", result_str)
                 history.append({"role": "system", "content": result_str})
                 display(console, "user", result_str)
+
+            # Add a user message to continue the conversation in auto mode
+            auto_continue_msg = "Please continue with the next step."
+            history.append({"role": "user", "content": auto_continue_msg})
+            if memory_manager:
+                memory_manager.add_message("user", auto_continue_msg)
+
             console.print(f"[yellow]Auto-continuing... {turns_completed}/{max_turns} turns complete.[/yellow]")
             continue
 

@@ -105,7 +105,8 @@ exec({benchmark_code!r}, _metric_mod.__dict__)
 _AM = _auto_mod.__dict__.get("AutoMetric")
 _metric_cls = None
 for _name, _obj in list(_metric_mod.__dict__.items()):
-    if _AM and isinstance(_obj, type) and issubclass(_obj, _AM):
+    # Skip the AutoMetric base class itself, only find concrete subclasses
+    if _AM and isinstance(_obj, type) and issubclass(_obj, _AM) and _obj is not _AM:
         _metric_cls = _obj
         break
 
