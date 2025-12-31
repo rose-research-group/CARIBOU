@@ -5,6 +5,10 @@ numpy
 docker
 dotenv
 openai
+anthropic
 jupyter_client
 nbformat
 sentence_transformers
+pytest>=7.0.0
+pytest-cov>=4.0.0
+requests

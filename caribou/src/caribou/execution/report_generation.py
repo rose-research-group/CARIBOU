@@ -40,6 +40,12 @@ class AgentReportMemory:
             context.append({"role": "system", "content": self._agent_prompt})
         context.extend(self._agent_reports)
         context.extend(working_history)
+
+        # Anthropic API requires at least one non-system message
+        has_non_system = any(msg.get("role") in ("user", "assistant") for msg in context)
+        if not has_non_system:
+            context.append({"role": "user", "content": "Continue with the next step."})
+
         return context
 
 

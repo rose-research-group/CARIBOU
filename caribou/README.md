@@ -51,7 +51,7 @@ This guide will walk you through setting up your API key, downloading a dataset,
 
 ### Step 1: Configure Your API Key
 
-First, tell CARIBOU about your OpenAI or DeepSeek API key. This is a one-time setup.
+First, tell CARIBOU about your OpenAI, Anthropic (Claude), or DeepSeek API key. This is a one-time setup.
 
 ```bash
 caribou config set-openai-key "sk-YourSecretKeyGoesHere"
@@ -61,6 +61,12 @@ or
   
 ```bash
 caribou config set-deepseek-key "sk-YourSecretKeyGoesHere"
+```
+
+or
+  
+```bash
+caribou config set-anthropic-key "sk-ant-YourSecretKeyGoesHere"
 ```
 
 
@@ -91,7 +97,7 @@ This will trigger a series of prompts:
 2.  **Select a driver agent:** Choose which agent in the system will receive the first instruction.
 3.  **Select Dataset:** Pick the dataset you downloaded in Step 2.
 4.  **Choose a sandbox backend:** Select `docker` or `singularity`.
-5.  **Choose an LLM backend:** Select `chatgpt` or `ollama`.
+5.  **Choose an LLM backend:** Select `chatgpt`, `claude`, `deepseek`, or `ollama`.
 
 After configuration, the session will begin, and you can start giving instructions to your agent team\!
 
@@ -160,6 +166,10 @@ Manage your CARIBOU configuration.
   * **Set your DeepSeek API key:**
     ```bash
     caribou config set-deepseek-key "sk-..."
+    ```
+  * **Set your Anthropic API key:**
+    ```bash
+    caribou config set-anthropic-key "sk-ant-..."
     ```
 
 -----
