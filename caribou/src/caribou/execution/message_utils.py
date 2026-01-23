@@ -16,6 +16,7 @@ from typing import List, Optional, Tuple
 # --- Regex Patterns ---
 _DELEG_RE = re.compile(r"delegate_to_([A-Za-z0-9_]+)")
 _RAG_RE = re.compile(r"query_rag_<([^>]+)>")
+_END_SESSION_RE = re.compile(r"^\s*end_session\s*$", re.MULTILINE)
 _CODE_BLOCK_RE = re.compile(r"```(?:python)?[ \t]*\n[\s\S]*?\n```", re.MULTILINE)
 
 
@@ -29,6 +30,13 @@ def detect_rag(msg: str) -> Optional[str]:
     """Return the *partial* RAG command if present."""
     m = _RAG_RE.search(msg)
     return m.group(1) if m else None
+
+
+def detect_end_session(msg: str) -> bool:
+    """Return True if the assistant requests to end the session as a standalone line."""
+    if not msg:
+        return False
+    return bool(_END_SESSION_RE.search(msg))
 
 
 def _extract_artifacts_from_msg(msg: str) -> Tuple[List[str], List[str]]:

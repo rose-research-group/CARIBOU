@@ -1,0 +1,15 @@
+DOUBLET_PROMPT = """
+Perform doublet detection and filtering on the single-cell RNA-seq dataset at /workspace/dataset.h5ad.
+
+Steps:
+1) Load the dataset and report initial cell count and gene count.
+2) Preserve raw counts in .layers['counts'] if missing.
+3) Run Scrublet on raw counts with expected_doublet_rate=0.06.
+4) Add doublet_score and predicted_doublet to .obs.
+5) Report number and percentage of predicted doublets.
+6) Filter out predicted doublets and report final cell count.
+7) Save filtered AnnData to /workspace/outputs/doublet_filtered.h5ad.
+8) Save a summary JSON to /workspace/outputs/doublet_summary.json.
+
+Show your code and report results.
+"""

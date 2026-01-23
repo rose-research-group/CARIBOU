@@ -1,0 +1,585 @@
+# QC Benchmarking Test Suite: Comparative Execution Mode Testing
+
+## Overview
+
+This testing framework compares three execution paradigms on the same scRNA-seq QC task:
+1. **One-Shot API** - Single LLM call with complete instructions (no agent framework)
+2. **Single Agent** - One agent running in auto mode (no delegation)
+3. **Full Agent System** - Multi-agent system with delegation (existing OLAF architecture)
+
+All three modes use the **same initial prompt** and run in **auto mode** via **SLURM** for fair comparison.
+
+---
+
+## Location & Structure
+
+All benchmarking code lives in `dev/task_benchmarks/` following the pattern of existing `dev/auto_runs/`:
+
+```
+dev/task_benchmarks/
+├── README.md                              # Documentation
+├── configs/
+│   ├── qc_single_agent.json              # Single agent blueprint
+│   └── shared_params.json                # Shared test parameters
+├── src/
+│   ├── __init__.py
+│   ├── one_shot_runner.py                # One-shot execution logic
+│   ├── qc_prompt.py                      # Shared QC prompt definition
+│   └── results_collector.py              # Parse and compare results
+├── slurm/
+│   ├── one_shot_chatgpt_qc.sh           # One-shot with ChatGPT
+│   ├── one_shot_claude_qc.sh            # One-shot with Claude
+│   ├── one_shot_deepseek_qc.sh          # One-shot with DeepSeek
+│   ├── single_agent_chatgpt_qc.sh       # Single agent with ChatGPT
+│   ├── single_agent_claude_qc.sh        # Single agent with Claude
+│   ├── single_agent_deepseek_qc.sh      # Single agent with DeepSeek
+│   ├── full_system_chatgpt_qc.sh        # Full system with ChatGPT
+│   ├── full_system_claude_qc.sh         # Full system with Claude
+│   ├── full_system_deepseek_qc.sh       # Full system with DeepSeek
+│   └── submit_all_task_benchmarks.sh      # Master submission script
+├── results/                              # Output directory (gitignored)
+│   ├── logs/
+│   ├── one_shot/
+│   ├── single_agent/
+│   └── full_system/
+└── analysis/
+    └── compare_qc_results.py             # Analysis and visualization
+```
+
+---
+
+## Core QC Prompt (Shared Across All Tests)
+
+```python
+# dev/task_benchmarks/src/qc_prompt.py
+
+QC_PROMPT = """
+Perform comprehensive quality control on the single-cell RNA-seq dataset at /workspace/dataset.h5ad.
+
+Execute the following QC pipeline:
+
+1. **Load and Inspect Data**
+   - Load the h5ad file using scanpy
+   - Report initial cell count and gene count
+   - Check for existing layers (especially 'counts')
+   - Preserve raw counts in .layers['counts'] if not already present
+
+2. **Calculate QC Metrics**
+   - Identify mitochondrial genes (prefix: 'MT-' or 'mt-')
+   - Calculate: n_genes_by_counts, total_counts, pct_counts_mt, pct_counts_in_top_20_genes
+   - Calculate log1p versions: log1p_total_counts, log1p_n_genes_by_counts
+   - Generate violin plots for all QC metrics
+
+3. **Doublet Detection with Scrublet**
+   - Run Scrublet on raw counts with expected_doublet_rate=0.06
+   - Add doublet_score and predicted_doublet to .obs
+   - Report number of predicted doublets
+   - Generate doublet score histogram
+
+4. **MAD-based Cell Filtering**
+   - Apply 5 MAD threshold for: log1p_total_counts, log1p_n_genes_by_counts, pct_counts_in_top_20_genes
+   - Apply 3 MAD threshold (upper only) for: pct_counts_mt
+   - Remove predicted doublets
+   - Report cells removed at each step
+
+5. **Re-process After Filtering**
+   - Normalize to 10,000 counts per cell
+   - Apply log1p transformation
+   - Select highly variable genes
+   - Run PCA (50 components)
+   - Build neighbors graph
+   - Generate UMAP embedding
+
+6. **Generate QC Visualizations**
+   - Violin plots for QC metrics
+   - Scatter plots: total_counts vs pct_counts_mt, total_counts vs n_genes_by_counts
+   - UMAP colored by QC metrics
+   - Save all plots to /workspace/outputs/
+
+7. **Save Results**
+   - Save filtered AnnData to /workspace/outputs/qc_filtered.h5ad
+   - Report final cell count and percentage removed
+
+Execute each step, show your code, and report results at each stage.
+"""
+```
+
+---
+
+## Test Mode Implementations
+
+### 1. One-Shot API Mode
+
+**Purpose**: Baseline - single API call, no agent framework
+
+**File**: `dev/task_benchmarks/src/one_shot_runner.py`
+
+```python
+"""
+One-shot QC execution: Single API call with all instructions.
+No agent framework, memory management, or multi-turn conversation.
+"""
+import os
+import sys
+import json
+import time
+import argparse
+from pathlib import Path
+from datetime import datetime
+from dotenv import load_dotenv
+
+# Reuse existing CARIBOU infrastructure
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "caribou" / "src"))
+from caribou.core.io_helpers import extract_python_code
+from caribou.core.sandbox_management import init_singularity_exec
+from caribou.config import ENV_FILE
+
+from qc_prompt import QC_PROMPT
+
+class OneShotRunner:
+    def __init__(self, llm_backend: str, sandbox_backend: str = "singularity"):
+        load_dotenv(dotenv_path=ENV_FILE)
+        self.llm_client, self.model_name = self._init_llm(llm_backend)
+        self.sandbox_backend = sandbox_backend
+
+    def _init_llm(self, backend: str):
+        from openai import OpenAI
+        if backend == "chatgpt":
+            return OpenAI(api_key=os.getenv("OPENAI_API_KEY")), "gpt-4o"
+        elif backend == "claude":
+            from caribou.core.anthropic_wrapper import AnthropicClient
+            return AnthropicClient(api_key=os.getenv("ANTHROPIC_API_KEY")), "claude-sonnet-4-5-20250929"
+        elif backend == "deepseek":
+            return OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"),
+                         base_url="https://api.deepseek.com"), "deepseek-chat"
+        raise ValueError(f"Unknown LLM backend: {backend}")
+
+    def run(self, dataset_path: Path, output_dir: Path) -> dict:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        start_time = time.time()
+
+        # Build the single prompt
+        system_prompt = """You are an expert bioinformatician specializing in single-cell RNA-seq analysis.
+You will be given a QC task. Generate complete, executable Python code to accomplish the task.
+Use scanpy, scrublet, numpy, pandas, and matplotlib as needed.
+Wrap all code in ```python ... ``` blocks."""
+
+        user_prompt = QC_PROMPT
+
+        # Make single API call
+        print(f"Making one-shot API call to {self.model_name}...")
+        response = self.llm_client.chat.completions.create(
+            model=self.model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.0
+        )
+
+        llm_response = response.choices[0].message.content
+        api_time = time.time() - start_time
+
+        # Save the response
+        (output_dir / "llm_response.md").write_text(llm_response)
+
+        # Extract and execute code
+        code = extract_python_code(llm_response)
+        if not code:
+            return {"success": False, "error": "No code extracted from response"}
+
+        (output_dir / "extracted_code.py").write_text(code)
+
+        # Initialize sandbox and execute
+        exec_start = time.time()
+        sandbox_manager = self._init_sandbox(dataset_path, output_dir)
+        sandbox_manager.start_container()
+
+        try:
+            result = sandbox_manager.exec_code(code, timeout=600)
+            exec_time = time.time() - exec_start
+        finally:
+            sandbox_manager.stop_container()
+
+        total_time = time.time() - start_time
+
+        # Collect results
+        return {
+            "success": result.get("status") == "ok",
+            "mode": "one_shot",
+            "llm_backend": self.model_name,
+            "api_time_seconds": api_time,
+            "exec_time_seconds": exec_time,
+            "total_time_seconds": total_time,
+            "num_api_calls": 1,
+            "stdout": result.get("stdout", ""),
+            "stderr": result.get("stderr", ""),
+            "output_files": list(output_dir.glob("outputs/*"))
+        }
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", required=True, type=Path)
+    parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--llm", required=True, choices=["chatgpt", "claude", "deepseek"])
+    parser.add_argument("--sandbox", default="singularity", choices=["singularity", "docker"])
+    args = parser.parse_args()
+
+    runner = OneShotRunner(args.llm, args.sandbox)
+    result = runner.run(args.dataset, args.output_dir)
+
+    # Save metrics
+    (args.output_dir / "metrics.json").write_text(json.dumps(result, indent=2, default=str))
+    print(json.dumps(result, indent=2, default=str))
+
+if __name__ == "__main__":
+    main()
+```
+
+### 2. Single Agent Mode
+
+**Purpose**: Test single agent with code samples, no delegation
+
+**File**: `dev/task_benchmarks/configs/qc_single_agent.json`
+
+```json
+{
+  "global_policy": {
+    "policy": {
+      "code_modification": {
+        "allowed": true,
+        "code_loading": "Each code sample contains custom functions. Load them before use."
+      },
+      "data_handling": {
+        "raw_counts_preservation": "Always preserve raw counts in .layers['counts']",
+        "normalization_after_QC": "Re-normalize after filtering"
+      },
+      "qc_metrics": [
+        "Use MAD filtering with 5 MADs for counts/genes, 3 MADs for mito %",
+        "Calculate log1p versions of QC metrics"
+      ]
+    }
+  },
+  "agents": {
+    "qc_agent": {
+      "prompt": "You are a specialized Quality Control agent for single-cell RNA-seq data. Your task is to perform comprehensive QC including: loading data, calculating QC metrics, detecting doublets with Scrublet, filtering cells using MAD-based thresholds, and generating QC visualizations. Execute all steps yourself without delegating. Use the provided code samples as reference for implementing each step. Always preserve raw counts, re-normalize after filtering, and save all outputs to /workspace/outputs/.",
+      "rag": {
+        "enabled": true
+      },
+      "neighbors": {},
+      "code_samples": [
+        "load_adata.py",
+        "DataCheck.py",
+        "QC_Inspection.py",
+        "Doublets.py",
+        "MAD.py",
+        "Downstream.py",
+        "Re-analysis_afterQC.py"
+      ]
+    }
+  }
+}
+```
+
+**SLURM Script**: Uses existing `caribou run auto` with single-agent blueprint
+
+### 3. Full Agent System Mode
+
+**Purpose**: Test full multi-agent orchestration
+
+Uses existing `olaf_fully_connected.json` - no new blueprint needed.
+
+---
+
+## SLURM Job Scripts
+
+### Template: `dev/task_benchmarks/slurm/one_shot_chatgpt_qc.sh`
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=qc_one_shot_chatgpt
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64GB
+#SBATCH --time=4:00:00
+#SBATCH --output=/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/task_benchmarks/results/logs/one_shot_chatgpt_%j.log
+#SBATCH --partition=peerd
+
+# Configuration
+DATASET_PATH="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/datasets/pbmc_1k_v2_v3_combined.h5ad"
+OUTPUT_BASE="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/task_benchmarks/results/one_shot"
+LLM_BACKEND="chatgpt"
+NUM_TRIALS=3
+
+# Create output directories
+mkdir -p "$OUTPUT_BASE/logs"
+
+# Run trials
+for trial in {1..3}; do
+    echo "================================================================================"
+    echo "Starting One-Shot Trial $trial of $NUM_TRIALS"
+    echo "LLM: $LLM_BACKEND | Mode: one_shot"
+    echo "================================================================================"
+
+    JOB_ID=${SLURM_JOB_ID:-$$}
+    RUN_DIR="$OUTPUT_BASE/${LLM_BACKEND}_${JOB_ID}_trial${trial}"
+
+    python /data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/task_benchmarks/src/one_shot_runner.py \
+        --dataset "$DATASET_PATH" \
+        --output-dir "$RUN_DIR" \
+        --llm "$LLM_BACKEND" \
+        --sandbox singularity
+
+    echo "Trial $trial completed"
+done
+
+echo "All one-shot trials complete"
+```
+
+### Template: `dev/task_benchmarks/slurm/single_agent_chatgpt_qc.sh`
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=qc_single_agent_chatgpt
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64GB
+#SBATCH --time=6:00:00
+#SBATCH --output=/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/task_benchmarks/results/logs/single_agent_chatgpt_%j.log
+#SBATCH --partition=peerd
+
+# Configuration
+BLUEPRINT_PATH="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/task_benchmarks/configs/qc_single_agent.json"
+DATASET_PATH="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/datasets/pbmc_1k_v2_v3_combined.h5ad"
+OUTPUT_BASE="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/task_benchmarks/results/single_agent"
+SANDBOX_BACKEND="singularity"
+LLM_BACKEND="chatgpt"
+NUM_TURNS=15
+NUM_TRIALS=3
+
+INITIAL_PROMPT="Perform comprehensive quality control on the single-cell RNA-seq dataset at /workspace/dataset.h5ad. Execute: (1) Load and inspect data, (2) Calculate QC metrics with log1p variants, (3) Detect doublets with Scrublet, (4) Apply MAD filtering (5 MAD for counts/genes, 3 MAD upper-only for mito%), (5) Re-normalize after filtering, (6) Run PCA/UMAP, (7) Generate QC plots, (8) Save filtered data to /workspace/outputs/qc_filtered.h5ad. Report statistics at each step."
+
+mkdir -p "$OUTPUT_BASE/logs"
+
+for trial in {1..3}; do
+    echo "================================================================================"
+    echo "Starting Single Agent Trial $trial of $NUM_TRIALS"
+    echo "LLM: $LLM_BACKEND | Mode: single_agent | Turns: $NUM_TURNS"
+    echo "================================================================================"
+
+    JOB_ID=${SLURM_JOB_ID:-$$}
+    RUN_DIR="$OUTPUT_BASE/${LLM_BACKEND}_${NUM_TURNS}turns_${JOB_ID}_trial${trial}"
+
+    mkdir -p "$RUN_DIR"
+    echo "BLUEPRINT_PATH: $BLUEPRINT_PATH" > "$RUN_DIR/params.txt"
+    echo "DATASET_PATH: $DATASET_PATH" >> "$RUN_DIR/params.txt"
+    echo "LLM_BACKEND: $LLM_BACKEND" >> "$RUN_DIR/params.txt"
+    echo "NUM_TURNS: $NUM_TURNS" >> "$RUN_DIR/params.txt"
+    echo "TRIAL: $trial" >> "$RUN_DIR/params.txt"
+
+    caribou run auto \
+        --blueprint "$BLUEPRINT_PATH" \
+        --dataset "$DATASET_PATH" \
+        --sandbox "$SANDBOX_BACKEND" \
+        --llm "$LLM_BACKEND" \
+        --turns "$NUM_TURNS" \
+        --prompt "$INITIAL_PROMPT" \
+        --driver-agent "qc_agent" \
+        --output-dir "$RUN_DIR" \
+        --make-report
+
+    echo "Trial $trial completed"
+done
+
+echo "All single-agent trials complete"
+```
+
+### Template: `dev/task_benchmarks/slurm/full_system_chatgpt_qc.sh`
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=qc_full_system_chatgpt
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64GB
+#SBATCH --time=8:00:00
+#SBATCH --output=/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/task_benchmarks/results/logs/full_system_chatgpt_%j.log
+#SBATCH --partition=peerd
+
+# Configuration - uses existing OLAF system
+BLUEPRINT_PATH="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/caribou/src/caribou/agents/olaf_fully_connected.json"
+DATASET_PATH="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/datasets/pbmc_1k_v2_v3_combined.h5ad"
+OUTPUT_BASE="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/task_benchmarks/results/full_system"
+SANDBOX_BACKEND="singularity"
+LLM_BACKEND="chatgpt"
+NUM_TURNS=20
+NUM_TRIALS=3
+
+# Same prompt, but the multi-agent system will delegate to specialists
+INITIAL_PROMPT="Perform comprehensive quality control on the single-cell RNA-seq dataset at /workspace/dataset.h5ad. Execute: (1) Load and inspect data, (2) Calculate QC metrics with log1p variants, (3) Detect doublets with Scrublet, (4) Apply MAD filtering (5 MAD for counts/genes, 3 MAD upper-only for mito%), (5) Re-normalize after filtering, (6) Run PCA/UMAP, (7) Generate QC plots, (8) Save filtered data to /workspace/outputs/qc_filtered.h5ad. Report statistics at each step."
+
+mkdir -p "$OUTPUT_BASE/logs"
+
+for trial in {1..3}; do
+    echo "================================================================================"
+    echo "Starting Full System Trial $trial of $NUM_TRIALS"
+    echo "LLM: $LLM_BACKEND | Mode: full_system | Turns: $NUM_TURNS"
+    echo "================================================================================"
+
+    JOB_ID=${SLURM_JOB_ID:-$$}
+    RUN_DIR="$OUTPUT_BASE/${LLM_BACKEND}_${NUM_TURNS}turns_${JOB_ID}_trial${trial}"
+
+    mkdir -p "$RUN_DIR"
+    echo "BLUEPRINT_PATH: $BLUEPRINT_PATH" > "$RUN_DIR/params.txt"
+    echo "DATASET_PATH: $DATASET_PATH" >> "$RUN_DIR/params.txt"
+    echo "LLM_BACKEND: $LLM_BACKEND" >> "$RUN_DIR/params.txt"
+    echo "NUM_TURNS: $NUM_TURNS" >> "$RUN_DIR/params.txt"
+    echo "TRIAL: $trial" >> "$RUN_DIR/params.txt"
+
+    caribou run auto \
+        --blueprint "$BLUEPRINT_PATH" \
+        --dataset "$DATASET_PATH" \
+        --sandbox "$SANDBOX_BACKEND" \
+        --llm "$LLM_BACKEND" \
+        --turns "$NUM_TURNS" \
+        --prompt "$INITIAL_PROMPT" \
+        --driver-agent "master_agent" \
+        --output-dir "$RUN_DIR" \
+        --make-report
+
+    echo "Trial $trial completed"
+done
+
+echo "All full-system trials complete"
+```
+
+### Master Submission: `dev/task_benchmarks/slurm/submit_all_task_benchmarks.sh`
+
+```bash
+#!/bin/bash
+# Submit all QC benchmark jobs
+
+SLURM_DIR="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/task_benchmarks/slurm"
+
+echo "Submitting QC Benchmark Jobs..."
+
+# One-shot tests
+sbatch "$SLURM_DIR/one_shot_chatgpt_qc.sh"
+sbatch "$SLURM_DIR/one_shot_claude_qc.sh"
+sbatch "$SLURM_DIR/one_shot_deepseek_qc.sh"
+
+# Single-agent tests
+sbatch "$SLURM_DIR/single_agent_chatgpt_qc.sh"
+sbatch "$SLURM_DIR/single_agent_claude_qc.sh"
+sbatch "$SLURM_DIR/single_agent_deepseek_qc.sh"
+
+# Full-system tests
+sbatch "$SLURM_DIR/full_system_chatgpt_qc.sh"
+sbatch "$SLURM_DIR/full_system_claude_qc.sh"
+sbatch "$SLURM_DIR/full_system_deepseek_qc.sh"
+
+echo "All jobs submitted. Use 'squeue -u $USER' to monitor."
+```
+
+---
+
+## QC Benchmark Metric (Optional)
+
+**File**: `caribou/src/caribou/auto_metrics/QCBenchmarkMetric.py`
+
+```python
+"""
+Auto-metric for evaluating QC workflow completion.
+"""
+from typing import Dict
+import anndata
+
+from AutoMetric import AutoMetric
+
+class QCBenchmarkMetric(AutoMetric):
+    """
+    Evaluates QC workflow results:
+    - Cell filtering statistics
+    - Required columns present
+    - Output file validity
+    """
+
+    def metric(self, adata: anndata.AnnData) -> Dict:
+        results = {
+            "final_cell_count": adata.n_obs,
+            "final_gene_count": adata.n_vars,
+        }
+
+        # Check for required obs columns
+        required_obs = [
+            "doublet_score", "predicted_doublet",
+            "n_genes_by_counts", "total_counts", "pct_counts_mt"
+        ]
+        results["obs_columns_present"] = {
+            col: col in adata.obs.columns for col in required_obs
+        }
+
+        # Check for layers
+        results["counts_layer_present"] = "counts" in adata.layers
+
+        # Check for embeddings
+        results["pca_present"] = "X_pca" in adata.obsm
+        results["umap_present"] = "X_umap" in adata.obsm
+
+        # Check highly variable genes
+        results["hvg_calculated"] = "highly_variable" in adata.var.columns
+
+        return results
+
+    def requirements(self) -> str:
+        return "Requires QC'd AnnData with standard obs columns and embeddings."
+```
+
+---
+
+## Results Analysis
+
+**File**: `dev/task_benchmarks/analysis/compare_qc_results.py`
+
+Parses results from all three modes and generates comparison tables:
+- Completion rate (did QC finish successfully?)
+- Time metrics (API time, execution time, total time)
+- Turn count (for agent-based modes)
+- Output quality (cell retention, required columns present)
+- Error analysis
+
+---
+
+## Implementation Steps
+
+1. **Create directory structure**
+   ```bash
+   mkdir -p dev/task_benchmarks/{src,configs,slurm,results/{logs,one_shot,single_agent,full_system},analysis}
+   ```
+
+2. **Create `qc_prompt.py`** - Shared QC prompt definition
+
+3. **Create `one_shot_runner.py`** - One-shot execution logic
+
+4. **Create `qc_single_agent.json`** - Single agent blueprint
+
+5. **Create SLURM scripts** (9 scripts: 3 modes × 3 LLMs)
+
+6. **Create submission script** - `submit_all_task_benchmarks.sh`
+
+7. **Create `QCBenchmarkMetric.py`** (optional) - Auto-evaluation metric
+
+8. **Create `compare_qc_results.py`** - Results analysis
+
+9. **Test locally** before SLURM submission
+
+---
+
+## Expected Outcomes
+
+| Metric | One-Shot | Single Agent | Full System |
+|--------|----------|--------------|-------------|
+| API Calls | 1 | ~10-15 | ~15-20 |
+| Error Recovery | None | RAG-assisted | RAG + delegation |
+| Completion Rate | Variable | Higher | Highest |
+| Total Time | Fastest | Medium | Longest |
+| Code Quality | Depends on prompt | Guided by samples | Specialized agents |
+
+This comparison will help understand the trade-offs between simplicity (one-shot) and robustness (multi-agent).

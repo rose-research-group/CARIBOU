@@ -1,0 +1,23 @@
+{
+  "global_policy": {
+    "policy": {
+      "data_handling": {
+        "raw_counts_preference": "Prefer counts layer if present for transcript counts."
+      }
+    }
+  },
+  "agents": {
+    "metadata_agent": {
+      "prompt": "You are a metadata inference agent for anonymized single-cell RNA-seq datasets. Follow the driver instructions, reason from the data rather than hidden metadata, and save outputs to /workspace/outputs. Use the provided code samples as references and rewrite before use.",
+      "rag": {
+        "enabled": true
+      },
+      "neighbors": {},
+      "code_samples": [
+        "load_adata.py",
+        "DataCheck.py",
+        "gene_check.py"
+      ]
+    }
+  }
+}

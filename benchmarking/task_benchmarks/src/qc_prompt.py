@@ -1,0 +1,50 @@
+
+QC_PROMPT = """
+Perform comprehensive quality control on the single-cell RNA-seq dataset at /workspace/dataset.h5ad.
+
+Execute the following QC pipeline:
+
+1. **Load and Inspect Data**
+   - Load the h5ad file using scanpy
+   - Report initial cell count and gene count
+   - Check for existing layers (especially 'counts')
+   - Preserve raw counts in .layers['counts'] if not already present
+
+2. **Calculate QC Metrics**
+   - Identify mitochondrial genes (prefix: 'MT-' or 'mt-')
+   - Calculate: n_genes_by_counts, total_counts, pct_counts_mt, pct_counts_in_top_20_genes
+   - Calculate log1p versions: log1p_total_counts, log1p_n_genes_by_counts
+   - Generate violin plots for all QC metrics
+
+3. **Doublet Detection with Scrublet**
+   - Run Scrublet on raw counts with expected_doublet_rate=0.06
+   - Add doublet_score and predicted_doublet to .obs
+   - Report number of predicted doublets
+   - Generate doublet score histogram
+
+4. **MAD-based Cell Filtering**
+   - Apply 5 MAD threshold for: log1p_total_counts, log1p_n_genes_by_counts, pct_counts_in_top_20_genes
+   - Apply 3 MAD threshold (upper only) for: pct_counts_mt
+   - Remove predicted doublets
+   - Report cells removed at each step
+
+5. **Re-process After Filtering**
+   - Normalize to 10,000 counts per cell
+   - Apply log1p transformation
+   - Select highly variable genes
+   - Run PCA (50 components)
+   - Build neighbors graph
+   - Generate UMAP embedding
+
+6. **Generate QC Visualizations**
+   - Violin plots for QC metrics
+   - Scatter plots: total_counts vs pct_counts_mt, total_counts vs n_genes_by_counts
+   - UMAP colored by QC metrics
+   - Save all plots to /workspace/outputs/
+
+7. **Save Results**
+   - Save filtered AnnData to /workspace/outputs/qc_filtered.h5ad
+   - Report final cell count and percentage removed
+
+Execute each step, show your code, and report results at each stage.
+"""

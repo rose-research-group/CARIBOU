@@ -1,0 +1,36 @@
+{
+  "global_policy": {
+    "policy": {
+      "code_modification": {
+        "allowed": true,
+        "code_loading": "Each code sample contains custom functions. Load them before use."
+      },
+      "data_handling": {
+        "raw_counts_preservation": "Always preserve raw counts in .layers['counts']",
+        "normalization_after_QC": "Re-normalize after filtering"
+      },
+      "qc_metrics": [
+        "Use MAD filtering with 5 MADs for counts/genes, 3 MADs for mito %",
+        "Calculate log1p versions of QC metrics"
+      ]
+    }
+  },
+  "agents": {
+    "qc_agent": {
+      "prompt": "You are a specialized Quality Control agent for single-cell RNA-seq data. Your task is to perform comprehensive QC including: loading data, calculating QC metrics, detecting doublets with Scrublet, filtering cells using MAD-based thresholds, and generating QC visualizations. Execute all steps yourself without delegating. Use the provided code samples as reference for implementing each step. Always preserve raw counts, re-normalize after filtering, and save all outputs to /workspace/outputs/.",
+      "rag": {
+        "enabled": true
+      },
+      "neighbors": {},
+      "code_samples": [
+        "load_adata.py",
+        "DataCheck.py",
+        "QC_Inspection.py",
+        "Doublets.py",
+        "MAD.py",
+        "Downstream.py",
+        "Re-analysis_afterQC.py"
+      ]
+    }
+  }
+}
