@@ -12,12 +12,18 @@ All three modes use the **same initial prompt** and run in **auto mode** via **S
 ## Layout
 
 ```
-dev/task_benchmarks/
+benchmarking/task_benchmarks/
 ├── analysis/
 │   └── compare_qc_results.py
+│   └── plot_task_benchmark_summary.py
 ├── configs/
 │   ├── qc_single_agent.json
 │   └── shared_params.json
+├── prompts/
+│   ├── qc_prompt.txt
+│   ├── load_prompt.txt
+│   ├── doublet_prompt.txt
+│   └── full_qc_prompt.txt
 ├── results/
 │   ├── logs/
 │   ├── one_shot/
@@ -44,32 +50,32 @@ dev/task_benchmarks/
 │   ├── full_system_deepseek_load.sh
 │   └── submit_all_qc_benchmarks.sh
 │   └── submit_all_load_benchmarks.sh
+├── bash/
+│   └── (non-Slurm equivalents of slurm scripts)
 └── src/
     ├── one_shot_runner.py
-    ├── load_prompt.py
-    ├── qc_prompt.py
     └── results_collector.py
 ```
 
 ## Running the Benchmarks
 
 - Submit all jobs:
-  - `bash dev/task_benchmarks/slurm/submit_all_qc_benchmarks.sh`
+  - `bash benchmarking/task_benchmarks/slurm/submit_all_qc_benchmarks.sh`
 - Submit all load-data jobs:
-  - `bash dev/task_benchmarks/slurm/submit_all_load_benchmarks.sh`
+  - `bash benchmarking/task_benchmarks/slurm/submit_all_load_benchmarks.sh`
 - Submit a single script:
-  - `sbatch dev/task_benchmarks/slurm/one_shot_chatgpt_qc.sh`
+  - `sbatch benchmarking/task_benchmarks/slurm/one_shot_chatgpt_qc.sh`
 
-Each SLURM script writes logs to `dev/task_benchmarks/results/logs` and run outputs to the task-specific mode subdirectory (for example `dev/task_benchmarks/results/load_data/one_shot` or `dev/task_benchmarks/results/qc_task/one_shot`).
+Each SLURM script writes logs to `benchmarking/task_benchmarks/results/logs` and run outputs to the task-specific mode subdirectory (for example `benchmarking/task_benchmarks/results/load_data/one_shot` or `benchmarking/task_benchmarks/results/qc_task/one_shot`).
 
 ## Collecting Results
 
 - Collect run summaries:
-  - `python dev/task_benchmarks/src/results_collector.py --results-dir dev/task_benchmarks/results --output-csv dev/task_benchmarks/results/summary.csv`
+  - `python benchmarking/task_benchmarks/src/results_collector.py --results-dir benchmarking/task_benchmarks/results --output-csv benchmarking/task_benchmarks/results/summary.csv`
 - Generate a grouped comparison table:
-  - `python dev/task_benchmarks/analysis/compare_qc_results.py --results-dir dev/task_benchmarks/results`
+  - `python benchmarking/task_benchmarks/analysis/compare_qc_results.py --results-dir benchmarking/task_benchmarks/results`
 
-The comparison script writes a JSON summary to `dev/task_benchmarks/analysis/task_benchmark_summary.json`.
+The comparison script writes a JSON summary to `benchmarking/task_benchmarks/analysis/task_benchmark_summary.json`.
 
 ## Additional Task Prompts
 
@@ -80,3 +86,7 @@ Two additional prompt files are available:
 To run them with the migrated scripts, pass a prompt file via `PROMPT_PATH`, for example:
   - `PROMPT_PATH=benchmarking/task_benchmarks/prompts/doublet_prompt.txt`
   - `PROMPT_PATH=benchmarking/task_benchmarks/prompts/full_qc_prompt.txt`
+
+Standard prompts:
+- `benchmarking/task_benchmarks/prompts/qc_prompt.txt`
+- `benchmarking/task_benchmarks/prompts/load_prompt.txt`

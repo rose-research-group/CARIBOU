@@ -1,4 +1,3 @@
-LOAD_PROMPT = """
 Load the single-cell RNA-seq dataset at /workspace/dataset.h5ad using scanpy.
 
 Steps:
@@ -14,4 +13,3 @@ Steps:
 6. Print the summary.
 
 Return executable Python code only, wrapped in ```python ... ``` blocks.
-"""

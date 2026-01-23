@@ -30,7 +30,8 @@ def main() -> int:
 
     failures += _check_exists("metadata benchmarks README", META_DIR / "README.md")
     failures += _check_exists("prepare_benchmark", META_DIR / "prepare_benchmark.py")
-    failures += _check_exists("metadata prompt", META_DIR / "metadata_prompt.py")
+    failures += _check_exists("metadata prompt", META_DIR / "prompts" / "metadata_prompt.txt")
+    failures += _check_exists("full system prompt", META_DIR / "prompts" / "full_system_metadata_prompt.txt")
     failures += _check_exists("evaluate script", META_DIR / "evaluate_metadata_results.py")
     failures += _check_exists("plot script", META_DIR / "plot_metadata_benchmark_scores.py")
     failures += _check_exists("benchmark manifest", META_DIR / "benchmark_data" / "benchmark_manifest.csv")

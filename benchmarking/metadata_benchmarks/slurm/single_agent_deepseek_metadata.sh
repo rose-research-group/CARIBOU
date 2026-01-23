@@ -27,7 +27,7 @@ if [[ -z "$DATASET_NAME" || -z "$DATASET_PATH" ]]; then
     exit 1
 fi
 
-PROMPT_PATH="${PROMPT_PATH:-}"
+PROMPT_PATH="${PROMPT_PATH:-$ROOT_DIR/benchmarking/metadata_benchmarks/prompts/metadata_prompt.txt}"
 if [ -z "$PROMPT_PATH" ]; then
   if [ -t 0 ]; then
     read -r -p "Enter prompt file path: " PROMPT_PATH

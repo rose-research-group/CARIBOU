@@ -8,7 +8,6 @@ import json
 import time
 import argparse
 import subprocess
-import importlib
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
@@ -60,19 +59,16 @@ class OneShotRunner:
         else:
             raise ValueError(f"Unsupported sandbox backend: {self.sandbox_backend}")
 
-    def _load_prompt(self, module_name: str, var_name: str) -> str:
-        module = importlib.import_module(module_name)
-        prompt = getattr(module, var_name, None)
-        if not prompt:
-            raise ValueError(f"Prompt variable {var_name} not found in module {module_name}.")
-        return prompt
+    def _load_prompt(self, prompt_path: Path) -> str:
+        if not prompt_path.exists():
+            raise ValueError(f"Prompt file not found: {prompt_path}")
+        return prompt_path.read_text()
 
     def run(
         self,
         dataset_path: Path,
         output_dir: Path,
-        prompt_module: str,
-        prompt_var: str,
+        prompt_path: Path,
         benchmark_module: Path | None,
     ) -> dict:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -84,7 +80,7 @@ You will be given a data processing task. Generate complete, executable Python c
 Use scanpy, scrublet, numpy, pandas, and matplotlib as needed.
 Wrap all code in ```python ... ``` blocks."""
 
-        user_prompt = self._load_prompt(prompt_module, prompt_var)
+        user_prompt = self._load_prompt(prompt_path)
 
         # Make single API call
         print(f"Making one-shot API call to {self.model_name}...")
@@ -168,8 +164,7 @@ def main():
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--llm", required=True, choices=["chatgpt", "claude", "deepseek"])
     parser.add_argument("--sandbox", default="singularity", choices=["singularity", "docker"])
-    parser.add_argument("--prompt-module", default="qc_prompt")
-    parser.add_argument("--prompt-var", default="QC_PROMPT")
+    parser.add_argument("--prompt-path", required=True, type=Path)
     parser.add_argument("--benchmark-module", type=Path, default=None)
     args = parser.parse_args()
 
@@ -177,8 +172,7 @@ def main():
     result = runner.run(
         args.dataset,
         args.output_dir,
-        args.prompt_module,
-        args.prompt_var,
+        args.prompt_path,
         args.benchmark_module,
     )
 

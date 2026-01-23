@@ -1,5 +1,3 @@
-
-QC_PROMPT = """
 Perform comprehensive quality control on the single-cell RNA-seq dataset at /workspace/dataset.h5ad.
 
 Execute the following QC pipeline:
@@ -47,4 +45,3 @@ Execute the following QC pipeline:
    - Report final cell count and percentage removed
 
 Execute each step, show your code, and report results at each stage.
-"""

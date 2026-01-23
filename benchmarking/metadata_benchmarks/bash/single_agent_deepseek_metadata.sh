@@ -18,7 +18,7 @@ while IFS=, read -r DATASET_NAME DATASET_PATH; do
     if [ "$DATASET_NAME" = "dataset_name" ]; then
       continue
     fi
-  PROMPT_PATH="${PROMPT_PATH:-}"
+PROMPT_PATH="${PROMPT_PATH:-$ROOT_DIR/benchmarking/metadata_benchmarks/prompts/metadata_prompt.txt}"
   if [ -z "$PROMPT_PATH" ]; then
     if [ -t 0 ]; then
       read -r -p "Enter prompt file path: " PROMPT_PATH
