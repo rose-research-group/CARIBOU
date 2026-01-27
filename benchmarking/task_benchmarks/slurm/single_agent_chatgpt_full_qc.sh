@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=qc_full_system_claude
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64GB
+#SBATCH --job-name=full_qc_single_agent_chatgpt
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=96GB
 #SBATCH --time=8:00:00
 #SBATCH --output=/dev/null
 #SBATCH --partition=peerd
@@ -9,23 +9,22 @@ ROOT_DIR="$(git -C "${SLURM_SUBMIT_DIR:-$(pwd)}" rev-parse --show-toplevel 2>/de
 if [ -z "$ROOT_DIR" ]; then
   ROOT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 fi
-LOG_DIR="$ROOT_DIR/benchmarking/task_benchmarks/results/logs/qc"
+LOG_DIR="$ROOT_DIR/benchmarking/task_benchmarks/results/logs/full_qc"
 mkdir -p "$LOG_DIR"
-LOG_PATH="$LOG_DIR/full_system_claude_qc_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID:-0}.log"
+LOG_PATH="$LOG_DIR/single_agent_chatgpt_full_qc_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID:-0}.log"
 exec > "$LOG_PATH" 2>&1
 
-# Configuration - uses existing OLAF system
+# Configuration
 BLUEPRINT_PATH="$ROOT_DIR/caribou/src/caribou/agents/olaf_fully_connected_v2.json"
 DATASET_PATH="$ROOT_DIR/dev/datasets/pbmc_1k_v2_v3_combined.h5ad"
-OUTPUT_BASE="$ROOT_DIR/benchmarking/task_benchmarks/results/qc_task/full_system"
+OUTPUT_BASE="$ROOT_DIR/benchmarking/task_benchmarks/results/full_qc_task/single_agent"
 SANDBOX_BACKEND="singularity"
-BENCHMARK_MODULE="$ROOT_DIR/caribou/src/caribou/auto_metrics/QCBenchmarkMetric.py"
-LLM_BACKEND="claude"
-NUM_TURNS=20
+BENCHMARK_MODULE="$ROOT_DIR/caribou/src/caribou/auto_metrics/FullQCBenchmarkMetric.py"
+LLM_BACKEND="chatgpt"
+NUM_TURNS=18
 NUM_TRIALS=3
 
-# Same prompt, but the multi-agent system will delegate to specialists
-PROMPT_PATH="${PROMPT_PATH:-$ROOT_DIR/benchmarking/task_benchmarks/prompts/qc_prompt.txt}"
+PROMPT_PATH="${PROMPT_PATH:-$ROOT_DIR/benchmarking/task_benchmarks/prompts/full_qc_prompt.txt}"
 if [ -z "$PROMPT_PATH" ]; then
   if [ -t 0 ]; then
     read -r -p "Enter prompt file path: " PROMPT_PATH
@@ -44,8 +43,8 @@ mkdir -p "$OUTPUT_BASE/logs"
 
 for trial in $(seq 1 "$NUM_TRIALS"); do
     echo "================================================================================"
-    echo "Starting Full System Trial $trial of $NUM_TRIALS"
-    echo "LLM: $LLM_BACKEND | Mode: full_system | Turns: $NUM_TURNS"
+    echo "Starting Single Agent full_qc Trial $trial of $NUM_TRIALS"
+    echo "LLM: $LLM_BACKEND | Mode: single_agent | Turns: $NUM_TURNS"
     echo "================================================================================"
 
     JOB_ID=${SLURM_JOB_ID:-$$}
@@ -58,19 +57,10 @@ for trial in $(seq 1 "$NUM_TRIALS"); do
     echo "NUM_TURNS: $NUM_TURNS" >> "$RUN_DIR/params.txt"
     echo "TRIAL: $trial" >> "$RUN_DIR/params.txt"
 
-    caribou run auto \
-        --blueprint "$BLUEPRINT_PATH" \
-        --dataset "$DATASET_PATH" \
-        --sandbox "$SANDBOX_BACKEND" \
-        --llm "$LLM_BACKEND" \
-        --turns "$NUM_TURNS" \
-        --prompt "$INITIAL_PROMPT" \
-        --driver-agent "master_agent" \
-        --output-dir "$RUN_DIR" \
-        --benchmark-module "$BENCHMARK_MODULE" \
-        --make-report
+    caribou run auto         --blueprint "$BLUEPRINT_PATH"         --dataset "$DATASET_PATH"         --sandbox "$SANDBOX_BACKEND"         --llm "$LLM_BACKEND"         --turns "$NUM_TURNS"         --prompt "$INITIAL_PROMPT"         --driver-agent "master_agent"         --output-dir "$RUN_DIR"         --benchmark-module "$BENCHMARK_MODULE"         --make-report
 
     echo "Trial $trial completed"
+
 done
 
-echo "All full-system trials complete"
+echo "All single-agent full_qc trials complete"

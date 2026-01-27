@@ -32,12 +32,6 @@ PROMPT_PATH="${PROMPT_PATH:-$ROOT_DIR/benchmarking/metadata_benchmarks/prompts/m
     exit 1
   fi
   INITIAL_PROMPT="$(cat "$PROMPT_PATH")"
-  import sys
-  sys.path.insert(0, "$ROOT_DIR")
-  from dev.metadata_benchmarks.metadata_prompt import METADATA_PROMPT
-  print(METADATA_PROMPT)
-  PY
-  )"
   
   for trial in $(seq 1 "$NUM_TRIALS"); do
       echo "================================================================================"

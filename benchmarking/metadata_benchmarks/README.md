@@ -47,6 +47,8 @@ inference, and score results on the host.
    - benchmarking/metadata_benchmarks/slurm/single_agent_deepseek_metadata.sh
    - benchmarking/metadata_benchmarks/slurm/full_system_chatgpt_metadata.sh
    - benchmarking/metadata_benchmarks/slurm/full_system_deepseek_metadata.sh
+   Full-system scripts use the dataset-specific agent system:
+   caribou/src/caribou/agents/dataset_metadata_agent.json
 
 5) Bash scripts (non-Slurm)
    Set a prompt file (required):

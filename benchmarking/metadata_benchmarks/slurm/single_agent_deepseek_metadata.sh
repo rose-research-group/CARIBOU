@@ -3,10 +3,17 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16GB
 #SBATCH --time=2:00:00
-#SBATCH --output=benchmarking/logs/single_agent_deepseek_%A_%a.log
+#SBATCH --output=/dev/null
 #SBATCH --partition=peerd
 #SBATCH --array=1-10
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+ROOT_DIR="$(git -C "${SLURM_SUBMIT_DIR:-$(pwd)}" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$ROOT_DIR" ]; then
+  ROOT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
+fi
+LOG_DIR="$ROOT_DIR/benchmarking/metadata_benchmarks/results/logs/metadata"
+mkdir -p "$LOG_DIR"
+LOG_PATH="$LOG_DIR/single_agent_deepseek_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID:-0}.log"
+exec > "$LOG_PATH" 2>&1
 
 # Configuration
 BLUEPRINT_PATH="$ROOT_DIR/benchmarking/metadata_benchmarks/configs/metadata_single_agent.json"
@@ -41,12 +48,6 @@ if [ ! -f "$PROMPT_PATH" ]; then
   exit 1
 fi
 INITIAL_PROMPT="$(cat "$PROMPT_PATH")"
-import sys
-sys.path.insert(0, "$ROOT_DIR")
-from dev.metadata_benchmarks.metadata_prompt import METADATA_PROMPT
-print(METADATA_PROMPT)
-PY
-)"
 
 for trial in $(seq 1 "$NUM_TRIALS"); do
     echo "================================================================================"

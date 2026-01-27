@@ -3,13 +3,20 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16GB
 #SBATCH --time=2:00:00
-#SBATCH --output=benchmarking/task_benchmarks/results/logs/load_data/single_agent_claude_load_%j.log
+#SBATCH --output=/dev/null
 #SBATCH --partition=peerd
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+ROOT_DIR="$(git -C "${SLURM_SUBMIT_DIR:-$(pwd)}" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$ROOT_DIR" ]; then
+  ROOT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
+fi
+LOG_DIR="$ROOT_DIR/benchmarking/task_benchmarks/results/logs/load_data"
+mkdir -p "$LOG_DIR"
+LOG_PATH="$LOG_DIR/single_agent_claude_load_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID:-0}.log"
+exec > "$LOG_PATH" 2>&1
 
 # Configuration
 BLUEPRINT_PATH="$ROOT_DIR/benchmarking/task_benchmarks/configs/load_single_agent.json"
-DATASET_PATH="$ROOT_DIR/benchmarking/datasets/pbmc_1k_v2_v3_combined.h5ad"
+DATASET_PATH="$ROOT_DIR/dev/datasets/pbmc_1k_v2_v3_combined.h5ad"
 OUTPUT_BASE="$ROOT_DIR/benchmarking/task_benchmarks/results/load_data/single_agent"
 SANDBOX_BACKEND="singularity"
 BENCHMARK_MODULE="$ROOT_DIR/caribou/src/caribou/auto_metrics/LoadDataMetric.py"
@@ -17,7 +24,7 @@ LLM_BACKEND="claude"
 NUM_TURNS=6
 NUM_TRIALS=3
 
-PROMPT_PATH="${PROMPT_PATH:-}"
+PROMPT_PATH="${PROMPT_PATH:-$ROOT_DIR/benchmarking/task_benchmarks/prompts/load_prompt.txt}"
 if [ -z "$PROMPT_PATH" ]; then
   if [ -t 0 ]; then
     read -r -p "Enter prompt file path: " PROMPT_PATH

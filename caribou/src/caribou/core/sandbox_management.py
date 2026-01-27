@@ -1,5 +1,6 @@
 
 import time
+import shutil
 from typing import List, Tuple, Dict, Optional
 from pathlib import Path
 
@@ -8,9 +9,30 @@ import json
 from caribou.sandbox.benchmarking_sandbox_management import (
     SandboxManager as _BackendManager,
     CONTAINER_NAME as _SANDBOX_HANDLE,
-    IMAGE_TAG as _SANDBOX_IMAGE,  
+    IMAGE_TAG as _SANDBOX_IMAGE,
     API_PORT_HOST as _API_PORT,
 )
+
+
+def _nvidia_gpu_available() -> bool:
+    """
+    Check if NVIDIA GPU is actually available and accessible.
+    Returns True only if nvidia-smi finds at least one GPU.
+    """
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return False
+    try:
+        import subprocess as sp
+        # Use -L to list GPUs - output will contain "GPU 0:" if GPUs exist
+        result = sp.run([nvidia_smi, "-L"], capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            return False
+        # Check if output actually contains GPU entries
+        # nvidia-smi -L returns lines like "GPU 0: NVIDIA A100..." for each GPU
+        return "GPU " in result.stdout
+    except Exception:
+        return False
 
 
 def init_docker(script_dir:str, subprocess, console, force_refresh:bool=False):
@@ -78,10 +100,20 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
             if not sing.pull_sif_if_needed():
                 return False
 
+            # Build command, conditionally including --nv if GPU is available
             cmd = [
                 SING_BIN,
                 "exec",
-                "--nv",
+            ]
+
+            # Only add --nv flag if NVIDIA GPU is available
+            if _nvidia_gpu_available():
+                cmd.append("--nv")
+                console.print("[dim]GPU detected, enabling NVIDIA support[/dim]")
+            else:
+                console.print("[dim]No GPU detected, running in CPU-only mode[/dim]")
+
+            cmd.extend([
                 "--containall",
                 "--cleanenv",
                 *self._binds,
@@ -89,7 +121,8 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
                 "python",
                 "/opt/offline_kernel.py",
                 "--repl",
-            ]
+            ])
+
             self._proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
@@ -101,9 +134,21 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
             # Wait for the REPL banner
             ready_line = self._proc.stdout.readline().strip()
             if ready_line != "__REPL_READY__":
+                # Capture stderr for better error diagnostics
+                stderr_output = ""
+                try:
+                    # Non-blocking read of available stderr
+                    import select
+                    if select.select([self._proc.stderr], [], [], 0.5)[0]:
+                        stderr_output = self._proc.stderr.read()
+                except Exception:
+                    pass
+
                 console.print(
                     f"[red]REPL failed to start. Got: {ready_line}[/red]"
                 )
+                if stderr_output:
+                    console.print(f"[red]Stderr: {stderr_output}[/red]")
                 self.stop_container()
                 return False
             return True

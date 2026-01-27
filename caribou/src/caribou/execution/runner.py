@@ -191,7 +191,10 @@ def run_agent_session(
             action_space.add_action("todo_logged", f"Logged {len(extracted_todos)} TODO(s).", status="ok")
 
         # --- End session handling ---
-        if detect_end_session(msg) and _count_code_blocks(msg) == 0:
+        # Only end session if there's no delegation command also present
+        # (prevents premature exit when LLM outputs both delegation and end_session)
+        has_delegation = detect_delegation(msg) is not None
+        if detect_end_session(msg) and _count_code_blocks(msg) == 0 and not has_delegation:
             if is_auto:
                 console.print("[yellow]Agent requested end_session. Ending auto run.[/yellow]")
                 session_end_reason = "agent_finished"

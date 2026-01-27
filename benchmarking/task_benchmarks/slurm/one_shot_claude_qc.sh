@@ -3,12 +3,19 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64GB
 #SBATCH --time=4:00:00
-#SBATCH --output=benchmarking/task_benchmarks/results/logs/qc/one_shot_claude_%j.log
+#SBATCH --output=/dev/null
 #SBATCH --partition=peerd
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+ROOT_DIR="$(git -C "${SLURM_SUBMIT_DIR:-$(pwd)}" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$ROOT_DIR" ]; then
+  ROOT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
+fi
+LOG_DIR="$ROOT_DIR/benchmarking/task_benchmarks/results/logs/qc"
+mkdir -p "$LOG_DIR"
+LOG_PATH="$LOG_DIR/one_shot_claude_qc_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID:-0}.log"
+exec > "$LOG_PATH" 2>&1
 
 # Configuration
-PROMPT_PATH="${PROMPT_PATH:-}"
+PROMPT_PATH="${PROMPT_PATH:-$ROOT_DIR/benchmarking/task_benchmarks/prompts/qc_prompt.txt}"
 if [ -z "$PROMPT_PATH" ]; then
   if [ -t 0 ]; then
     read -r -p "Enter prompt file path: " PROMPT_PATH
@@ -22,7 +29,7 @@ if [ ! -f "$PROMPT_PATH" ]; then
   exit 1
 fi
 INITIAL_PROMPT="$(cat "$PROMPT_PATH")"
-DATASET_PATH="$ROOT_DIR/benchmarking/datasets/pbmc_1k_v2_v3_combined.h5ad"
+DATASET_PATH="$ROOT_DIR/dev/datasets/pbmc_1k_v2_v3_combined.h5ad"
 OUTPUT_BASE="$ROOT_DIR/benchmarking/task_benchmarks/results/qc_task/one_shot"
 BENCHMARK_MODULE="$ROOT_DIR/caribou/src/caribou/auto_metrics/QCBenchmarkMetric.py"
 LLM_BACKEND="claude"
