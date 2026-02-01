@@ -1,6 +1,6 @@
 Perform doublet detection and filtering on the single-cell RNA-seq dataset at /workspace/dataset.h5ad.
 
-Steps:
+Steps (stop after these):
 1) Load the dataset and report initial cell count and gene count.
 2) Preserve raw counts in .layers['counts'] if missing.
 3) Run Scrublet on raw counts with expected_doublet_rate=0.06.
@@ -10,4 +10,6 @@ Steps:
 7) Save filtered AnnData to /workspace/outputs/doublet_filtered.h5ad.
 8) Save a summary JSON to /workspace/outputs/doublet_summary.json.
 
-Show your code and report results.
+IMPORTANT: Do NOT perform any additional analysis steps (no cell typing, integration, dimensionality reduction, scVI, Harmony, UMAP, or extra plotting). End after writing the filtered h5ad and summary JSON.
+
+Return executable Python code only, wrapped in python ... blocks.

@@ -52,7 +52,9 @@ for trial in $(seq 1 "$NUM_TRIALS"); do
         --dataset "$DATASET_PATH" \
         --output-dir "$RUN_DIR" \
         --llm "$LLM_BACKEND" \
-        --sandbox singularity
+        --sandbox singularity \
+        --benchmark-module "$BENCHMARK_MODULE" \
+        --prompt-path "$PROMPT_PATH"
 
     echo "Trial $trial completed"
 done

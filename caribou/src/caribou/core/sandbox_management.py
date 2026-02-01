@@ -1,5 +1,6 @@
 
 import time
+import os
 import shutil
 from typing import List, Tuple, Dict, Optional
 from pathlib import Path
@@ -90,6 +91,9 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
             binds.extend(["--bind", f"{host_output_path.resolve()}:/workspace/outputs"])
             self._binds = binds
             self._host_output_path = host_output_path
+            # Ensure cache dirs exist on host for container writes
+            (host_output_path / ".cache").mkdir(parents=True, exist_ok=True)
+            (host_output_path / "celltypist_models").mkdir(parents=True, exist_ok=True)
 
         # ------------------------------------------------------------------
         # Container lifecycle
@@ -128,6 +132,11 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env={
+                    **os.environ,
+                    "SINGULARITYENV_XDG_CACHE_HOME": "/workspace/outputs/.cache",
+                    "SINGULARITYENV_CELLTYPIST_DATA_DIR": "/workspace/outputs/celltypist_models",
+                },
                 text=True,
                 bufsize=1,  # line buffered
             )

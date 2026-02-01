@@ -605,21 +605,22 @@ def run_auto(
             turns = IntPrompt.ask("Enter the number of turns", default=3)
         if benchmark_id is None and benchmark_module is None:
             benchmark_id = _prompt_for_benchmark_metric(console)
-        if benchmark_id is None and benchmark_module is not None:
-            from caribou.auto_metrics.registry import find_metric_id_by_path
-
-            benchmark_id = find_metric_id_by_path(benchmark_module)
-            if benchmark_id is None:
-                raise typer.BadParameter(
-                    f"No registered metric found for module path: {benchmark_module}"
-                )
-    else: # If output_dir IS set, require prompt and turns via flags
+    else:  # If output_dir IS set, require prompt and turns via flags
         if prompt is None:
             console.print("[bold red]Error: --prompt is required when using --output-dir for automated runs.[/bold red]")
             raise typer.Exit(1)
         if turns is None:
             turns = 3 # Default turns if not specified in pure auto mode
             console.print(f"[yellow]--turns not specified, defaulting to {turns}.[/yellow]")
+
+    if benchmark_id is None and benchmark_module is not None:
+        from caribou.auto_metrics.registry import find_metric_id_by_path
+
+        benchmark_id = find_metric_id_by_path(benchmark_module)
+        if benchmark_id is None:
+            raise typer.BadParameter(
+                f"No registered metric found for module path: {benchmark_module}"
+            )
 
     console.print(f"\n[bold green]🚀 Starting Automated Mode for {turns} turns...[/bold green]")
 

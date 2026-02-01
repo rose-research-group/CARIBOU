@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "caribou" / "src"))
 from caribou.core.io_helpers import extract_python_code
 from caribou.core.sandbox_management import init_singularity_exec
 from caribou.execution.benchmark_runner import run_benchmark
+from caribou.auto_metrics.registry import find_metric_id_by_path
 from caribou.config import ENV_FILE
 
 class MockConsole:
@@ -72,6 +73,21 @@ class OneShotRunner:
         benchmark_module: Path | None,
     ) -> dict:
         output_dir.mkdir(parents=True, exist_ok=True)
+        # Emit minimal params.txt for downstream aggregations
+        params_path = output_dir / "params.txt"
+        params_path.write_text(
+            "\n".join(
+                [
+                    f"LLM_BACKEND: {self.llm_backend}",
+                    f"MODEL_NAME: {self.model_name}",
+                    f"DATASET_PATH: {dataset_path}",
+                    f"PROMPT_PATH: {prompt_path}",
+                    f"BENCHMARK_MODULE: {benchmark_module}" if benchmark_module else "BENCHMARK_MODULE: ",
+                    f"MODE: one_shot",
+                ]
+            )
+            + "\n"
+        )
         start_time = time.time()
 
         # Build the single prompt
@@ -121,16 +137,20 @@ Wrap all code in ```python ... ``` blocks."""
             exec_time = time.time() - exec_start
             print("Code execution finished.")
             if benchmark_module:
-                run_benchmark(
-                    MockConsole(),
-                    sandbox_manager,
-                    benchmark_module,
-                    is_auto=True,
-                    output_dir=output_dir,
-                    metadata={"name": dataset_path.name},
-                    agent_name="one_shot",
-                    code_snippet=code,
-                )
+                benchmark_id = find_metric_id_by_path(benchmark_module)
+                if benchmark_id is None:
+                    print(f"[caribou] Unknown benchmark metric id: {benchmark_module}")
+                else:
+                    run_benchmark(
+                        MockConsole(),
+                        sandbox_manager,
+                        benchmark_id,
+                        is_auto=True,
+                        output_dir=output_dir,
+                        metadata={"name": dataset_path.name},
+                        agent_name="one_shot",
+                        code_snippet=code,
+                    )
         finally:
             print("Stopping sandbox container...")
             sandbox_manager.stop_container()

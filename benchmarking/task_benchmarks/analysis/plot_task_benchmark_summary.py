@@ -59,6 +59,22 @@ def _summarize_raw(records: List[Dict]) -> List[Dict]:
                         for r in group
                     ]
                 ),
+                "avg_predicted_doublet_rate": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("predicted_doublet_rate")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                        for r in group
+                    )
+                ),
+                "avg_doublet_score_mean": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("doublet_score_mean")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                        for r in group
+                    )
+                ),
             }
         )
     return summary
@@ -93,6 +109,52 @@ def _plot_grouped_bars(
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=30, ha="right")
     ax.grid(axis="y", linestyle="--", alpha=0.4)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
+def _plot_matrix(
+    title: str,
+    records: List[Dict],
+    value_key: str,
+    output_path: Path,
+    ylabel: str,
+    ylim: Optional[tuple] = None,
+) -> None:
+    if not records:
+        return
+    modes = sorted({r.get("mode") or "" for r in records})
+    llms = sorted({r.get("llm_backend") or "" for r in records})
+    if not modes or not llms:
+        return
+
+    values = np.full((len(modes), len(llms)), np.nan)
+    for r in records:
+        mode = r.get("mode") or ""
+        llm = r.get("llm_backend") or ""
+        try:
+            m = modes.index(mode)
+            l = llms.index(llm)
+        except ValueError:
+            continue
+        v = r.get(value_key)
+        values[m, l] = float(v) if isinstance(v, (int, float)) else np.nan
+
+    if np.all(np.isnan(values)):
+        print(f"Skipping {output_path.name}: no numeric values for {value_key}")
+        return
+
+    fig, ax = plt.subplots(figsize=(max(5, len(llms) * 1.2), max(3, len(modes) * 0.8)))
+    im = ax.imshow(values, aspect="auto", cmap="viridis", vmin=None if not ylim else ylim[0], vmax=None if not ylim else ylim[1])
+    ax.set_title(title)
+    ax.set_xticks(np.arange(len(llms)))
+    ax.set_xticklabels(llms, rotation=30, ha="right")
+    ax.set_yticks(np.arange(len(modes)))
+    ax.set_yticklabels(modes)
+    ax.set_xlabel("LLM")
+    ax.set_ylabel(ylabel)
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
@@ -138,6 +200,39 @@ def plot_summary(summary_path: Path, output_dir: Path) -> None:
             ylabel="Avg runtime (s)",
             ylim=None,
         )
+        if task == "doublet_task":
+            _plot_grouped_bars(
+                title=f"{task}: avg predicted doublet rate",
+                records=task_records,
+                value_key="avg_predicted_doublet_rate",
+                output_path=output_dir / f"{task}_avg_doublet_rate.png",
+                ylabel="Avg predicted doublet rate",
+                ylim=(0, 1.0),
+            )
+            _plot_grouped_bars(
+                title=f"{task}: avg doublet score",
+                records=task_records,
+                value_key="avg_doublet_score_mean",
+                output_path=output_dir / f"{task}_avg_doublet_score.png",
+                ylabel="Avg doublet score",
+                ylim=None,
+            )
+            _plot_matrix(
+                title=f"{task}: predicted doublet rate by mode/LLM",
+                records=task_records,
+                value_key="avg_predicted_doublet_rate",
+                output_path=output_dir / f"{task}_avg_doublet_rate_matrix.png",
+                ylabel="Mode",
+                ylim=(0, 1.0),
+            )
+            _plot_matrix(
+                title=f"{task}: doublet score by mode/LLM",
+                records=task_records,
+                value_key="avg_doublet_score_mean",
+                output_path=output_dir / f"{task}_avg_doublet_score_matrix.png",
+                ylabel="Mode",
+                ylim=None,
+            )
 
 
 def main() -> None:

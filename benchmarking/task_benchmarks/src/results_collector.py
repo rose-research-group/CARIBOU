@@ -97,6 +97,8 @@ def _load_latest_benchmark_results(run_dir: Path) -> Optional[Dict]:
 def _infer_autometric_success(results: Optional[Dict]) -> Optional[bool]:
     if not results:
         return None
+    if "doublet_score_present" in results or "predicted_doublet_present" in results:
+        return bool(results.get("doublet_score_present") and results.get("predicted_doublet_present"))
     if "obs_columns_present" in results:
         obs_ok = all(results.get("obs_columns_present", {}).values())
         return bool(
@@ -209,7 +211,7 @@ def collect_results(results_dir: Path, include_h5ad_metrics: bool = True) -> Lis
                     record["code_exec_attempts"] = report.get("code_exec_attempts", record.get("code_exec_attempts"))
                     record["code_exec_failures"] = report.get("code_exec_failures", record.get("code_exec_failures"))
                     if record["success"] is None:
-                        record["success"] = report.get("end_reason") in {"completed", "max_turns_reached"}
+                        record["success"] = report.get("end_reason") in {"completed", "max_turns_reached", "end_session"}
 
                 output_h5ad = _find_output_h5ad(run_dir)
                 if output_h5ad:

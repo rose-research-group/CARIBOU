@@ -52,8 +52,7 @@ for trial in $(seq 1 "$NUM_TRIALS"); do
         --llm "$LLM_BACKEND" \
         --sandbox singularity \
         --benchmark-module "$BENCHMARK_MODULE" \
-        --prompt-module load_prompt \
-        --prompt-var LOAD_PROMPT
+        --prompt-path "$PROMPT_PATH"
 
     echo "Trial $trial completed"
 done
