@@ -1,4 +1,5 @@
-from AutoMetric import AutoMetric
+from caribou.auto_metrics.AutoMetric import AutoMetric
+from caribou.auto_metrics.registry import MetricSpec, register_metric
 import scanpy as sc
 import celltypist
 from celltypist import models
@@ -28,3 +29,16 @@ class CellTypingMetric(AutoMetric):
     
     def requirements(self) -> str:
         return "Requires an AnnData object with 'batch' and 'majority_voting' in .obs and PCA embeddings in .obsm."
+
+
+register_metric(
+    MetricSpec(
+        id="cell_typing",
+        name="Cell Typing Benchmark",
+        description="Runs CellTypist labeling and SCIB Benchmarker metrics.",
+        inputs={"obs": "batch,majority_voting", "obsm": "X_pca,X_pca_harmony"},
+        outputs={"scib_metrics": "Benchmarker output table serialized by scib-metrics."},
+        tags=["celltyping", "benchmark"],
+    ),
+    CellTypingMetric,
+)

@@ -50,6 +50,12 @@ class Agent:
                 full_prompt += f"\n  - Description: {command.description}"
                 full_prompt += f"\n  - Target Agent: {command.target_agent}"
             full_prompt += "\n\n**YOU MUST USE THESE EXACT COMMANDS TO DELEGATE TASKS. NO OTHER FORMATTING OR COMMANDS ARE ALLOWED.**"
+
+        full_prompt += (
+            "\n\nTo end the session early when you believe the task is complete, "
+            "emit the command on a standalone line: `end_session`. "
+            "The end_session message must not include code blocks or other content."
+        )
         
         if self.is_rag_enabled:
             full_prompt += "\n\nIf an error occurs, admit the error and query your specialized knowledge base for more context with the following command:"

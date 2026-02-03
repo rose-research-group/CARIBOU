@@ -77,33 +77,24 @@ def _prompt_for_driver(console: Console, system: "AgentSystem") -> str:
         raise typer.BadParameter("No agents found in the loaded AgentSystem.")
     return Prompt.ask("Enter the name of the driver agent", choices=agents, default=agents[0])
 
-def _prompt_for_benchmark_module(console: Console) -> Optional[Path]:
+def _prompt_for_benchmark_metric(console: Console) -> Optional[str]:
     """
-    Prompt to select a benchmark module (optional). Returns a Path or None.
-    Only .py files in PACKAGE_AUTO_METRICS_DIR are listed, excluding sentinels.
+    Prompt to select a benchmark metric (optional). Returns a metric id or None.
     """
-    console.print("[bold]Select a benchmark module (optional):[/bold]")
+    from caribou.auto_metrics.registry import list_metrics
 
-    if not PACKAGE_AUTO_METRICS_DIR.exists():
-        console.print(f"[yellow]No benchmark directory found at {PACKAGE_AUTO_METRICS_DIR}.[/yellow]")
+    console.print("[bold]Select a benchmark metric (optional):[/bold]")
+    metrics = list_metrics()
+
+    if not metrics:
+        console.print("[yellow]No benchmark metrics registered.[/yellow]")
         return None
 
-    modules = sorted(
-        [
-            m for m in PACKAGE_AUTO_METRICS_DIR.glob("*.py")
-            if m.name not in {"__init__.py", "AutoMetric.py"}
-        ],
-        key=lambda p: p.name.lower(),
-    )
+    for i, spec in enumerate(metrics, 1):
+        tags = ", ".join(spec.tags) if spec.tags else "untagged"
+        console.print(f"  [cyan]{i}[/cyan]: {spec.id} — {spec.name} ({tags})")
 
-    if not modules:
-        console.print("[yellow]No benchmark modules found.[/yellow]")
-        return None
-
-    for i, mod in enumerate(modules, 1):
-        console.print(f"  [cyan]{i}[/cyan]: {mod.name}")
-
-    skip_index_display = len(modules) + 1
+    skip_index_display = len(metrics) + 1
     console.print(f"  [cyan]{skip_index_display}[/cyan]: Skip")
 
     choices = [str(i) for i in range(1, skip_index_display + 1)]
@@ -114,9 +105,9 @@ def _prompt_for_benchmark_module(console: Console) -> Optional[Path]:
     )
     choice_idx = int(choice_str) - 1
 
-    if choice_idx == len(modules):  # Skip selected
+    if choice_idx == len(metrics):  # Skip selected
         return None
-    return modules[choice_idx]
+    return metrics[choice_idx].id
 
 # --------------------------------------------------------------------------------------
 # Core Runner
@@ -126,7 +117,7 @@ def _setup_and_run_session(
     history: list,
     is_auto: bool,
     max_turns: int,
-    benchmark_modules: Optional[List[Path]] = None,
+    benchmark_modules: Optional[List[str]] = None,
 ) -> None:
     """
     Start, run, and stop the sandbox session with proper resource handling and logging.
@@ -498,7 +489,7 @@ def main_run_callback(
 
     console = app_context.console
     console.print("\n[bold blue]🚀 Starting Interactive Mode...[/bold blue]")
-    benchmark_module = _prompt_for_benchmark_module(console)
+    benchmark_id = _prompt_for_benchmark_metric(console)
     history = list(app_context.initial_history or [])
     history.append({"role": "user", "content": "Beginning interactive session. What is the plan?"})
     _setup_and_run_session(
@@ -506,7 +497,7 @@ def main_run_callback(
         history=history,
         is_auto=False,
         max_turns=-1,
-        benchmark_modules=[benchmark_module] if benchmark_module else None,
+        benchmark_modules=[benchmark_id] if benchmark_id else None,
     )
 
 # --------------------------------------------------------------------------------------
@@ -547,7 +538,7 @@ def run_interactive(
 
     console = context.console
     console.print("\n[bold blue]🚀 Starting Interactive Mode...[/bold blue]")
-    benchmark_module = _prompt_for_benchmark_module(console)
+    benchmark_id = _prompt_for_benchmark_metric(console)
     history = list(context.initial_history or [])
     history.append({"role": "user", "content": "Beginning interactive session. What is the plan?"})
     _setup_and_run_session(
@@ -555,7 +546,7 @@ def run_interactive(
         history=history,
         is_auto=False,
         max_turns=-1,
-        benchmark_modules=[benchmark_module] if benchmark_module else None,
+        benchmark_modules=[benchmark_id] if benchmark_id else None,
     )
 
 @run_app.command("auto")
@@ -575,7 +566,19 @@ def run_auto(
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Directory to save ALL outputs (files and logs) non-interactively.", file_okay=False, writable=True, resolve_path=True),
     prompt: Optional[str] = typer.Option(None, "--prompt", "-p", help="Initial prompt for the auto run."),
     turns: Optional[int] = typer.Option(None, "--turns", "-t", help="Number of turns to run automatically."),
-    benchmark_module: Optional[Path] = typer.Option(None, "--benchmark-module", "-bm", help="Path to the auto metric script.", readable=True, exists=True),
+    benchmark_module: Optional[Path] = typer.Option(
+        None,
+        "--benchmark-module",
+        help="Deprecated: path to the auto metric script (use --benchmark-id).",
+        readable=True,
+        exists=True,
+    ),
+    benchmark_id: Optional[str] = typer.Option(
+        None,
+        "--benchmark-id",
+        "-bm",
+        help="Registered metric id to run (e.g. qc_benchmark).",
+    ),
     make_report: bool = typer.Option(False, "--make-report", help="Save a session report with runtime statistics."),
     agent_report_memory: bool = typer.Option(False, "--agent-report-memory", help="Use agent handoff reports as memory between agents instead of full transcripts."),
 ) -> None:
@@ -600,15 +603,24 @@ def run_auto(
             prompt = Prompt.ask("Enter the initial prompt", default="Analyze this dataset.")
         if turns is None:
             turns = IntPrompt.ask("Enter the number of turns", default=3)
-        if benchmark_module is None:
-            benchmark_module = _prompt_for_benchmark_module(console)
-    else: # If output_dir IS set, require prompt and turns via flags
+        if benchmark_id is None and benchmark_module is None:
+            benchmark_id = _prompt_for_benchmark_metric(console)
+    else:  # If output_dir IS set, require prompt and turns via flags
         if prompt is None:
             console.print("[bold red]Error: --prompt is required when using --output-dir for automated runs.[/bold red]")
             raise typer.Exit(1)
         if turns is None:
             turns = 3 # Default turns if not specified in pure auto mode
             console.print(f"[yellow]--turns not specified, defaulting to {turns}.[/yellow]")
+
+    if benchmark_id is None and benchmark_module is not None:
+        from caribou.auto_metrics.registry import find_metric_id_by_path
+
+        benchmark_id = find_metric_id_by_path(benchmark_module)
+        if benchmark_id is None:
+            raise typer.BadParameter(
+                f"No registered metric found for module path: {benchmark_module}"
+            )
 
     console.print(f"\n[bold green]🚀 Starting Automated Mode for {turns} turns...[/bold green]")
 
@@ -620,5 +632,5 @@ def run_auto(
         history=history,
         is_auto=True,
         max_turns=int(turns),
-        benchmark_modules=[benchmark_module] if benchmark_module else None,
+        benchmark_modules=[benchmark_id] if benchmark_id else None,
     )

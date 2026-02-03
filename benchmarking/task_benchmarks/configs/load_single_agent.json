@@ -1,0 +1,19 @@
+{
+  "global_policy": {
+    "policy": {
+      "data_handling": {
+        "raw_counts_preservation": "Always preserve raw counts in .layers['counts'] if missing."
+      }
+    }
+  },
+  "agents": {
+    "load_agent": {
+      "prompt": "You are a single-cell data loading agent. Load the dataset, report basic counts and layers, preserve raw counts if needed, and save a summary JSON to /workspace/outputs/load_summary.json. Execute all steps yourself without delegating.",
+      "rag": {
+        "enabled": true
+      },
+      "neighbors": {},
+      "code_samples": []
+    }
+  }
+}

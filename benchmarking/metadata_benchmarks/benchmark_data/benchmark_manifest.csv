@@ -1,0 +1,6 @@
+dataset_name,blind_h5ad_path
+human_lung,/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/OLD_metadata_benchmarks/benchmark_data/human_lung_blind.h5ad
+human_pancreas,/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/OLD_metadata_benchmarks/benchmark_data/human_pancreas_blind.h5ad
+mouse_brain,/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/OLD_metadata_benchmarks/benchmark_data/mouse_brain_blind.h5ad
+mouse_liver,/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/OLD_metadata_benchmarks/benchmark_data/mouse_liver_blind.h5ad
+chimp_liver,/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/OLD_metadata_benchmarks/benchmark_data/chimp_liver_blind.h5ad

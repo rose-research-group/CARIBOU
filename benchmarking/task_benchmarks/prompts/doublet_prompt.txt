@@ -1,0 +1,17 @@
+Perform doublet detection and filtering on the single-cell RNA-seq dataset at /workspace/dataset.h5ad.
+
+IMPORTANT: All operations must be performed IN-PLACE on the `adata` variable. The benchmark evaluation runs on the in-memory `adata` object after your code completes.
+
+Steps (stop after these):
+1) Load the dataset into a variable named `adata` and report initial cell count and gene count.
+2) Preserve raw counts in .layers['counts'] if missing.
+3) Run Scrublet on raw counts with expected_doublet_rate=0.06.
+4) Add doublet_score and predicted_doublet to adata.obs.
+5) Report number and percentage of predicted doublets.
+6) Filter out predicted doublets IN-PLACE (i.e., adata = adata[~adata.obs['predicted_doublet']].copy()) and report final cell count.
+7) Save the filtered adata to /workspace/outputs/doublet_filtered.h5ad.
+8) Save a summary JSON to /workspace/outputs/doublet_summary.json.
+
+IMPORTANT: Do NOT perform any additional analysis steps (no cell typing, integration, dimensionality reduction, scVI, Harmony, UMAP, or extra plotting). End after writing the filtered h5ad and summary JSON.
+
+Return executable Python code only, wrapped in python ... blocks.

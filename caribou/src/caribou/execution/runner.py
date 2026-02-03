@@ -22,6 +22,7 @@ try:
     from caribou.execution.benchmark_runner import run_benchmark
     from caribou.execution.message_utils import (
         detect_delegation,
+        detect_end_session,
         detect_rag,
         _extract_artifacts_from_msg,
         _count_code_blocks,
@@ -67,7 +68,7 @@ def run_agent_session(
     compress_memory: bool = False,
     max_turns: int = 1,
     model_name: str = "gpt-5.2",
-    benchmark_modules: Optional[List[Path]] = None,
+    benchmark_modules: Optional[List[str]] = None,
     output_dir: Optional[Path] = None,
     make_report: bool = False,
     agent_report_memory: bool = False,
@@ -118,6 +119,8 @@ def run_agent_session(
     current_agent = driver_agent
     turns_completed = 0
     code_block_count = 0
+    code_exec_attempts = 0
+    code_exec_failures = 0
     session_start_ts = datetime.utcnow()
     session_start_time = time.time()
     session_end_reason = "completed"
@@ -187,6 +190,26 @@ def run_agent_session(
                     memory_manager.add_message("system", todo_msg)
             action_space.add_action("todo_logged", f"Logged {len(extracted_todos)} TODO(s).", status="ok")
 
+        # --- End session handling ---
+        # Only end session if there's no delegation command also present
+        # (prevents premature exit when LLM outputs both delegation and end_session)
+        has_delegation = detect_delegation(msg) is not None
+        if detect_end_session(msg) and _count_code_blocks(msg) == 0 and not has_delegation:
+            if is_auto:
+                console.print("[yellow]Agent requested end_session. Ending auto run.[/yellow]")
+                session_end_reason = "agent_finished"
+                break
+            else:
+                user_choice = Prompt.ask(
+                    "Agent requested end_session. Continue anyway?",
+                    choices=["y", "n"],
+                    default="n",
+                ).lower()
+                if user_choice == "n":
+                    console.print("[bold yellow]Ending session at agent request.[/bold yellow]")
+                    session_end_reason = "agent_finished"
+                    break
+
         # --- RAG handling ---
         query_from_re = detect_rag(msg)
         if query_from_re and current_agent.is_rag_enabled:
@@ -247,6 +270,9 @@ def run_agent_session(
             last_code_snippet = code
             console.print("[cyan]Executing code in sandbox…[/cyan]")
             exec_result = sandbox_manager.exec_code(code, timeout=300)
+            code_exec_attempts += 1
+            if exec_result.get("status") != "ok":
+                code_exec_failures += 1
             feedback = format_execute_response(exec_result, output_dir if output_dir else get_default_runs_dir())
             if memory_manager:
                 memory_manager.add_message("system", feedback)
@@ -407,6 +433,8 @@ def run_agent_session(
             "model": model_name,
             "agent_turns": turns_completed,
             "code_blocks_produced": code_block_count,
+            "code_exec_attempts": code_exec_attempts,
+            "code_exec_failures": code_exec_failures,
             "session_start": session_start_ts.isoformat(),
             "session_end": session_end_ts.isoformat(),
             "duration_seconds": duration_seconds,

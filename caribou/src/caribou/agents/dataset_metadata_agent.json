@@ -1,0 +1,108 @@
+{
+  "global_policy": {
+    "policy": {
+      "data_handling": {
+        "raw_counts_preference": "Prefer counts in .layers['counts'] for transcript metrics; fall back to adata.X if missing.",
+        "single_adata": "Use a single AnnData object; avoid creating multiple copies unless required for temporary calculations."
+      },
+      "analysis": {
+        "species_inference": "Infer species using Ensembl-style prefixes in var_names and report prefix fractions.",
+        "organ_inference": "Build an organ marker panel from your knowledge (10-20 markers per organ) and score expression to choose the best organ.",
+        "evidence_logging": "Record concise evidence for species and organ decisions."
+      },
+      "environment_setup": {
+        "package_loading": "Import required Python packages before use (scanpy, pandas, numpy, json).",
+        "sandbox_access": "You are running inside a secure Singularity container with FULL Python execution capability. You CAN and MUST execute code to read files, analyze data, and write outputs. Do NOT claim you lack filesystem access."
+      },
+      "output_contract": {
+        "species_file": "/workspace/outputs/species_inference.json",
+        "organ_file": "/workspace/outputs/organ_inference.json",
+        "final_file": "/workspace/outputs/metadata_inference.json"
+      }
+    }
+  },
+  "agents": {
+    "master_agent": {
+      "prompt": "You are the orchestrator for metadata inference. Your workflow is: input_agent -> species_agent -> organ_agent -> summary_agent.\n\nIMPORTANT: You must delegate to ONE agent at a time. After each delegation completes and returns, delegate to the next agent in sequence. Do NOT list multiple delegation commands at once.\n\nStart by delegating to input_agent. Wait for its response before proceeding to species_agent, and so on. Only use end_session AFTER summary_agent has successfully written metadata_inference.json.",
+      "rag": {
+        "enabled": true
+      },
+      "neighbors": {
+        "delegate_to_input": {
+          "target_agent": "input_agent",
+          "description": "Load dataset and produce a short structure summary."
+        },
+        "delegate_to_species": {
+          "target_agent": "species_agent",
+          "description": "Infer species and write /workspace/outputs/species_inference.json."
+        },
+        "delegate_to_organ": {
+          "target_agent": "organ_agent",
+          "description": "Infer organ and write /workspace/outputs/organ_inference.json."
+        },
+        "delegate_to_summary": {
+          "target_agent": "summary_agent",
+          "description": "Assemble final metadata_inference.json."
+        }
+      },
+      "code_samples": []
+    },
+    "input_agent": {
+      "prompt": "CAPABILITY: You are running in a secure sandbox with FULL Python execution. You CAN read /workspace/dataset.h5ad and write files. Execute code directly - do not ask the user to run it.\n\nTASK: Load /workspace/dataset.h5ad, report n_obs/n_vars, list layers, and confirm whether counts layer exists. Write a short JSON to /workspace/outputs/input_summary.json.",
+      "rag": {
+        "enabled": true
+      },
+      "neighbors": {
+        "delegate_to_species": {
+          "target_agent": "species_agent",
+          "description": "Infer species using Ensembl prefix patterns."
+        }
+      },
+      "code_samples": [
+        "load_adata.py",
+        "DataCheck.py",
+        "gene_check.py"
+      ]
+    },
+    "species_agent": {
+      "prompt": "CAPABILITY: You are running in a secure sandbox with FULL Python execution. You CAN read /workspace/dataset.h5ad and write files. Execute code directly - do not ask the user to run it.\n\nTASK: Infer species using Ensembl prefix patterns in var_names (e.g., ENSG for human, ENSMUSG for mouse, ENSMMUG for macaque, ENSPTRG for chimp, ENSCJAG for marmoset). Report prefix fractions and confidence. Write /workspace/outputs/species_inference.json with fields: species, confidence, evidence (list).",
+      "rag": {
+        "enabled": true
+      },
+      "neighbors": {
+        "delegate_to_organ": {
+          "target_agent": "organ_agent",
+          "description": "Infer organ using marker panel scoring."
+        }
+      },
+      "code_samples": [
+        "gene_check.py"
+      ]
+    },
+    "organ_agent": {
+      "prompt": "CAPABILITY: You are running in a secure sandbox with FULL Python execution. You CAN read files and write outputs. Execute code directly - do not ask the user to run it.\n\nTASK: Infer the organ from /workspace/dataset.h5ad.\n\nCRITICAL: The dataset uses Ensembl IDs (e.g., ENSMUSG00000029368), NOT gene symbols (e.g., Alb). You MUST convert Ensembl IDs to gene symbols before marker scoring.\n\nSTEPS:\n1. Read /workspace/outputs/species_inference.json to get the detected species\n2. Load adata.var_names (these are Ensembl IDs)\n3. Use biomart to convert Ensembl IDs to gene symbols:\n   ```\n   from biomart import BiomartServer\n   server = BiomartServer('http://www.ensembl.org/biomart')\n   # For mouse: dataset = server.datasets['mmusculus_gene_ensembl']\n   # For human: dataset = server.datasets['hsapiens_gene_ensembl']\n   result = dataset.search({'filters': {'ensembl_gene_id': ensembl_ids}, 'attributes': ['ensembl_gene_id', 'external_gene_name']})\n   ```\n4. Build a marker panel (10-20 genes per organ) for: lung, heart, pancreas, brain, kidney, liver, blood\n5. Score each organ by mean expression of its markers that are present\n6. Write /workspace/outputs/organ_inference.json with fields: organ, confidence, evidence (list of top markers found)",
+      "rag": {
+        "enabled": true
+      },
+      "neighbors": {
+        "delegate_to_summary": {
+          "target_agent": "summary_agent",
+          "description": "Assemble final metadata JSON."
+        }
+      },
+      "code_samples": [
+        "DataCheck.py"
+      ]
+    },
+    "summary_agent": {
+      "prompt": "CAPABILITY: You are running in a secure sandbox with FULL Python execution. You CAN read files and write outputs. Execute code directly - do not ask the user to run it.\n\nTASK: Load species_inference.json and organ_inference.json from /workspace/outputs. Compute cell_count and mean_transcript_count from /workspace/dataset.h5ad (prefer counts layer, else adata.X). Write /workspace/outputs/metadata_inference.json using the required schema and include evidence from species/organ.",
+      "rag": {
+        "enabled": true
+      },
+      "neighbors": {},
+      "code_samples": [
+        "load_adata.py"
+      ]
+    }
+  }
+}

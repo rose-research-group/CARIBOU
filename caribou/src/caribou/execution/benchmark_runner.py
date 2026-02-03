@@ -17,6 +17,8 @@ from typing import Dict, Optional
 from rich.console import Console
 from rich.table import Table
 
+from caribou.auto_metrics.registry import get_metric_entry
+
 
 def _dump_code_snippet(run_id: str, code: str, output_dir: Path) -> str:
     """Write <run_id>.py under the appropriate snippets dir and return the relative path."""
@@ -57,7 +59,7 @@ def _save_benchmark_record(
 def run_benchmark(
     console: Console,
     mgr: object,  # SandboxManager
-    benchmark_module: Path,
+    benchmark_metric_id: str,
     *,
     is_auto: bool,
     output_dir: Path,
@@ -70,12 +72,23 @@ def run_benchmark(
     In auto mode, saves results and returns a result string for the history.
     In interactive mode, prints results to the console.
     """
-    console.print(f"\n[bold cyan]Running benchmark module: {benchmark_module.name}[/bold cyan]")
-    autometric_base_path = benchmark_module.parent / "AutoMetric.py"
+    try:
+        entry = get_metric_entry(benchmark_metric_id)
+    except KeyError as exc:
+        err = f"Unknown benchmark metric id: {benchmark_metric_id}"
+        console.print(f"[red]{err}[/red]")
+        return err if is_auto else ""
+    metric_spec = entry.spec
+    metric_module_path = entry.module_path
+    metric_class_name = entry.class_name
+    metric_init_kwargs = entry.init_kwargs
+
+    console.print(f"\n[bold cyan]Running benchmark metric: {metric_spec.id}[/bold cyan]")
+    autometric_base_path = metric_module_path.parent / "AutoMetric.py"
     try:
         with open(autometric_base_path, "r") as f:
             autometric_code = f.read()
-        with open(benchmark_module, "r") as f:
+        with open(metric_module_path, "r") as f:
             benchmark_code = f.read()
     except FileNotFoundError as e:
         err = f"Benchmark module or AutoMetric.py not found: {e}"
@@ -92,32 +105,43 @@ except ImportError:
     anndata = None
 
 # Load AutoMetric into a module to satisfy imports inside the metric script
-_auto_mod = types.ModuleType("AutoMetric")
+_auto_mod = types.ModuleType("caribou.auto_metrics.AutoMetric")
+_auto_mod.__package__ = "caribou.auto_metrics"
+sys.modules["caribou"] = types.ModuleType("caribou")
+sys.modules["caribou"].__path__ = []
+sys.modules["caribou.auto_metrics"] = types.ModuleType("caribou.auto_metrics")
+sys.modules["caribou.auto_metrics"].__path__ = []
+sys.modules["caribou"].auto_metrics = sys.modules["caribou.auto_metrics"]
+sys.modules["caribou.auto_metrics.AutoMetric"] = _auto_mod
 sys.modules["AutoMetric"] = _auto_mod
 exec({autometric_code!r}, _auto_mod.__dict__)
+sys.modules["caribou.auto_metrics"].AutoMetric = _auto_mod
+
+_registry_mod = types.ModuleType("caribou.auto_metrics.registry")
+class MetricSpec:
+    def __init__(self, *args, **kwargs):
+        pass
+def register_metric(*args, **kwargs):
+    return None
+_registry_mod.MetricSpec = MetricSpec
+_registry_mod.register_metric = register_metric
+sys.modules["caribou.auto_metrics.registry"] = _registry_mod
 
 # Load the benchmark module code into its own module namespace
-_metric_mod = types.ModuleType("{benchmark_module.stem}")
-sys.modules["{benchmark_module.stem}"] = _metric_mod
+_metric_mod = types.ModuleType("caribou.auto_metrics.{metric_module_path.stem}")
+sys.modules["caribou.auto_metrics.{metric_module_path.stem}"] = _metric_mod
 exec({benchmark_code!r}, _metric_mod.__dict__)
 
-# Identify the first AutoMetric subclass defined in the benchmark module
-_AM = _auto_mod.__dict__.get("AutoMetric")
-_metric_cls = None
-for _name, _obj in list(_metric_mod.__dict__.items()):
-    # Skip the AutoMetric base class itself, only find concrete subclasses
-    if _AM and isinstance(_obj, type) and issubclass(_obj, _AM) and _obj is not _AM:
-        _metric_cls = _obj
-        break
-
+_metric_cls = _metric_mod.__dict__.get({metric_class_name!r})
 if _metric_cls is None:
-    raise RuntimeError("No AutoMetric subclass found in benchmark module.")
+    raise RuntimeError("Metric class not found in benchmark module.")
 if "adata" not in globals():
     raise RuntimeError("No adata available in the sandbox session for benchmark execution.")
 if anndata is not None and not isinstance(adata, anndata.AnnData):
     raise RuntimeError(f"'adata' is {{type(adata)}}; expected an AnnData object.")
 
-_metric = _metric_cls()
+_metric_kwargs = {metric_init_kwargs!r}
+_metric = _metric_cls(**_metric_kwargs)
 _results = _metric.metric(adata)
 print(json.dumps(_results))
 """
@@ -140,7 +164,7 @@ print(json.dumps(_results))
                 table.add_row(str(key), str(value))
             if is_auto:
                 _save_benchmark_record(
-                    run_id=f"{benchmark_module.stem}:{agent_name}:{int(time.time())}",
+                    run_id=f"{metric_spec.id}:{agent_name}:{int(time.time())}",
                     results=result_dict,
                     meta=metadata if metadata else {},
                     code=code_snippet,
