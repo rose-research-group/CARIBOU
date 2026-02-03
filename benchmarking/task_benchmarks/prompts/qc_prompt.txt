@@ -1,12 +1,14 @@
 Perform comprehensive quality control on the single-cell RNA-seq dataset at /workspace/dataset.h5ad.
 
+IMPORTANT: All operations must be performed IN-PLACE on a variable named `adata`. The benchmark evaluation runs on the in-memory `adata` object after your code completes. When filtering cells, update `adata` directly (e.g., `adata = adata[mask].copy()`).
+
 Execute the following QC pipeline:
 
 1. **Load and Inspect Data**
-   - Load the h5ad file using scanpy
+   - Load the h5ad file into a variable named `adata` using scanpy
    - Report initial cell count and gene count
    - Check for existing layers (especially 'counts')
-   - Preserve raw counts in .layers['counts'] if not already present
+   - Preserve raw counts in adata.layers['counts'] if not already present
 
 2. **Calculate QC Metrics**
    - Identify mitochondrial genes (prefix: 'MT-' or 'mt-')

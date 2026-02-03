@@ -65,6 +65,56 @@ class OneShotRunner:
             raise ValueError(f"Prompt file not found: {prompt_path}")
         return prompt_path.read_text()
 
+    def _check_autometric_success(self, output_dir: Path):
+        """Load benchmark_results.jsonl and infer autometric success.
+
+        Returns:
+            Tuple of (autometric_success: bool | None, autometric_results: dict | None)
+        """
+        ledger_path = output_dir / "benchmark_results.jsonl"
+        if not ledger_path.exists():
+            return None, None
+        lines = [line for line in ledger_path.read_text().splitlines() if line.strip()]
+        if not lines:
+            return None, None
+        try:
+            record = json.loads(lines[-1])
+            results = record.get("results", {})
+        except json.JSONDecodeError:
+            return None, None
+
+        if not results:
+            return None, None
+
+        # Infer success based on task type (same logic as results_collector)
+        autometric_success = None
+        if "doublet_score_present" in results or "predicted_doublet_present" in results:
+            # For doublet task: columns must be present AND doublets must have been filtered
+            columns_present = bool(
+                results.get("doublet_score_present") and results.get("predicted_doublet_present")
+            )
+            # predicted_doublet_rate should be ~0 after filtering (doublets removed)
+            # A high rate (>5%) suggests filtering didn't happen
+            doublet_rate = results.get("predicted_doublet_rate")
+            if doublet_rate is None:
+                autometric_success = columns_present
+            else:
+                filtering_worked = doublet_rate < 0.05
+                autometric_success = columns_present and filtering_worked
+        elif "obs_columns_present" in results:
+            obs_ok = all(results.get("obs_columns_present", {}).values())
+            autometric_success = bool(
+                obs_ok
+                and results.get("counts_layer_present")
+                and results.get("pca_present")
+                and results.get("umap_present")
+                and results.get("hvg_calculated")
+            )
+        elif "n_obs" in results and "n_vars" in results:
+            autometric_success = bool(results.get("n_obs", 0) > 0 and results.get("n_vars", 0) > 0)
+
+        return autometric_success, results
+
     def run(
         self,
         dataset_path: Path,
@@ -131,6 +181,8 @@ Wrap all code in ```python ... ``` blocks."""
             return {"success": False, "error": "Failed to start sandbox container"}
         print("Sandbox container started.")
 
+        autometric_success = None
+        autometric_results = None
         try:
             print("Executing code in sandbox...")
             result = sandbox_manager.exec_code(code, timeout=600)
@@ -151,6 +203,8 @@ Wrap all code in ```python ... ``` blocks."""
                         agent_name="one_shot",
                         code_snippet=code,
                     )
+                    # Check the autometric results we just wrote
+                    autometric_success, autometric_results = self._check_autometric_success(output_dir)
         finally:
             print("Stopping sandbox container...")
             sandbox_manager.stop_container()
@@ -160,10 +214,21 @@ Wrap all code in ```python ... ``` blocks."""
 
         # Collect results
         code_exec_attempts = 1
-        code_exec_failures = 0 if result.get("status") == "ok" else 1
+        code_execution_success = result.get("status") == "ok"
+        code_exec_failures = 0 if code_execution_success else 1
+
+        # Success requires both code execution AND autometric validation (if available)
+        # If no benchmark was run, fall back to code execution success only
+        if autometric_success is not None:
+            success = code_execution_success and autometric_success
+        else:
+            success = code_execution_success
 
         return {
-            "success": result.get("status") == "ok",
+            "success": success,
+            "code_execution_success": code_execution_success,
+            "autometric_success": autometric_success,
+            "autometric_results": autometric_results,
             "mode": "one_shot",
             "llm_backend": self.llm_backend,
             "model_name": self.model_name,
