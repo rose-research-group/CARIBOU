@@ -5,7 +5,6 @@ channels:
   - nvidia
   - bioconda
 dependencies:
-  - rapids-singlecell
   - python=3.11
   - numpy==1.26.4
   - scipy==1.13.1
@@ -26,7 +25,7 @@ dependencies:
   - python-igraph==0.11.6
   - networkx==3.2.1
   - jupyter
-  - jupyter-client
+  - jupyter_client
   - tqdm==4.66.4
   - ansi2html==1.8.0
   - openpyxl==3.1.5
@@ -38,9 +37,7 @@ dependencies:
   - h5netcdf
   - bbknn
   - scvi-tools
-  - scarches
   - harmonypy
-  - scib-metrics
   - biomart
   - gseapy
   - pybiomart
@@ -48,3 +45,6 @@ dependencies:
   - fastapi
   - uvicorn
   - python-multipart
+  - pip:
+    - rapids-singlecell
+    - scib-metrics
