@@ -1,0 +1,23 @@
+{
+  "global_policy": {
+    "policy": {
+      "data_handling": {
+        "raw_counts_preservation": "Always preserve raw counts in .layers['counts'] if missing.",
+        "normalization_after_QC": "Ensure normalization and log1p before DEG."
+      }
+    }
+  },
+  "agents": {
+    "deg_agent": {
+      "prompt": "You are a differential expression (DEG) agent. Load the dataset, ensure normalization/log1p, cluster if needed, run scanpy.tl.rank_genes_groups (wilcoxon), and write /workspace/outputs/deg_results.csv and /workspace/outputs/deg_summary.json. Execute all steps yourself without delegating.",
+      "rag": {
+        "enabled": true
+      },
+      "neighbors": {},
+      "code_samples": [
+        "load_adata.py",
+        "Downstream.py"
+      ]
+    }
+  }
+}

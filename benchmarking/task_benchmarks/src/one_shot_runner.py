@@ -87,6 +87,9 @@ class OneShotRunner:
             return None, None
 
         # Infer success based on task type (same logic as results_collector)
+        if isinstance(results.get("success"), bool):
+            return results.get("success"), results
+
         autometric_success = None
         if "doublet_score_present" in results or "predicted_doublet_present" in results:
             # For doublet task: columns must be present AND doublets must have been filtered
@@ -121,6 +124,7 @@ class OneShotRunner:
         output_dir: Path,
         prompt_path: Path,
         benchmark_module: Path | None,
+        benchmark_id: str | None,
     ) -> dict:
         output_dir.mkdir(parents=True, exist_ok=True)
         # Emit minimal params.txt for downstream aggregations
@@ -133,6 +137,7 @@ class OneShotRunner:
                     f"DATASET_PATH: {dataset_path}",
                     f"PROMPT_PATH: {prompt_path}",
                     f"BENCHMARK_MODULE: {benchmark_module}" if benchmark_module else "BENCHMARK_MODULE: ",
+                    f"BENCHMARK_ID: {benchmark_id}" if benchmark_id else "BENCHMARK_ID: ",
                     f"MODE: one_shot",
                 ]
             )
@@ -188,23 +193,24 @@ Wrap all code in ```python ... ``` blocks."""
             result = sandbox_manager.exec_code(code, timeout=600)
             exec_time = time.time() - exec_start
             print("Code execution finished.")
-            if benchmark_module:
-                benchmark_id = find_metric_id_by_path(benchmark_module)
-                if benchmark_id is None:
+            selected_benchmark_id = benchmark_id
+            if selected_benchmark_id is None and benchmark_module:
+                selected_benchmark_id = find_metric_id_by_path(benchmark_module)
+                if selected_benchmark_id is None:
                     print(f"[caribou] Unknown benchmark metric id: {benchmark_module}")
-                else:
-                    run_benchmark(
-                        MockConsole(),
-                        sandbox_manager,
-                        benchmark_id,
-                        is_auto=True,
-                        output_dir=output_dir,
-                        metadata={"name": dataset_path.name},
-                        agent_name="one_shot",
-                        code_snippet=code,
-                    )
-                    # Check the autometric results we just wrote
-                    autometric_success, autometric_results = self._check_autometric_success(output_dir)
+            if selected_benchmark_id:
+                run_benchmark(
+                    MockConsole(),
+                    sandbox_manager,
+                    selected_benchmark_id,
+                    is_auto=True,
+                    output_dir=output_dir,
+                    metadata={"name": dataset_path.name},
+                    agent_name="one_shot",
+                    code_snippet=code,
+                )
+                # Check the autometric results we just wrote
+                autometric_success, autometric_results = self._check_autometric_success(output_dir)
         finally:
             print("Stopping sandbox container...")
             sandbox_manager.stop_container()
@@ -216,6 +222,7 @@ Wrap all code in ```python ... ``` blocks."""
         code_exec_attempts = 1
         code_execution_success = result.get("status") == "ok"
         code_exec_failures = 0 if code_execution_success else 1
+        correction_count = 0
 
         # Success requires both code execution AND autometric validation (if available)
         # If no benchmark was run, fall back to code execution success only
@@ -238,6 +245,7 @@ Wrap all code in ```python ... ``` blocks."""
             "num_api_calls": 1,
             "code_exec_attempts": code_exec_attempts,
             "code_exec_failures": code_exec_failures,
+            "correction_count": correction_count,
             "stdout": result.get("stdout", ""),
             "stderr": result.get("stderr", ""),
             "output_files": list(output_dir.glob("outputs/*"))
@@ -251,6 +259,7 @@ def main():
     parser.add_argument("--sandbox", default="singularity", choices=["singularity", "docker"])
     parser.add_argument("--prompt-path", required=True, type=Path)
     parser.add_argument("--benchmark-module", type=Path, default=None)
+    parser.add_argument("--benchmark-id", type=str, default=None)
     args = parser.parse_args()
 
     runner = OneShotRunner(args.llm, args.sandbox)
@@ -259,6 +268,7 @@ def main():
         args.output_dir,
         args.prompt_path,
         args.benchmark_module,
+        args.benchmark_id,
     )
 
     # Save metrics

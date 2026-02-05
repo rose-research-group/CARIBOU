@@ -6,7 +6,7 @@ BLUEPRINT_PATH="$ROOT_DIR/benchmarking/task_benchmarks/configs/qc_single_agent.j
 DATASET_PATH="$ROOT_DIR/benchmarking/datasets/pbmc_1k_v2_v3_combined.h5ad"
 OUTPUT_BASE="$ROOT_DIR/benchmarking/task_benchmarks/results/qc_task/single_agent"
 SANDBOX_BACKEND="singularity"
-BENCHMARK_MODULE="$ROOT_DIR/caribou/src/caribou/auto_metrics/QCBenchmarkMetric.py"
+BENCHMARK_ID="qc_benchmark"
 LLM_BACKEND="deepseek"
 NUM_TURNS=15
 NUM_TRIALS=3
@@ -53,7 +53,7 @@ for trial in $(seq 1 "$NUM_TRIALS"); do
         --prompt "$INITIAL_PROMPT" \
         --driver-agent "qc_agent" \
         --output-dir "$RUN_DIR" \
-        --benchmark-module "$BENCHMARK_MODULE" \
+        --benchmark-id "$BENCHMARK_ID" \
         --make-report
 
     echo "Trial $trial completed"

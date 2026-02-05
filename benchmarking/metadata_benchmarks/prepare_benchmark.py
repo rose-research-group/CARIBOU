@@ -10,16 +10,12 @@ import cellxgene_census
 
 
 DATASETS = {
-    "human_lung": "e04daea4-4412-45b5-989e-76a9be070a89",
-    # "human_heart": "e2c257e7-6f79-487c-b81c-39451cd4ab3c", doesn't exist anymore
-    # "human_pbmc": "53d208b0-2cfd-4366-9866-c3c6114081bc", too large
-    "human_pancreas": "74cff64f-9da9-4b2a-9b3b-8a04a1598040",
-    "mouse_brain": "f9ad5649-f372-43e1-a3a8-423383e5a8a2",
-    "mouse_kidney": "48b37086-25f7-4ecd-a8be-7ab3cf760fd6",
-    "mouse_liver": "4546e757-34d0-4d17-be06-538318925fcd",
-    "rhesus_brain": "0b9d8a04-bb9d-44da-aa27-705bb65b54eb",
-    "marmoset_brain": "0fd39ad7-5d2d-41c2-bda0-c55bde614bdb",
-    "chimp_liver": "ecf2e08e-2032-4a9e-b466-b65b395f4a02",
+    "human_lung": "066943a2-fdac-4b29-b348-40cede398e4e", #https://cellxgene.cziscience.com/e/066943a2-fdac-4b29-b348-40cede398e4e.cxg/
+    "human_pancreas": "66d15835-5dc8-4e96-b0eb-f48971cb65e8", # https://cellxgene.cziscience.com/e/66d15835-5dc8-4e96-b0eb-f48971cb65e8.cxg/
+    "mouse_brain": "3a15ab1c-c36c-4842-9a3e-47e6ffd0ba6f", #https://cellxgene.cziscience.com/e/3a15ab1c-c36c-4842-9a3e-47e6ffd0ba6f.cxg/
+    "mouse_kidney": "42bb7f78-cef8-4b0d-9bba-50037d64d8c1", #https://cellxgene.cziscience.com/e/42bb7f78-cef8-4b0d-9bba-50037d64d8c1.cxg/
+    "zebrafish_epithelium": "938a9fe1-851b-4458-b87e-3b1b83e4b610", #https://cellxgene.cziscience.com/e/938a9fe1-851b-4458-b87e-3b1b83e4b610.cxg/
+    "zebrafish_muscle": "6cf139ae-ba92-41b3-acca-3e938d80aff0", #https://cellxgene.cziscience.com/e/6cf139ae-ba92-41b3-acca-3e938d80aff0.cxg/
 }
 
 

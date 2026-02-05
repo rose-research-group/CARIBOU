@@ -19,7 +19,7 @@ BLUEPRINT_PATH="$ROOT_DIR/caribou/src/caribou/agents/olaf_fully_connected_v2.jso
 DATASET_PATH="$ROOT_DIR/dev/datasets/pbmc_1k_v2_v3_combined.h5ad"
 OUTPUT_BASE="$ROOT_DIR/benchmarking/task_benchmarks/results/load_data/full_system"
 SANDBOX_BACKEND="singularity"
-BENCHMARK_MODULE="$ROOT_DIR/caribou/src/caribou/auto_metrics/LoadDataMetric.py"
+BENCHMARK_ID="load_data"
 LLM_BACKEND="claude"
 NUM_TURNS=8
 NUM_TRIALS=3
@@ -66,7 +66,7 @@ for trial in $(seq 1 "$NUM_TRIALS"); do
         --prompt "$INITIAL_PROMPT" \
         --driver-agent "master_agent" \
         --output-dir "$RUN_DIR" \
-        --benchmark-module "$BENCHMARK_MODULE" \
+        --benchmark-id "$BENCHMARK_ID" \
         --make-report
 
     echo "Trial $trial completed"

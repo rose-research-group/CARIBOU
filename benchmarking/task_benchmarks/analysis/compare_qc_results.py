@@ -63,8 +63,94 @@ def _summarize(records: List[Dict]) -> List[Dict]:
                 "avg_duration_seconds": _safe_mean(r.get("duration_seconds") for r in group),
                 "avg_runtime_seconds": _safe_mean(runtime_values),
                 "avg_agent_turns": _safe_mean(r.get("agent_turns") for r in group),
+                "avg_correction_count": _safe_mean(
+                    r.get("correction_count")
+                    if r.get("correction_count") is not None
+                    else r.get("code_exec_failures")
+                    for r in group
+                ),
+                "avg_data_adequacy_score": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("adequacy_score")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
                 "avg_final_cell_count": _safe_mean(
                     r.get("output_metrics", {}).get("final_cell_count") if r.get("output_metrics") else None
+                    for r in group
+                ),
+                "avg_batch_silhouette_baseline": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("batch_silhouette_baseline")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_batch_silhouette_integrated": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("batch_silhouette_integrated")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_batch_silhouette_delta": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("batch_silhouette_delta")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_celltype_silhouette_baseline": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("celltype_silhouette_baseline")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_celltype_silhouette_integrated": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("celltype_silhouette_integrated")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_celltype_silhouette_delta": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("celltype_silhouette_delta")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_isolated_label_f1_baseline": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("isolated_label_f1_baseline")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_isolated_label_f1_integrated": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("isolated_label_f1_integrated")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_isolated_label_f1_delta": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("isolated_label_f1_delta")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
                     for r in group
                 ),
             }
@@ -83,7 +169,9 @@ def _print_summary(summary: List[Dict]) -> None:
         "autometric_rate",
         "avg_total_time",
         "avg_duration",
+        "avg_corrections",
         "avg_turns",
+        "avg_data_adequacy",
     ]
     print("\t".join(headers))
     for row in summary:
@@ -99,7 +187,9 @@ def _print_summary(summary: List[Dict]) -> None:
                     _format_float(row.get("autometric_success_rate")),
                     _format_float(row.get("avg_total_time_seconds")),
                     _format_float(row.get("avg_duration_seconds")),
+                    _format_float(row.get("avg_correction_count")),
                     _format_float(row.get("avg_agent_turns")),
+                    _format_float(row.get("avg_data_adequacy_score")),
                 ]
             )
         )

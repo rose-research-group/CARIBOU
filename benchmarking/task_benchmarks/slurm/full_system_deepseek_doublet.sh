@@ -19,7 +19,7 @@ BLUEPRINT_PATH="$ROOT_DIR/caribou/src/caribou/agents/olaf_fully_connected_v2.jso
 DATASET_PATH="$ROOT_DIR/dev/datasets/pbmc_1k_v2_v3_combined.h5ad"
 OUTPUT_BASE="$ROOT_DIR/benchmarking/task_benchmarks/results/doublet_task/full_system"
 SANDBOX_BACKEND="singularity"
-BENCHMARK_MODULE="$ROOT_DIR/caribou/src/caribou/auto_metrics/DoubletBenchmarkMetric.py"
+BENCHMARK_ID="doublet_benchmark"
 LLM_BACKEND="deepseek"
 NUM_TURNS=10
 NUM_TRIALS=3
@@ -57,7 +57,7 @@ for trial in $(seq 1 "$NUM_TRIALS"); do
     echo "NUM_TURNS: $NUM_TURNS" >> "$RUN_DIR/params.txt"
     echo "TRIAL: $trial" >> "$RUN_DIR/params.txt"
 
-    caribou run auto         --blueprint "$BLUEPRINT_PATH"         --dataset "$DATASET_PATH"         --sandbox "$SANDBOX_BACKEND"         --llm "$LLM_BACKEND"         --turns "$NUM_TURNS"         --prompt "$INITIAL_PROMPT"         --driver-agent "master_agent"         --output-dir "$RUN_DIR"         --benchmark-module "$BENCHMARK_MODULE"         --make-report
+    caribou run auto         --blueprint "$BLUEPRINT_PATH"         --dataset "$DATASET_PATH"         --sandbox "$SANDBOX_BACKEND"         --llm "$LLM_BACKEND"         --turns "$NUM_TURNS"         --prompt "$INITIAL_PROMPT"         --driver-agent "master_agent"         --output-dir "$RUN_DIR"         --benchmark-id "$BENCHMARK_ID"         --make-report
 
     echo "Trial $trial completed"
 

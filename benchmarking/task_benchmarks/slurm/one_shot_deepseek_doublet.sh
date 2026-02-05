@@ -31,7 +31,7 @@ fi
 INITIAL_PROMPT="$(cat "$PROMPT_PATH")"
 DATASET_PATH="$ROOT_DIR/dev/datasets/pbmc_1k_v2_v3_combined.h5ad"
 OUTPUT_BASE="$ROOT_DIR/benchmarking/task_benchmarks/results/doublet_task/one_shot"
-BENCHMARK_MODULE="$ROOT_DIR/caribou/src/caribou/auto_metrics/DoubletBenchmarkMetric.py"
+BENCHMARK_ID="doublet_benchmark"
 LLM_BACKEND="deepseek"
 NUM_TRIALS=3
 
@@ -46,7 +46,7 @@ for trial in $(seq 1 "$NUM_TRIALS"); do
     JOB_ID=${SLURM_JOB_ID:-$$}
     RUN_DIR="$OUTPUT_BASE/${LLM_BACKEND}_${JOB_ID}_trial${trial}"
 
-    python $ROOT_DIR/benchmarking/task_benchmarks/src/one_shot_runner.py         --dataset "$DATASET_PATH"         --output-dir "$RUN_DIR"         --llm "$LLM_BACKEND"         --sandbox singularity         --benchmark-module "$BENCHMARK_MODULE"         --prompt-path "$PROMPT_PATH"
+    python $ROOT_DIR/benchmarking/task_benchmarks/src/one_shot_runner.py         --dataset "$DATASET_PATH"         --output-dir "$RUN_DIR"         --llm "$LLM_BACKEND"         --sandbox singularity         --benchmark-id "$BENCHMARK_ID"         --prompt-path "$PROMPT_PATH"
 
     echo "Trial $trial completed"
 

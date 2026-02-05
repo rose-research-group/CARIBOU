@@ -5,12 +5,13 @@ import importlib
 import inspect
 from pathlib import Path
 import sys
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 
 AUTO_METRICS_DIR = Path(__file__).resolve().parent
 _DISCOVERED = False
 _REGISTRY: Dict[str, "MetricEntry"] = {}
+_PENDING_MODULES: Set[str] = set()  # Module names not yet imported
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,11 @@ def register_metric(
 
 
 def discover_metrics() -> None:
+    """Discover metric modules without importing them.
+
+    Modules are collected as pending and imported lazily when needed.
+    This avoids import errors for dependencies only available in the container.
+    """
     global _DISCOVERED
     if _DISCOVERED:
         return
@@ -64,18 +70,29 @@ def discover_metrics() -> None:
         if path.name in {"AutoMetric.py", "registry.py", "__init__.py"}:
             continue
         module_name = f"caribou.auto_metrics.{path.stem}"
-        if module_name in sys.modules:
-            continue
-        try:
-            importlib.import_module(module_name)
-        except Exception as exc:
-            print(f"[caribou] Skipping metric module {path.name}: {exc}")
+        if module_name not in sys.modules:
+            _PENDING_MODULES.add(module_name)
 
     _DISCOVERED = True
 
 
+def _try_import_pending() -> None:
+    """Attempt to import any pending modules (for use inside the container)."""
+    failed = set()
+    for module_name in list(_PENDING_MODULES):
+        try:
+            importlib.import_module(module_name)
+            _PENDING_MODULES.discard(module_name)
+        except Exception:
+            failed.add(module_name)
+    # Keep failed ones as pending for potential retry
+    _PENDING_MODULES.clear()
+    _PENDING_MODULES.update(failed)
+
+
 def list_metrics(tag: Optional[str] = None) -> List[MetricSpec]:
     discover_metrics()
+    _try_import_pending()  # Import modules now (works in container)
     specs = [entry.spec for entry in _REGISTRY.values()]
     if tag:
         specs = [spec for spec in specs if tag in spec.tags]
@@ -84,6 +101,8 @@ def list_metrics(tag: Optional[str] = None) -> List[MetricSpec]:
 
 def get_metric_entry(metric_id: str) -> MetricEntry:
     discover_metrics()
+    if metric_id not in _REGISTRY:
+        _try_import_pending()  # Try importing pending modules
     return _REGISTRY[metric_id]
 
 

@@ -63,6 +63,10 @@ benchmarking/task_benchmarks/
   - `bash benchmarking/task_benchmarks/slurm/submit_all_qc_benchmarks.sh`
 - Submit all load-data jobs:
   - `bash benchmarking/task_benchmarks/slurm/submit_all_load_benchmarks.sh`
+- Submit all batch-correction jobs:
+  - `bash benchmarking/task_benchmarks/slurm/submit_all_batch_correction_benchmarks.sh`
+- Submit all data-adequacy jobs:
+  - `bash benchmarking/task_benchmarks/slurm/submit_all_data_adequacy_benchmarks.sh`
 - Submit a single script:
   - `sbatch benchmarking/task_benchmarks/slurm/one_shot_chatgpt_qc.sh`
 
@@ -82,6 +86,8 @@ The comparison script writes a JSON summary to `benchmarking/task_benchmarks/ana
 Two additional prompt files are available:
 - `benchmarking/task_benchmarks/prompts/doublet_prompt.txt` (doublet detection + filtering)
 - `benchmarking/task_benchmarks/prompts/full_qc_prompt.txt` (end-to-end QC workflow)
+- `benchmarking/task_benchmarks/prompts/batch_correction_prompt.txt` (batch effect analysis + correction)
+- `benchmarking/task_benchmarks/prompts/data_adequacy_prompt.txt` (input data adequacy assessment)
 
 To run them with the migrated scripts, pass a prompt file via `PROMPT_PATH`, for example:
   - `PROMPT_PATH=benchmarking/task_benchmarks/prompts/doublet_prompt.txt`

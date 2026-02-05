@@ -18,7 +18,7 @@ fi
 INITIAL_PROMPT="$(cat "$PROMPT_PATH")"
 DATASET_PATH="$ROOT_DIR/benchmarking/datasets/pbmc_1k_v2_v3_combined.h5ad"
 OUTPUT_BASE="$ROOT_DIR/benchmarking/task_benchmarks/results/load_data/one_shot"
-BENCHMARK_MODULE="$ROOT_DIR/caribou/src/caribou/auto_metrics/LoadDataMetric.py"
+BENCHMARK_ID="load_data"
 LLM_BACKEND="deepseek"
 NUM_TRIALS=3
 
@@ -38,7 +38,7 @@ for trial in $(seq 1 "$NUM_TRIALS"); do
         --output-dir "$RUN_DIR" \
         --llm "$LLM_BACKEND" \
         --sandbox singularity \
-        --benchmark-module "$BENCHMARK_MODULE" \
+        --benchmark-id "$BENCHMARK_ID" \
         --prompt-module load_prompt \
         --prompt-var LOAD_PROMPT
 

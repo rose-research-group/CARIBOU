@@ -18,7 +18,7 @@ fi
 INITIAL_PROMPT="$(cat "$PROMPT_PATH")"
 DATASET_PATH="$ROOT_DIR/benchmarking/datasets/pbmc_1k_v2_v3_combined.h5ad"
 OUTPUT_BASE="$ROOT_DIR/benchmarking/task_benchmarks/results/qc_task/one_shot"
-BENCHMARK_MODULE="$ROOT_DIR/caribou/src/caribou/auto_metrics/QCBenchmarkMetric.py"
+BENCHMARK_ID="qc_benchmark"
 LLM_BACKEND="claude"
 NUM_TRIALS=3
 
