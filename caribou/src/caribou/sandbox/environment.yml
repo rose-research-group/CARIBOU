@@ -6,6 +6,10 @@ channels:
   - bioconda
 dependencies:
   - python=3.11
+  - cuda-version=12
+  - cudf
+  - cuml
+  - cupy
   - numpy==1.26.4
   - scipy==1.13.1
   - pandas==2.2.2
@@ -24,6 +28,9 @@ dependencies:
   - leidenalg==0.10.2
   - python-igraph==0.11.6
   - networkx==3.2.1
+  - dask
+  - distributed
+  - cuvs
   - jupyter
   - jupyter_client
   - tqdm==4.66.4

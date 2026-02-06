@@ -71,5 +71,11 @@ ENV IPY_BASE_PORT=4000
 # Activate conda environment
 ENV PATH="/usr/local/envs/rapids/bin:${PATH}"
 
+# Suppress micromamba warnings and messages
+ENV MAMBA_NO_BANNER=1
+ENV MAMBA_ROOT_PREFIX=/opt/micromamba
+ENV MAMBA_NO_LOW_SPEED_LIMIT=1
+ENV PYTHONUNBUFFERED=1
+
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/home/sandboxuser/start.sh"]

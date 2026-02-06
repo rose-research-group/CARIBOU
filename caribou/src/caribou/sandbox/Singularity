@@ -38,9 +38,10 @@ From: nvidia/cuda:12.0.0-devel-ubuntu22.04
     # --- 3 ▸ Micromamba & RAPIDS environment -----------------------
     # Install micromamba
     curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C /usr/local bin/micromamba
-    
-    # Create conda environment from file
-    micromamba create -f /opt/app/environment.yml
+
+    # Create conda environment from file (explicit prefix to match runtime PATH)
+    export MAMBA_ROOT_PREFIX="/usr/local"
+    /usr/local/bin/micromamba create -y -p /usr/local/envs/rapids -f /opt/app/environment.yml
         
     # --- 4 ▸ Permissions & executables -----------------------------
     chown -R "$NB_USER:$NB_GID" /opt/app
@@ -48,6 +49,16 @@ From: nvidia/cuda:12.0.0-devel-ubuntu22.04
 
     chown "$NB_USER:$NB_GID" /opt/offline_kernel.py
     chmod +x /opt/offline_kernel.py
+
+    # --- 5 ▸ Create home directory structure and mamba config ------
+    # Ensure home directory and subdirectories exist with proper permissions
+    mkdir -p "/home/$NB_USER/.config/mamba"
+    # Create minimal .mambarc to prevent warnings
+    cat > "/home/$NB_USER/.mambarc" << 'EOF'
+# Minimal mamba config
+show_banner: false
+EOF
+    chown -R "$NB_USER:$NB_GID" "/home/$NB_USER"
 
     # Clean up
     micromamba clean -a -y
@@ -59,12 +70,19 @@ From: nvidia/cuda:12.0.0-devel-ubuntu22.04
     export DEBIAN_FRONTEND=noninteractive
     export USER=sandboxuser
     export HOME=/home/sandboxuser
-    export PATH="/usr/local/envs/rapids/bin:$PATH"
+    # Set full PATH including conda environment and system paths
+    export PATH="/usr/local/envs/rapids/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     export IPY_BASE_PORT=4000
     export MAMBA_ROOT_PREFIX="/usr/local"
     export MAMBA_EXE="/usr/local/bin/micromamba"
-    eval "$(micromamba shell hook -s bash)"
-    micromamba activate rapids
+    # Suppress micromamba warnings and messages
+    export MAMBA_NO_BANNER=1
+    export MAMBA_NO_LOW_SPEED_LIMIT=1
+    export PYTHONUNBUFFERED=1
+    # Set conda environment variables directly (no need for shell hook/activation)
+    export CONDA_PREFIX="/usr/local/envs/rapids"
+    export CONDA_DEFAULT_ENV="rapids"
+    export CONDA_SHLVL=1
 
 # ---------------------------------------------------------------
 # What happens on ‘apptainer run …’

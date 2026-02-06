@@ -134,8 +134,15 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
                 stderr=subprocess.PIPE,
                 env={
                     **os.environ,
+                    # Set PATH to ensure Python and conda environment are accessible
+                    "SINGULARITYENV_PATH": "/usr/local/envs/rapids/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                     "SINGULARITYENV_XDG_CACHE_HOME": "/workspace/outputs/.cache",
                     "SINGULARITYENV_CELLTYPIST_DATA_DIR": "/workspace/outputs/celltypist_models",
+                    # Suppress micromamba warnings and messages
+                    "SINGULARITYENV_MAMBA_NO_BANNER": "1",
+                    "SINGULARITYENV_MAMBA_ROOT_PREFIX": "/workspace/outputs/.mamba",
+                    "SINGULARITYENV_PYTHONUNBUFFERED": "1",
+                    "SINGULARITYENV_MAMBA_NO_LOW_SPEED_LIMIT": "1",
                 },
                 text=True,
                 bufsize=1,  # line buffered
