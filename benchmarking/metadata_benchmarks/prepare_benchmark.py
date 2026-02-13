@@ -7,15 +7,40 @@ import pandas as pd
 import scanpy as sc
 
 import cellxgene_census
+from urllib.request import urlretrieve
 
 
 DATASETS = {
-    "human_lung": "066943a2-fdac-4b29-b348-40cede398e4e", #https://cellxgene.cziscience.com/e/066943a2-fdac-4b29-b348-40cede398e4e.cxg/
-    "human_pancreas": "66d15835-5dc8-4e96-b0eb-f48971cb65e8", # https://cellxgene.cziscience.com/e/66d15835-5dc8-4e96-b0eb-f48971cb65e8.cxg/
-    "mouse_brain": "3a15ab1c-c36c-4842-9a3e-47e6ffd0ba6f", #https://cellxgene.cziscience.com/e/3a15ab1c-c36c-4842-9a3e-47e6ffd0ba6f.cxg/
-    "mouse_kidney": "42bb7f78-cef8-4b0d-9bba-50037d64d8c1", #https://cellxgene.cziscience.com/e/42bb7f78-cef8-4b0d-9bba-50037d64d8c1.cxg/
-    "zebrafish_epithelium": "938a9fe1-851b-4458-b87e-3b1b83e4b610", #https://cellxgene.cziscience.com/e/938a9fe1-851b-4458-b87e-3b1b83e4b610.cxg/
-    "zebrafish_muscle": "6cf139ae-ba92-41b3-acca-3e938d80aff0", #https://cellxgene.cziscience.com/e/6cf139ae-ba92-41b3-acca-3e938d80aff0.cxg/
+    "human_lung": {
+        "id": "066943a2-fdac-4b29-b348-40cede398e4e",  # https://cellxgene.cziscience.com/e/066943a2-fdac-4b29-b348-40cede398e4e.cxg/
+        "species": "Homo sapiens",
+        "organ": "lung",
+    },
+    "human_pancreas": {
+        "id": "66d15835-5dc8-4e96-b0eb-f48971cb65e8",  # https://cellxgene.cziscience.com/e/66d15835-5dc8-4e96-b0eb-f48971cb65e8.cxg/
+        "species": "Homo sapiens",
+        "organ": "pancreas",
+    },
+    "mouse_brain": {
+        "id": "3a15ab1c-c36c-4842-9a3e-47e6ffd0ba6f",  # https://cellxgene.cziscience.com/e/3a15ab1c-c36c-4842-9a3e-47e6ffd0ba6f.cxg/
+        "species": "Mus musculus",
+        "organ": "brain",
+    },
+    "mouse_kidney": {
+        "id": "42bb7f78-cef8-4b0d-9bba-50037d64d8c1",  # https://cellxgene.cziscience.com/e/42bb7f78-cef8-4b0d-9bba-50037d64d8c1.cxg/
+        "species": "Mus musculus",
+        "organ": "kidney",
+    },
+    "zebrafish_lens": {
+        "id": "https://datasets.cellxgene.cziscience.com/418c08d0-6228-40b2-8160-195ca40a6b77.h5ad",
+        "species": "Danio rerio",
+        "organ": "lens",
+    },
+    "zebrafish_blood": {
+        "id": "https://datasets.cellxgene.cziscience.com/3becdf3d-31dc-41bd-bbcc-4c21453c51c0.h5ad",
+        "species": "Danio rerio",
+        "organ": "blood",
+    },
 }
 
 
@@ -49,6 +74,10 @@ def _list_census_versions() -> list[str]:
     return sorted(versions, key=_sort_key, reverse=True)
 
 
+def _download_direct_url(url: str, raw_path: Path) -> None:
+    urlretrieve(url, raw_path)
+
+
 def _download_with_probe(
     dataset_name: str,
     dataset_id: str,
@@ -57,6 +86,10 @@ def _download_with_probe(
     probe_versions: bool,
     max_versions: int,
 ) -> str | None:
+    if dataset_id.startswith("http://") or dataset_id.startswith("https://"):
+        _download_direct_url(dataset_id, raw_path)
+        return None
+
     if census_version:
         cellxgene_census.download_source_h5ad(
             dataset_id,
@@ -129,7 +162,10 @@ def prepare_benchmark(
     manifest_records = []
     failures = []
 
-    for name, ds_id in DATASETS.items():
+    for name, ds_info in DATASETS.items():
+        ds_id = ds_info["id"]
+        known_species = ds_info["species"]
+        known_organ = ds_info.get("organ")
         print(f"--- Processing {name} ({ds_id}) ---")
 
         raw_path = output_dir / f"{name}_raw.h5ad"
@@ -168,12 +204,29 @@ def prepare_benchmark(
             if continue_on_error:
                 continue
             raise
+
+        # Species: use curated value from DATASETS; fall back to obs if available.
+        if known_species:
+            actual_species = known_species
+        elif "organism" in adata.obs:
+            actual_species = adata.obs["organism"].iloc[0]
+        else:
+            actual_species = "Unknown"
+
+        # Organ: use curated value from DATASETS; fall back to obs if available.
+        if known_organ:
+            actual_organ = known_organ
+        elif "tissue" in adata.obs:
+            actual_organ = adata.obs["tissue"].iloc[0]
+        else:
+            actual_organ = "Unknown"
+
         gt_entry = {
             "dataset_name": name,
             "dataset_id": ds_id,
             "census_version": used_version or "",
-            "actual_species": adata.obs["organism"].iloc[0] if "organism" in adata.obs else "Unknown",
-            "actual_organ": adata.obs["tissue"].iloc[0] if "tissue" in adata.obs else "Unknown",
+            "actual_species": actual_species,
+            "actual_organ": actual_organ,
             "cell_count": int(adata.n_obs),
             "mean_transcript_count": _mean_transcript_count(adata),
             "raw_h5ad_path": str(raw_path),

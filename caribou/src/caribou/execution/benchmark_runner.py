@@ -147,7 +147,7 @@ print(json.dumps(_results))
 """
 
     try:
-        exec_result = mgr.exec_code(payload, timeout=300)
+        exec_result = mgr.exec_code(payload, timeout=600)
 
         table = Table(title="Benchmark Results")
         table.add_column("Metric", style="cyan")

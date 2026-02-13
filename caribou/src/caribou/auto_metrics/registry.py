@@ -108,6 +108,7 @@ def get_metric_entry(metric_id: str) -> MetricEntry:
 
 def find_metric_id_by_path(path: Path) -> Optional[str]:
     discover_metrics()
+    _try_import_pending()
     resolved = path.resolve()
     for metric_id, entry in _REGISTRY.items():
         if entry.module_path == resolved:

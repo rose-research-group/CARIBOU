@@ -17,5 +17,6 @@ benchmarking/metadata_benchmarks/benchmark_data/
 benchmarking/metadata_benchmarks/results/
 benchmarking/task_benchmarks/results/
 benchmarking/task_benchmarks/analysis/plots/
+benchmarking/task_benchmarks/analysis_slurm/logs/
 !benchmarking/auto_runs/auto_run_template.sh
 *.note

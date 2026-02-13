@@ -1,5 +1,6 @@
 import argparse
 import json
+import numbers
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -10,6 +11,7 @@ SPECIES_SYNONYMS = {
     "human": "homo sapiens",
     "h. sapiens": "homo sapiens",
     "homo sapiens": "homo sapiens",
+    "unknown": "unknown",
     "mouse": "mus musculus",
     "m. musculus": "mus musculus",
     "mus musculus": "mus musculus",
@@ -22,17 +24,77 @@ SPECIES_SYNONYMS = {
     "rhesus": "macaca mulatta",
     "rhesus macaque": "macaca mulatta",
     "macaca mulatta": "macaca mulatta",
+    "zebrafish": "danio rerio",
+    "d. rerio": "danio rerio",
+    "danio rerio": "danio rerio",
 }
 
 ORGAN_SYNONYMS = {
+    # Blood
     "blood": "blood",
     "pbmc": "blood",
+    "peripheral blood": "blood",
+    "bone marrow": "blood",
+    # Lung
     "lung": "lung",
+    "lung parenchyma": "lung",
+    "pulmonary": "lung",
+    "respiratory": "lung",
+    "airway": "lung",
+    # Heart
     "heart": "heart",
+    "cardiac": "heart",
+    "myocardium": "heart",
+    # Pancreas
     "pancreas": "pancreas",
+    "islet of langerhans": "pancreas",
+    "islets of langerhans": "pancreas",
+    "pancreatic islet": "pancreas",
+    "pancreatic islets": "pancreas",
+    "islet": "pancreas",
+    "islets": "pancreas",
+    "endocrine pancreas": "pancreas",
+    # Brain
     "brain": "brain",
+    "primary visual cortex": "brain",
+    "visual cortex": "brain",
+    "cortex": "brain",
+    "cerebral cortex": "brain",
+    "cerebrum": "brain",
+    "cerebellum": "brain",
+    "hippocampus": "brain",
+    "hypothalamus": "brain",
+    "nervous system": "brain",
+    "central nervous system": "brain",
+    "cns": "brain",
+    # Kidney
     "kidney": "kidney",
+    "renal": "kidney",
+    "nephron": "kidney",
+    # Liver
     "liver": "liver",
+    "hepatic": "liver",
+    # Muscle
+    "muscle": "muscle",
+    "skeletal muscle": "muscle",
+    "smooth muscle": "muscle",
+    # Epithelium
+    "epithelium": "epithelium",
+    "epithelial": "epithelium",
+    # Lens
+    "lens": "lens",
+    "eye lens": "lens",
+    "ocular lens": "lens",
+    # Pharyngeal arch
+    "pharyngeal arch": "pharyngeal arch",
+    "pharyngeal arches": "pharyngeal arch",
+    "branchial arch": "pharyngeal arch",
+    "branchial arches": "pharyngeal arch",
+    "gill arch": "pharyngeal arch",
+    "gill arches": "pharyngeal arch",
+    "pharyngeal pouch": "pharyngeal arch",
+    "gill": "pharyngeal arch",
+    "pharyngeal": "pharyngeal arch",
 }
 
 
@@ -69,37 +131,46 @@ def _score_record(pred: Dict, gt: Dict, transcript_tol: float) -> Dict:
     gt_species = _canonical_species(gt.get("actual_species"))
     gt_organ = _canonical_organ(gt.get("actual_organ"))
 
-    species_match = pred_species == gt_species and bool(pred_species)
-    organ_match = pred_organ == gt_organ and bool(pred_organ)
+    species_match = None
+    if gt_species and gt_species != "unknown":
+        species_match = pred_species == gt_species and bool(pred_species)
+
+    organ_match = None
+    if gt_organ and gt_organ != "unknown":
+        organ_match = pred_organ == gt_organ and bool(pred_organ)
 
     pred_cells = pred.get("cell_count")
     if isinstance(pred_cells, float) and pred_cells.is_integer():
         pred_cells = int(pred_cells)
     gt_cells = gt.get("cell_count")
-    cell_count_match = isinstance(pred_cells, int) and pred_cells == gt_cells
+    cell_count_match = None
+    if isinstance(gt_cells, numbers.Integral):
+        cell_count_match = isinstance(pred_cells, numbers.Integral) and pred_cells == gt_cells
 
     pred_transcript = pred.get("mean_transcript_count")
     gt_transcript = gt.get("mean_transcript_count")
-    transcript_match = False
+    transcript_match = None
     rel_error = None
     abs_error = None
-    if isinstance(pred_transcript, (int, float)) and isinstance(gt_transcript, (int, float)):
+    if isinstance(pred_transcript, numbers.Real) and isinstance(gt_transcript, numbers.Real):
         abs_error = float(abs(pred_transcript - gt_transcript))
         rel_error = abs_error / gt_transcript if gt_transcript else None
         transcript_match = rel_error is not None and rel_error <= transcript_tol
 
-    score = (
-        int(species_match)
-        + int(organ_match)
-        + int(cell_count_match)
-        + int(transcript_match)
-    ) / 4.0
+    matches = [species_match, organ_match, cell_count_match, transcript_match]
+    available = [m for m in matches if m is not None]
+    score = sum(int(m) for m in available) / len(available) if available else 0.0
+
+    species_match_val = float(species_match) if species_match is not None else None
+    organ_match_val = float(organ_match) if organ_match is not None else None
+    cell_count_match_val = float(cell_count_match) if cell_count_match is not None else None
+    transcript_match_val = float(transcript_match) if transcript_match is not None else None
 
     return {
-        "species_match": species_match,
-        "organ_match": organ_match,
-        "cell_count_match": cell_count_match,
-        "mean_transcript_match": transcript_match,
+        "species_match": species_match_val,
+        "organ_match": organ_match_val,
+        "cell_count_match": cell_count_match_val,
+        "mean_transcript_match": transcript_match_val,
         "mean_transcript_abs_error": abs_error,
         "mean_transcript_rel_error": rel_error,
         "score": score,

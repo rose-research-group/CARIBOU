@@ -271,7 +271,7 @@ def run_agent_session(
         if code:
             last_code_snippet = code
             console.print("[cyan]Executing code in sandbox…[/cyan]")
-            exec_result = sandbox_manager.exec_code(code, timeout=300)
+            exec_result = sandbox_manager.exec_code(code, timeout=600)
             code_exec_attempts += 1
             if exec_result.get("status") != "ok":
                 code_exec_failures += 1

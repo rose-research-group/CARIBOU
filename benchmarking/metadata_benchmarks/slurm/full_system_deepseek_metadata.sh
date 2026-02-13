@@ -1,7 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=meta_full_system_deepseek
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16GB
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32GB
+#SBATCH --gres=gpu:1
 #SBATCH --time=2:00:00
 #SBATCH --output=/dev/null
 #SBATCH --partition=peerd
@@ -21,7 +22,7 @@ MANIFEST_PATH="$ROOT_DIR/benchmarking/metadata_benchmarks/benchmark_data/benchma
 OUTPUT_BASE="$ROOT_DIR/benchmarking/metadata_benchmarks/results/metadata_task/full_system"
 SANDBOX_BACKEND="singularity"
 LLM_BACKEND="deepseek"
-NUM_TURNS=8
+NUM_TURNS=15
 NUM_TRIALS=3
 
 mkdir -p "$ROOT_DIR/benchmarking/metadata_benchmarks/results/logs/metadata"
