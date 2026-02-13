@@ -192,6 +192,17 @@ def evaluate_results(results_dir: Path, ground_truth_path: Path, transcript_tol:
             continue
         pred = _load_json(json_path)
         score = _score_record(pred, gt, transcript_tol)
+
+        # Load runtime if available
+        runtime_path = json_path.parent / "runtime.json"
+        runtime_seconds = None
+        if runtime_path.exists():
+            try:
+                runtime_data = _load_json(runtime_path)
+                runtime_seconds = runtime_data.get("runtime_seconds")
+            except Exception:
+                pass
+
         records.append(
             {
                 "dataset_name": dataset_name,
@@ -204,6 +215,7 @@ def evaluate_results(results_dir: Path, ground_truth_path: Path, transcript_tol:
                 "gt_organ": gt.get("actual_organ"),
                 "gt_cell_count": gt.get("cell_count"),
                 "gt_mean_transcript_count": gt.get("mean_transcript_count"),
+                "runtime_seconds": runtime_seconds,
                 **score,
             }
         )

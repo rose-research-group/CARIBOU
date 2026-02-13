@@ -38,7 +38,34 @@ inference, and score results on the host.
      --results-dir benchmarking/metadata_benchmarks/results \
      --output benchmarking/metadata_benchmarks/metadata_benchmark_scores.csv
 
-4) Slurm scripts
+   This extracts:
+   - Metadata accuracy (species, organ, cell count, transcript count)
+   - Runtime metrics (from runtime.json files)
+   - Overall scores per run
+
+4) Generate plots
+   python benchmarking/metadata_benchmarks/plot_metadata_benchmark_scores.py \
+     --scores-csv benchmarking/metadata_benchmarks/metadata_benchmark_scores.csv
+
+   Creates:
+   - Basic comparison plots (accuracy by setup, runtime by setup, heatmaps)
+   - Scalability plots:
+     * Accuracy vs Dataset Size (demonstrates maintained accuracy at scale)
+     * Runtime vs Dataset Size (shows scaling efficiency)
+     * Efficiency Frontier (accuracy vs speed trade-offs)
+     * Scalability Dashboard (2x2 comprehensive view)
+
+5) Generate summary statistics
+   python benchmarking/metadata_benchmarks/summarize_scalability_metrics.py \
+     --scores-csv benchmarking/metadata_benchmarks/metadata_benchmark_scores.csv
+
+   Produces scalability_summary.csv with:
+   - Mean/std accuracy and runtime by setup
+   - Throughput (datasets/hour)
+   - Dataset scale range (min/max cells)
+   - Task-specific accuracy breakdown
+
+6) Slurm scripts
    Submit all metadata benchmark jobs:
    bash benchmarking/metadata_benchmarks/slurm/submit_all_metadata_benchmarks.sh
 
@@ -50,7 +77,7 @@ inference, and score results on the host.
    Full-system scripts use the dataset-specific agent system:
    caribou/src/caribou/agents/dataset_metadata_agent.json
 
-5) Bash scripts (non-Slurm)
+7) Bash scripts (non-Slurm)
    Set a prompt file (required):
    export PROMPT_PATH=/path/to/metadata_prompt.txt
 

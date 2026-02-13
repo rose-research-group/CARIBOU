@@ -204,10 +204,22 @@ def main() -> None:
         help="Base results directory.",
     )
     parser.add_argument(
+        "--input-json",
+        type=Path,
+        default=None,
+        help="Optional: Use pre-collected results JSON instead of scanning results-dir.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("dev/task_benchmarks/analysis"),
         help="Directory to write summary outputs.",
+    )
+    parser.add_argument(
+        "--output-suffix",
+        type=str,
+        default="",
+        help="Optional suffix to add to output filename (e.g., '_no_claude').",
     )
     parser.add_argument(
         "--skip-h5ad-metrics",
@@ -217,10 +229,21 @@ def main() -> None:
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    records = collect_results(args.results_dir, include_h5ad_metrics=not args.skip_h5ad_metrics)
+
+    # Load records from input JSON if provided, otherwise collect from directory
+    if args.input_json:
+        print(f"Loading results from {args.input_json}")
+        records = json.loads(args.input_json.read_text())
+        if not isinstance(records, list):
+            raise ValueError("Expected a JSON list of records")
+    else:
+        print(f"Collecting results from {args.results_dir}")
+        records = collect_results(args.results_dir, include_h5ad_metrics=not args.skip_h5ad_metrics)
+
     summary = _summarize(records)
 
-    summary_path = args.output_dir / "task_benchmark_summary.json"
+    summary_filename = f"task_benchmark_summary{args.output_suffix}.json"
+    summary_path = args.output_dir / summary_filename
     summary_path.write_text(json.dumps(summary, indent=2))
 
     _print_summary(summary)

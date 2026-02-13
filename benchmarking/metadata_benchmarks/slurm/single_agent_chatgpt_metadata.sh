@@ -66,6 +66,9 @@ for trial in $(seq 1 "$NUM_TRIALS"); do
     echo "NUM_TURNS: $NUM_TURNS" >> "$RUN_DIR/params.txt"
     echo "TRIAL: $trial" >> "$RUN_DIR/params.txt"
 
+    # Capture runtime
+    START_TIME=$(date +%s)
+
     caribou run auto \
         --blueprint "$BLUEPRINT_PATH" \
         --dataset "$DATASET_PATH" \
@@ -77,7 +80,11 @@ for trial in $(seq 1 "$NUM_TRIALS"); do
         --output-dir "$RUN_DIR" \
         --make-report
 
-    echo "Trial $trial completed"
+    END_TIME=$(date +%s)
+    RUNTIME=$((END_TIME - START_TIME))
+    echo "{\"runtime_seconds\": $RUNTIME, \"start_time\": $START_TIME, \"end_time\": $END_TIME}" > "$RUN_DIR/runtime.json"
+
+    echo "Trial $trial completed in ${RUNTIME}s"
 done
 
 echo "All single-agent metadata trials complete"
