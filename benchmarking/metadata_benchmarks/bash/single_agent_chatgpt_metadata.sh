@@ -7,7 +7,7 @@ MANIFEST_PATH="$ROOT_DIR/benchmarking/metadata_benchmarks/benchmark_data/benchma
 OUTPUT_BASE="$ROOT_DIR/benchmarking/metadata_benchmarks/results/metadata_task/single_agent"
 SANDBOX_BACKEND="singularity"
 LLM_BACKEND="chatgpt"
-NUM_TURNS=6
+NUM_TURNS=15
 NUM_TRIALS=3
 
 mkdir -p "$ROOT_DIR/benchmarking/metadata_benchmarks/results/logs/metadata"

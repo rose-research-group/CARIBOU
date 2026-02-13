@@ -48,6 +48,8 @@ def main() -> int:
     failures += _check_exists("task benchmarks README", TASK_DIR / "README.md")
     failures += _check_exists("doublet prompt", TASK_DIR / "prompts" / "doublet_prompt.txt")
     failures += _check_exists("full QC prompt", TASK_DIR / "prompts" / "full_qc_prompt.txt")
+    failures += _check_exists("batch correction prompt", TASK_DIR / "prompts" / "batch_correction_prompt.txt")
+    failures += _check_exists("data adequacy prompt", TASK_DIR / "prompts" / "data_adequacy_prompt.txt")
     failures += _check_exists("QC prompt", TASK_DIR / "src" / "qc_prompt.py")
     failures += _check_exists("load prompt", TASK_DIR / "src" / "load_prompt.py")
     failures += _check_exists("one_shot_runner", TASK_DIR / "src" / "one_shot_runner.py")
@@ -57,7 +59,14 @@ def main() -> int:
     failures += _check_slurm_prompts(TASK_DIR / "bash")
 
     failures += _check_metrics_registry(
-        ["qc_benchmark", "load_data", "doublet_benchmark", "full_qc_benchmark"]
+        [
+            "qc_benchmark",
+            "load_data",
+            "doublet_benchmark",
+            "full_qc_benchmark",
+            "batch_correction_benchmark",
+            "data_adequacy_benchmark",
+        ]
     )
 
     if failures:

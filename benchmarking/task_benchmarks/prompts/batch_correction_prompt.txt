@@ -1,0 +1,26 @@
+Perform batch effect analysis and correction on the single-cell RNA-seq dataset at /workspace/dataset.h5ad.
+
+IMPORTANT: All operations must be performed IN-PLACE on a variable named `adata`. The benchmark evaluation runs on the in-memory `adata` object after your code completes. When modifying data, update `adata` directly.
+
+Steps:
+1) Load data into a variable named `adata`; report initial cell and gene counts.
+2) Ensure a batch key exists:
+   - If `adata.obs['batch']` does not exist, copy the most appropriate existing column (e.g., sample, donor, batch_id) into `adata.obs['batch']`.
+3) Ensure a cell type label exists:
+   - If `adata.obs['cell_type']` does not exist, copy the most appropriate existing label column (e.g., celltype, majority_voting) into `adata.obs['cell_type']`.
+4) Preserve raw counts in `adata.layers['counts']` if not already present.
+5) Normalize to 10,000 counts per cell and log1p transform.
+6) Select highly variable genes, run PCA, compute neighbors, and UMAP (baseline embedding in `adata.obsm['X_pca']`).
+7) Save baseline UMAP plots colored by batch and cell_type to /workspace/outputs/batch_correction_plots/.
+8) Run batch correction using Harmony on the PCA space and store the corrected embedding in `adata.obsm['integration']`.
+   - (Tip: use scanpy.external.pp.harmony_integrate with basis='X_pca', then copy the corrected embedding into `adata.obsm['integration']`.)
+9) Recompute neighbors and UMAP using the integrated embedding (set `use_rep='integration'`).
+10) Save integrated UMAP plots colored by batch and cell_type to /workspace/outputs/batch_correction_plots/.
+11) Save a summary JSON to /workspace/outputs/batch_correction_summary.json with:
+    - n_obs, n_vars
+    - batch_key, label_key
+    - baseline_embedding_key, integrated_embedding_key
+    - counts_layer_present
+12) Save the corrected AnnData to /workspace/outputs/batch_corrected.h5ad and report final counts.
+
+Return executable Python code only, wrapped in ```python ... ``` blocks.

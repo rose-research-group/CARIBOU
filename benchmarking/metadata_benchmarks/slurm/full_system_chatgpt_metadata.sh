@@ -1,7 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=meta_full_system_chatgpt
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16GB
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32GB
+#SBATCH --gres=gpu:1
 #SBATCH --time=2:00:00
 #SBATCH --output=/dev/null
 #SBATCH --partition=peerd
@@ -21,7 +22,7 @@ MANIFEST_PATH="$ROOT_DIR/benchmarking/metadata_benchmarks/benchmark_data/benchma
 OUTPUT_BASE="$ROOT_DIR/benchmarking/metadata_benchmarks/results/metadata_task/full_system"
 SANDBOX_BACKEND="singularity"
 LLM_BACKEND="chatgpt"
-NUM_TURNS=8
+NUM_TURNS=15
 NUM_TRIALS=3
 
 mkdir -p "$ROOT_DIR/benchmarking/metadata_benchmarks/results/logs/metadata"
@@ -65,6 +66,9 @@ for trial in $(seq 1 "$NUM_TRIALS"); do
     echo "NUM_TURNS: $NUM_TURNS" >> "$RUN_DIR/params.txt"
     echo "TRIAL: $trial" >> "$RUN_DIR/params.txt"
 
+    # Capture runtime
+    START_TIME=$(date +%s)
+
     caribou run auto \
         --blueprint "$BLUEPRINT_PATH" \
         --dataset "$DATASET_PATH" \
@@ -76,7 +80,11 @@ for trial in $(seq 1 "$NUM_TRIALS"); do
         --output-dir "$RUN_DIR" \
         --make-report
 
-    echo "Trial $trial completed"
+    END_TIME=$(date +%s)
+    RUNTIME=$((END_TIME - START_TIME))
+    echo "{\"runtime_seconds\": $RUNTIME, \"start_time\": $START_TIME, \"end_time\": $END_TIME}" > "$RUN_DIR/runtime.json"
+
+    echo "Trial $trial completed in ${RUNTIME}s"
 done
 
 echo "All full-system metadata trials complete"

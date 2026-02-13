@@ -260,7 +260,7 @@ class SandboxManager:
             self.container = None
             return False
         
-    def exec_code(self, code: str, timeout: int = 300) -> Dict:
+    def exec_code(self, code: str, timeout: int = 600) -> Dict:
             """Executes code by sending it to the API inside the container."""
             api_url = f"http://localhost:{API_PORT_HOST}/execute"
             try:

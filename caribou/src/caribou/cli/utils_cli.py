@@ -22,6 +22,24 @@ utils_app = typer.Typer(
 console = Console()
 LOG_DIR = CARIBOU_HOME / "runs" / "chat_logs"
 
+
+@utils_app.command("refresh-sif")
+def refresh_sif() -> None:
+    """
+    Force re-download the Singularity SIF used by CARIBOU.
+    """
+    try:
+        from caribou.sandbox import benchmarking_sandbox_management_singularity as sing
+    except Exception as exc:
+        console.print(f"[bold red]Error importing Singularity manager: {exc}[/bold red]")
+        raise typer.Exit(1)
+
+    console.print("[yellow]Refreshing Singularity sandbox SIF...[/yellow]")
+    if not sing.pull_sif_if_needed(force_pull=True):
+        console.print("[bold red]Failed to refresh the Singularity SIF.[/bold red]")
+        raise typer.Exit(1)
+    console.print("[bold green]Singularity SIF refreshed.[/bold green]")
+
 def _convert_history_to_notebook(history_path: Path, output_path: Path):
     """
     Parses an CARIBOU chat log and converts it into a Jupyter Notebook (.ipynb).

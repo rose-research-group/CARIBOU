@@ -185,7 +185,7 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
         # ------------------------------------------------------------------
         # Code execution
         # ------------------------------------------------------------------
-        def exec_code(self, code: str, timeout: int = 300) -> Dict:
+        def exec_code(self, code: str, timeout: int = 600) -> Dict:
             if not self._proc:
                 raise RuntimeError("REPL not running")
             assert self._proc.stdin and self._proc.stdout

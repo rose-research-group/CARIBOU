@@ -63,8 +63,94 @@ def _summarize(records: List[Dict]) -> List[Dict]:
                 "avg_duration_seconds": _safe_mean(r.get("duration_seconds") for r in group),
                 "avg_runtime_seconds": _safe_mean(runtime_values),
                 "avg_agent_turns": _safe_mean(r.get("agent_turns") for r in group),
+                "avg_correction_count": _safe_mean(
+                    r.get("correction_count")
+                    if r.get("correction_count") is not None
+                    else r.get("code_exec_failures")
+                    for r in group
+                ),
+                "avg_data_adequacy_score": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("adequacy_score")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
                 "avg_final_cell_count": _safe_mean(
                     r.get("output_metrics", {}).get("final_cell_count") if r.get("output_metrics") else None
+                    for r in group
+                ),
+                "avg_batch_silhouette_baseline": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("batch_silhouette_baseline")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_batch_silhouette_integrated": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("batch_silhouette_integrated")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_batch_silhouette_delta": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("batch_silhouette_delta")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_celltype_silhouette_baseline": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("celltype_silhouette_baseline")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_celltype_silhouette_integrated": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("celltype_silhouette_integrated")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_celltype_silhouette_delta": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("celltype_silhouette_delta")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_isolated_label_f1_baseline": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("isolated_label_f1_baseline")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_isolated_label_f1_integrated": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("isolated_label_f1_integrated")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
+                    for r in group
+                ),
+                "avg_isolated_label_f1_delta": _safe_mean(
+                    (
+                        r.get("autometric_results", {}).get("isolated_label_f1_delta")
+                        if isinstance(r.get("autometric_results"), dict)
+                        else None
+                    )
                     for r in group
                 ),
             }
@@ -83,7 +169,9 @@ def _print_summary(summary: List[Dict]) -> None:
         "autometric_rate",
         "avg_total_time",
         "avg_duration",
+        "avg_corrections",
         "avg_turns",
+        "avg_data_adequacy",
     ]
     print("\t".join(headers))
     for row in summary:
@@ -99,7 +187,9 @@ def _print_summary(summary: List[Dict]) -> None:
                     _format_float(row.get("autometric_success_rate")),
                     _format_float(row.get("avg_total_time_seconds")),
                     _format_float(row.get("avg_duration_seconds")),
+                    _format_float(row.get("avg_correction_count")),
                     _format_float(row.get("avg_agent_turns")),
+                    _format_float(row.get("avg_data_adequacy_score")),
                 ]
             )
         )
@@ -114,10 +204,22 @@ def main() -> None:
         help="Base results directory.",
     )
     parser.add_argument(
+        "--input-json",
+        type=Path,
+        default=None,
+        help="Optional: Use pre-collected results JSON instead of scanning results-dir.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("dev/task_benchmarks/analysis"),
         help="Directory to write summary outputs.",
+    )
+    parser.add_argument(
+        "--output-suffix",
+        type=str,
+        default="",
+        help="Optional suffix to add to output filename (e.g., '_no_claude').",
     )
     parser.add_argument(
         "--skip-h5ad-metrics",
@@ -127,10 +229,21 @@ def main() -> None:
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    records = collect_results(args.results_dir, include_h5ad_metrics=not args.skip_h5ad_metrics)
+
+    # Load records from input JSON if provided, otherwise collect from directory
+    if args.input_json:
+        print(f"Loading results from {args.input_json}")
+        records = json.loads(args.input_json.read_text())
+        if not isinstance(records, list):
+            raise ValueError("Expected a JSON list of records")
+    else:
+        print(f"Collecting results from {args.results_dir}")
+        records = collect_results(args.results_dir, include_h5ad_metrics=not args.skip_h5ad_metrics)
+
     summary = _summarize(records)
 
-    summary_path = args.output_dir / "task_benchmark_summary.json"
+    summary_filename = f"task_benchmark_summary{args.output_suffix}.json"
+    summary_path = args.output_dir / summary_filename
     summary_path.write_text(json.dumps(summary, indent=2))
 
     _print_summary(summary)

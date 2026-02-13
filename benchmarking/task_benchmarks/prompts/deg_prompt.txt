@@ -1,0 +1,18 @@
+Perform differential expression (DEG) analysis on the single-cell RNA-seq dataset at /workspace/dataset.h5ad.
+
+IMPORTANT: All operations must be performed IN-PLACE on a variable named `adata`. The benchmark evaluation runs on the in-memory `adata` object after your code completes.
+
+Steps:
+1) Load /workspace/dataset.h5ad into `adata`.
+2) Ensure the data is normalized and log1p-transformed. If not, normalize to 10,000 counts per cell and log1p.
+3) If clustering is not present, run PCA, neighbors, and Leiden clustering (store labels in `adata.obs['leiden']`).
+4) Run differential expression per cluster using `scanpy.tl.rank_genes_groups` (method='wilcoxon').
+5) Save a tidy DEG table to /workspace/outputs/deg_results.csv with columns:
+   - cluster, gene, log2fc (or logfoldchange), pval, pval_adj, scores
+6) Save a summary JSON to /workspace/outputs/deg_summary.json with:
+   - n_obs, n_vars
+   - n_clusters
+   - n_genes_per_cluster (dict)
+7) Print the summary.
+
+Return executable Python code only, wrapped in ```python ... ``` blocks.

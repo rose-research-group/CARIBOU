@@ -1,0 +1,18 @@
+Assess whether this dataset is adequate for fair agent evaluation.
+
+IMPORTANT: Load the dataset into a variable named `adata` using scanpy. Do not modify the data beyond inspection.
+
+Steps:
+1) Load /workspace/dataset.h5ad into `adata`.
+2) Report n_obs and n_vars.
+3) List .obs columns and identify the most appropriate batch label (prefer 'batch', else sample/donor/batch_id).
+4) Identify the most appropriate cell-type label (prefer 'cell_type', else celltype/majority_voting).
+5) Report whether raw counts are preserved in .layers['counts'] or adata.raw.
+6) Save a summary JSON to /workspace/outputs/data_adequacy_summary.json with:
+   - n_obs, n_vars
+   - batch_key, label_key
+   - counts_layer_present, raw_present
+   - obs_columns (list)
+7) Print the summary.
+
+Return executable Python code only, wrapped in ```python ... ``` blocks.

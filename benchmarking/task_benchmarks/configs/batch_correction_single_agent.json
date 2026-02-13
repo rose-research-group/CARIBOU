@@ -1,0 +1,24 @@
+{
+  "global_policy": {
+    "policy": {
+      "data_handling": {
+        "raw_counts_preservation": "Always preserve raw counts in .layers['counts'] if missing.",
+        "normalization_after_QC": "Ensure normalization and log1p are applied before integration."
+      }
+    }
+  },
+  "agents": {
+    "batch_correction_agent": {
+      "prompt": "You are a batch correction agent for single-cell RNA-seq data. Load the dataset, ensure batch and cell type labels exist, run normalization/log1p, compute baseline PCA/UMAP, then perform batch correction (e.g., Harmony) and store the integrated embedding. Save baseline and integrated UMAP plots, write a summary JSON to /workspace/outputs/, and save the corrected AnnData. Execute all steps yourself without delegating.",
+      "rag": {
+        "enabled": true
+      },
+      "neighbors": {},
+      "code_samples": [
+        "load_adata.py",
+        "Downstream.py",
+        "Integrate_Harmony.py"
+      ]
+    }
+  }
+}

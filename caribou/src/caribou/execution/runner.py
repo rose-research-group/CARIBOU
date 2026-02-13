@@ -121,6 +121,8 @@ def run_agent_session(
     code_block_count = 0
     code_exec_attempts = 0
     code_exec_failures = 0
+    consecutive_failures = 0
+    correction_count = 0
     session_start_ts = datetime.utcnow()
     session_start_time = time.time()
     session_end_reason = "completed"
@@ -269,10 +271,15 @@ def run_agent_session(
         if code:
             last_code_snippet = code
             console.print("[cyan]Executing code in sandbox…[/cyan]")
-            exec_result = sandbox_manager.exec_code(code, timeout=300)
+            exec_result = sandbox_manager.exec_code(code, timeout=600)
             code_exec_attempts += 1
             if exec_result.get("status") != "ok":
                 code_exec_failures += 1
+                consecutive_failures += 1
+                if consecutive_failures == 2:
+                    correction_count += 1
+            else:
+                consecutive_failures = 0
             feedback = format_execute_response(exec_result, output_dir if output_dir else get_default_runs_dir())
             if memory_manager:
                 memory_manager.add_message("system", feedback)
@@ -435,6 +442,7 @@ def run_agent_session(
             "code_blocks_produced": code_block_count,
             "code_exec_attempts": code_exec_attempts,
             "code_exec_failures": code_exec_failures,
+            "correction_count": correction_count,
             "session_start": session_start_ts.isoformat(),
             "session_end": session_end_ts.isoformat(),
             "duration_seconds": duration_seconds,

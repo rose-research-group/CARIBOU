@@ -97,6 +97,8 @@ def _load_latest_benchmark_results(run_dir: Path) -> Optional[Dict]:
 def _infer_autometric_success(results: Optional[Dict]) -> Optional[bool]:
     if not results:
         return None
+    if isinstance(results.get("success"), bool):
+        return results.get("success")
     if "doublet_score_present" in results or "predicted_doublet_present" in results:
         # For doublet task: columns must be present AND doublets must have been detected/filtered
         # predicted_doublet_rate should be 0 (or very low) after filtering since doublets are removed
@@ -151,6 +153,7 @@ def _flatten_record(record: Dict) -> Dict:
     flat["code_exec_attempts"] = record.get("code_exec_attempts")
     flat["code_exec_failures"] = record.get("code_exec_failures")
     flat["code_execution_success"] = record.get("code_execution_success")
+    flat["correction_count"] = record.get("correction_count")
     flat["agent_finished"] = record.get("agent_finished")
     return flat
 
@@ -194,6 +197,9 @@ def collect_results(results_dir: Path, include_h5ad_metrics: bool = True) -> Lis
                     "total_time_seconds": None,
                     "duration_seconds": None,
                     "agent_turns": None,
+                    "code_exec_attempts": None,
+                    "code_exec_failures": None,
+                    "correction_count": None,
                     "output_h5ad": None,
                     "output_present": False,
                     "output_metrics": None,
@@ -220,6 +226,7 @@ def collect_results(results_dir: Path, include_h5ad_metrics: bool = True) -> Lis
                     record["total_time_seconds"] = metrics.get("total_time_seconds")
                     record["code_exec_attempts"] = metrics.get("code_exec_attempts")
                     record["code_exec_failures"] = metrics.get("code_exec_failures")
+                    record["correction_count"] = metrics.get("correction_count")
 
                 report_path = _latest_file(run_dir / "reports", "session_report_*.json")
                 if report_path and report_path.exists():
@@ -230,6 +237,7 @@ def collect_results(results_dir: Path, include_h5ad_metrics: bool = True) -> Lis
                     record["end_reason"] = report.get("end_reason")
                     record["code_exec_attempts"] = report.get("code_exec_attempts", record.get("code_exec_attempts"))
                     record["code_exec_failures"] = report.get("code_exec_failures", record.get("code_exec_failures"))
+                    record["correction_count"] = report.get("correction_count", record.get("correction_count"))
                     # Track whether agent finished execution (regardless of task success)
                     record["agent_finished"] = report.get("end_reason") in {"completed", "max_turns_reached", "end_session"}
                     # Only count as success if agent completed or ended session normally
