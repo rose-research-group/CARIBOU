@@ -1,12 +1,17 @@
 name: rapids
 channels:
+  - pytorch
+  - nvidia
   - rapidsai
   - conda-forge
-  - nvidia
   - bioconda
 dependencies:
   - python=3.11
   - cuda-version=12
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
   - cudf
   - cuml
   - cupy
