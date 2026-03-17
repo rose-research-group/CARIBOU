@@ -20,27 +20,56 @@ _FENCE_RE = re.compile(
     re.MULTILINE
 )
 
-def extract_python_code(txt: str) -> Optional[str]:
-    """Return the *first* fenced code block, or None if absent.
+def extract_python_code_blocks(txt: str) -> List[str]:
+    """Return all fenced code blocks in order, or an empty list if absent.
 
     Handles:
     * ```python ... ```
     * ``` ... ``` (no language tag)
     * Leading indentation before fences (common in Markdown transcripts)
     """
-    _FENCE_RE = re.compile(
-        r'^[ \t]*```(?:python)?[ \t]*\n'   # opening fence, with optional "python"
-        r'([\s\S]*?)'                     # capture all lines (including blank ones)
-        r'^[ \t]*```[ \t]*$',             # closing fence
-        re.MULTILINE
-    )
+    if not txt:
+        return []
     code_blocks = _FENCE_RE.findall(txt)
     if not code_blocks:
+        return []
+    cleaned_blocks = []
+    for block in code_blocks:
+        cleaned = textwrap.dedent(block).strip()
+        if cleaned:
+            cleaned_blocks.append(cleaned)
+    return cleaned_blocks
+
+
+def extract_python_code(txt: str) -> Optional[str]:
+    """Return all fenced code blocks concatenated, or None if absent."""
+    code_blocks = extract_python_code_blocks(txt)
+    if not code_blocks:
         return None
-    
-    full_script = "\n\n".join(textwrap.dedent(block).strip() for block in code_blocks)
-    
+    full_script = "\n\n".join(code_blocks)
     return full_script if full_script else None
+
+
+def split_message_by_fence(txt: str) -> List[Tuple[str, str]]:
+    """Return ordered (kind, content) parts for text/code fences."""
+    if not txt:
+        return []
+    parts: List[Tuple[str, str]] = []
+    last_end = 0
+    for match in _FENCE_RE.finditer(txt):
+        if match.start() > last_end:
+            text = txt[last_end:match.start()].strip()
+            if text:
+                parts.append(("text", text))
+        code = textwrap.dedent(match.group(1)).strip()
+        if code:
+            parts.append(("code", code))
+        last_end = match.end()
+    if last_end < len(txt):
+        text = txt[last_end:].strip()
+        if text:
+            parts.append(("text", text))
+    return parts
 
 # Rich display wrappers
 
@@ -75,19 +104,21 @@ def display(console: Console, role: str, content: str):
     
     # Logic to separate text and code for assistant messages
     if "assistant" in role.lower():
-        code = extract_python_code(content)
-        text_part = _FENCE_RE.sub("", content).strip()
-        
-        if text_part:
-            _panel(console, title, text_part, style)
-        if code:
-            console.print(
-                Panel(
-                    Syntax(code, "python", theme="monokai", line_numbers=True),
-                    title=f"{title} (code)",
-                    border_style=style,
+        parts = split_message_by_fence(content)
+        if not parts:
+            _panel(console, title, content, style)
+            return
+        for kind, chunk in parts:
+            if kind == "text":
+                _panel(console, title, chunk, style)
+            else:
+                console.print(
+                    Panel(
+                        Syntax(chunk, "python", theme="monokai", line_numbers=True),
+                        title=f"{title} (code)",
+                        border_style=style,
+                    )
                 )
-            )
     else:
         _panel(console, title, content, style)
 
@@ -287,22 +318,22 @@ def save_chat_history_as_notebook(console: Console, history: list, file_path: Pa
         "nbformat": 4,
         "nbformat_minor": 5
     }
-    code_block_re = re.compile(r"```python\n(.*?)\n```", re.DOTALL)
-
     for message in history:
         if message.get("role") and "assistant" in message.get("role", ""):
             content = message.get("content", "")
-            parts = code_block_re.split(content)
-            for i, part in enumerate(parts):
-                part = part.strip()
-                if not part: continue
-                
-                if i % 2 == 1: # Code block
-                    cell = {"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [], "source": part}
-                    notebook["cells"].append(cell)
-                else: # Markdown
+            parts = split_message_by_fence(content)
+            for kind, part in parts:
+                if kind == "code":
+                    cell = {
+                        "cell_type": "code",
+                        "execution_count": None,
+                        "metadata": {},
+                        "outputs": [],
+                        "source": part,
+                    }
+                else:
                     cell = {"cell_type": "markdown", "metadata": {}, "source": part}
-                    notebook["cells"].append(cell)
+                notebook["cells"].append(cell)
 
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)

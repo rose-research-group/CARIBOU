@@ -74,10 +74,16 @@ class Agent:
         )
             
         if self.code_samples:
-            full_prompt += "\n\n  - Code Samples Available for Reference and Adapation (MUST BE REWRITTEN TO BE USED):"
-            for sample_name in self.code_samples.keys():
-                full_prompt += f"\n    - `{sample_name}`"
-  
+            full_prompt += (
+                "\n\n## Code Samples (Reference ONLY — DO NOT IMPORT)\n"
+                "**CRITICAL RULES:**\n"
+                "1. These files DO NOT EXIST on disk inside the sandbox. You CANNOT `import` them or run them directly.\n"
+                "2. They exist solely to show you the correct API, function signatures, and patterns.\n"
+                "3. You MUST rewrite any logic you need from scratch inside your own ```python``` code block.\n"
+                "4. Treat them like documentation — read, understand, then write your own implementation.\n"
+            )
+            for sample_name, sample_content in self.code_samples.items():
+                full_prompt += f"\n### `{sample_name}` (reference only — rewrite, do not import)\n```python\n{sample_content}\n```\n"
         return full_prompt
 
 

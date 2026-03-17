@@ -7,6 +7,7 @@ from pathlib import Path
 
 import json
 
+from caribou.config import CARIBOU_HOME
 from caribou.sandbox.benchmarking_sandbox_management import (
     SandboxManager as _BackendManager,
     CONTAINER_NAME as _SANDBOX_HANDLE,
@@ -74,6 +75,10 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
     SING_BIN = sing.SING_BIN
     SENTINEL = "<<<EOF>>>"
 
+    # Shared CellTypist model cache — persists across all runs so models are
+    # downloaded once and reused.  Bind-mounted to /workspace/celltypist_models.
+    _celltypist_host_path: Path = CARIBOU_HOME / "celltypist_models"
+
     class _SingExecBackend:
         """Launch one long‑lived REPL inside the SIF and stream code to it."""
 
@@ -89,11 +94,15 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
                 binds.extend(["--bind", f"{host_path.resolve()}:{container_path}"])
 
             binds.extend(["--bind", f"{host_output_path.resolve()}:/workspace/outputs"])
+
+            # Shared CellTypist model cache (persistent across runs)
+            _celltypist_host_path.mkdir(parents=True, exist_ok=True)
+            binds.extend(["--bind", f"{_celltypist_host_path.resolve()}:/workspace/celltypist_models"])
+
             self._binds = binds
             self._host_output_path = host_output_path
-            # Ensure cache dirs exist on host for container writes
+            # Ensure cache dir exists on host for container writes
             (host_output_path / ".cache").mkdir(parents=True, exist_ok=True)
-            (host_output_path / "celltypist_models").mkdir(parents=True, exist_ok=True)
 
         # ------------------------------------------------------------------
         # Container lifecycle
@@ -135,7 +144,7 @@ def init_singularity_exec(script_dir: str, sanbox_data_path, subprocess, console
                 env={
                     **os.environ,
                     "SINGULARITYENV_XDG_CACHE_HOME": "/workspace/outputs/.cache",
-                    "SINGULARITYENV_CELLTYPIST_DATA_DIR": "/workspace/outputs/celltypist_models",
+                    "SINGULARITYENV_CELLTYPIST_DATA_DIR": "/workspace/celltypist_models",
                 },
                 text=True,
                 bufsize=1,  # line buffered
