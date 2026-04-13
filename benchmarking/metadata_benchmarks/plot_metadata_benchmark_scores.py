@@ -7,6 +7,12 @@ import numpy as np
 import pandas as pd
 
 
+def _savefig(fig: plt.Figure, output_path: Path, **kwargs) -> None:
+    fig.savefig(output_path, **kwargs)
+    svg_kwargs = {k: v for k, v in kwargs.items() if k != "dpi"}
+    fig.savefig(output_path.with_suffix(".svg"), **svg_kwargs)
+
+
 def _parse_run_path(run_path: str) -> Tuple[Optional[str], Optional[str]]:
     parts = Path(run_path).parts
     if "metadata_task" in parts:
@@ -41,7 +47,7 @@ def _plot_overall_bar(df: pd.DataFrame, output_path: Path) -> None:
 
     fig, ax = plt.subplots(figsize=(10, 5))
     x = range(len(grouped))
-    ax.bar(x, grouped["mean"], yerr=grouped["std"], color="#B83289", capsize=4)
+    ax.bar(x, grouped["mean"], yerr=grouped["std"], color="#A1F289", capsize=4)
     ax.set_ylabel("Mean score")
     ax.set_title("Metadata Benchmark: Mean Score by Setup")
     ax.set_ylim(0, 1.05)
@@ -49,7 +55,7 @@ def _plot_overall_bar(df: pd.DataFrame, output_path: Path) -> None:
     ax.set_xticks(x)
     ax.set_xticklabels(grouped["setup"], rotation=30, ha="right")
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    _savefig(fig, output_path, dpi=150)
     plt.close(fig)
 
 
@@ -62,7 +68,7 @@ def _plot_subtask_bar(df: pd.DataFrame, column: str, title: str, output_path: Pa
 
     fig, ax = plt.subplots(figsize=(10, 5))
     x = range(len(grouped))
-    ax.bar(x, grouped[column], color="#F48849")
+    ax.bar(x, grouped[column], color="#FF9898")
     ax.set_ylabel("Match rate")
     ax.set_title(title)
     ax.set_ylim(0, 1.05)
@@ -70,7 +76,7 @@ def _plot_subtask_bar(df: pd.DataFrame, column: str, title: str, output_path: Pa
     ax.set_xticks(x)
     ax.set_xticklabels(grouped["setup"], rotation=30, ha="right")
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    _savefig(fig, output_path, dpi=150)
     plt.close(fig)
 
 
@@ -93,7 +99,7 @@ def _plot_dataset_heatmap(df: pd.DataFrame, output_path: Path) -> None:
     ax.set_yticklabels(pivot.index)
     fig.colorbar(cax, ax=ax, label="Mean score")
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    _savefig(fig, output_path, dpi=150)
     plt.close(fig)
 
 
@@ -104,14 +110,14 @@ def _plot_runtime_bar(df: pd.DataFrame, output_path: Path) -> None:
 
     fig, ax = plt.subplots(figsize=(10, 5))
     x = range(len(grouped))
-    ax.barh(x, grouped["mean"], xerr=grouped["std"], color="#6A00A8", capsize=4)
+    ax.barh(x, grouped["mean"], xerr=grouped["std"], color="#BFF1F5", capsize=4)
     ax.set_xlabel("Runtime (seconds)")
     ax.set_title("Metadata Benchmark: Mean Runtime by Setup")
     ax.grid(axis="x", linestyle="--", alpha=0.4)
     ax.set_yticks(x)
     ax.set_yticklabels(grouped["setup"])
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    _savefig(fig, output_path, dpi=150)
     plt.close(fig)
 
 
@@ -150,7 +156,7 @@ def _plot_accuracy_vs_scale(df: pd.DataFrame, output_path: Path) -> None:
     ax.grid(True, alpha=0.3)
     ax.legend(loc="best", framealpha=0.9)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    _savefig(fig, output_path, dpi=150)
     plt.close(fig)
 
 
@@ -190,7 +196,7 @@ def _plot_runtime_vs_scale(df: pd.DataFrame, output_path: Path) -> None:
     ax.grid(True, alpha=0.3, which="both")
     ax.legend(loc="best", framealpha=0.9)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    _savefig(fig, output_path, dpi=150)
     plt.close(fig)
 
 
@@ -249,12 +255,12 @@ def _plot_efficiency_frontier(df: pd.DataFrame, output_path: Path) -> None:
     ax.grid(True, alpha=0.3)
 
     # Add quadrant lines
-    ax.axhline(y=0.9, color="#F48849", linestyle="--", alpha=0.4, label="High accuracy (>90%)")
-    ax.axvline(x=grouped["runtime_seconds"].median(), color="#6A00A8", linestyle="--", alpha=0.4, label="Median runtime")
+    ax.axhline(y=0.9, color="#FF9898", linestyle="--", alpha=0.4, label="High accuracy (>90%)")
+    ax.axvline(x=grouped["runtime_seconds"].median(), color="#BFF1F5", linestyle="--", alpha=0.4, label="Median runtime")
 
     ax.legend(loc="lower left", framealpha=0.9)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    _savefig(fig, output_path, dpi=150)
     plt.close(fig)
 
 
@@ -279,7 +285,7 @@ def _plot_scalability_dashboard(df: pd.DataFrame, output_path: Path) -> None:
     grouped_score = df_plot.groupby("setup")["score"].agg(["mean", "std"]).reset_index()
     grouped_score = grouped_score.sort_values("mean", ascending=False)
     x = range(len(grouped_score))
-    ax1.bar(x, grouped_score["mean"], yerr=grouped_score["std"], color="#B83289", capsize=4)
+    ax1.bar(x, grouped_score["mean"], yerr=grouped_score["std"], color="#A1F289", capsize=4)
     ax1.set_ylabel("Mean Accuracy Score", fontsize=11)
     ax1.set_title("Accuracy by Configuration", fontsize=12, fontweight="bold")
     ax1.set_ylim(0, 1.05)
@@ -292,7 +298,7 @@ def _plot_scalability_dashboard(df: pd.DataFrame, output_path: Path) -> None:
     grouped_runtime = df_plot.groupby("setup")["runtime_seconds"].agg(["mean", "std"]).reset_index()
     grouped_runtime = grouped_runtime.sort_values("mean", ascending=True)
     x = range(len(grouped_runtime))
-    ax2.barh(x, grouped_runtime["mean"], xerr=grouped_runtime["std"], color="#6A00A8", capsize=4)
+    ax2.barh(x, grouped_runtime["mean"], xerr=grouped_runtime["std"], color="#BFF1F5", capsize=4)
     ax2.set_xlabel("Mean Runtime (seconds)", fontsize=11)
     ax2.set_title("Runtime by Configuration", fontsize=12, fontweight="bold")
     ax2.set_yticks(x)
@@ -326,7 +332,7 @@ def _plot_scalability_dashboard(df: pd.DataFrame, output_path: Path) -> None:
 
     fig.suptitle("CARIBOU Scalability Dashboard", fontsize=16, fontweight="bold", y=0.995)
     fig.tight_layout(rect=[0, 0, 1, 0.99])
-    fig.savefig(output_path, dpi=150)
+    _savefig(fig, output_path, dpi=150)
     plt.close(fig)
 
 

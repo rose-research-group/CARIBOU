@@ -1,0 +1,28 @@
+#!/bin/bash
+# Run all 4 modes for aba_hippocampus × DeepSeek as a SLURM array job.
+#
+# Usage:
+#   sbatch slurm/aba_hippocampus/run_deepseek.sh
+#
+# Array task → mode mapping:
+#   1 → full_system
+#   2 → full_system_no_mem
+#   3 → single_agent
+#   4 → one_shot
+#
+#SBATCH --job-name=intg_aba_deepseek
+#SBATCH --partition=peerd
+#SBATCH --array=1-4
+#SBATCH --time=12:00:00
+#SBATCH --mem=64G
+#SBATCH --cpus-per-task=8
+#SBATCH --output=../logs/aba_deepseek_%A_%a.out
+#SBATCH --error=../logs/aba_deepseek_%A_%a.err
+
+set -euo pipefail
+
+MODES=("full_system" "full_system_no_mem" "single_agent" "one_shot")
+MODE="${MODES[$((SLURM_ARRAY_TASK_ID - 1))]}"
+
+RUN_SCRIPT="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/benchmarking/integration_benchmarks/slurm/run_integration.sh"
+bash "$RUN_SCRIPT" --dataset aba_hippocampus --llm deepseek --mode "$MODE"

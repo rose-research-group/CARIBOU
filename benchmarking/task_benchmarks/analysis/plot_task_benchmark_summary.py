@@ -9,6 +9,12 @@ import numpy as np
 import pandas as pd
 
 
+def _savefig(fig: plt.Figure, output_path: Path, **kwargs) -> None:
+    fig.savefig(output_path, **kwargs)
+    svg_kwargs = {k: v for k, v in kwargs.items() if k != "dpi"}
+    fig.savefig(output_path.with_suffix(".svg"), **svg_kwargs)
+
+
 def _load_summary(path: Path) -> List[Dict]:
     data = json.loads(path.read_text())
     if not isinstance(data, list):
@@ -188,7 +194,7 @@ def _plot_grouped_bars(
 
     fig, ax = plt.subplots(figsize=(10, 5))
     x = np.arange(len(labels))
-    ax.bar(x, cleaned, color="#B83289")
+    ax.bar(x, cleaned, color="#A1F289")
     ax.set_title(title)
     ax.set_ylabel(ylabel)
     if ylim:
@@ -197,7 +203,7 @@ def _plot_grouped_bars(
     ax.set_xticklabels(labels, rotation=30, ha="right")
     ax.grid(axis="y", linestyle="--", alpha=0.4)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    _savefig(fig, output_path, dpi=150)
     plt.close(fig)
 
 
@@ -243,7 +249,7 @@ def _plot_matrix(
     ax.set_ylabel(ylabel)
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    _savefig(fig, output_path, dpi=150)
     plt.close(fig)
 
 
@@ -304,7 +310,7 @@ def _plot_performance_time_combined(task: str, records: List[Dict], output_path:
     cbar.set_label("Autometric Success Rate", rotation=270, labelpad=16, fontsize=10)
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    _savefig(fig, output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -360,15 +366,15 @@ def _plot_complexity_ladder(records: List[Dict], output_path: Path, llm_backend:
     fig, ax = plt.subplots(figsize=(10, 6))
 
     modes = sorted(grouped["mode"].unique())
-    colors = {"one_shot": "#0D0887", "single_agent": "#B83289", "full_system": "#F48849"}
+    colors = {"one_shot": "#BFF1F5", "single_agent": "#A1F289", "full_system": "#FF9898"}
 
     for mode in modes:
         mode_data = grouped[grouped["mode"] == mode].sort_values("complexity")
         ax.plot(mode_data["complexity"], mode_data["autometric_rate"],
                 marker='o', linewidth=2, markersize=8,
-                label=mode, color=colors.get(mode, "#FEBC2A"))
+                label=mode, color=colors.get(mode, "#A1F289"))
 
-    ax.axhline(y=0.9, color='#F48849', linestyle='--', alpha=0.5, linewidth=1, label='90% threshold')
+    ax.axhline(y=0.9, color='#FF9898', linestyle='--', alpha=0.5, linewidth=1, label='90% threshold')
     ax.set_xlabel("Task Complexity", fontsize=12, fontweight='bold')
     ax.set_ylabel("Autometric Success Rate", fontsize=12, fontweight='bold')
     ax.set_title("Task Complexity Ladder: Success Rate vs Complexity", fontsize=13, fontweight='bold')
@@ -378,7 +384,7 @@ def _plot_complexity_ladder(records: List[Dict], output_path: Path, llm_backend:
     ax.legend(loc='best')
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    _savefig(fig, output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -415,20 +421,20 @@ def _plot_efficiency_frontier(records: List[Dict], output_path: Path, llm_backen
     fig, ax = plt.subplots(figsize=(10, 7))
 
     modes = sorted(df["mode"].unique())
-    colors = {"one_shot": "#0D0887", "single_agent": "#B83289", "full_system": "#F48849"}
+    colors = {"one_shot": "#BFF1F5", "single_agent": "#A1F289", "full_system": "#FF9898"}
 
     for mode in modes:
         mode_data = df[df["mode"] == mode]
         scatter = ax.scatter(mode_data["runtime"], mode_data["autometric_rate"],
                             s=mode_data["complexity"]*100, alpha=0.6,
-                            c=[colors.get(mode, "#FEBC2A")]*len(mode_data),
+                            c=[colors.get(mode, "#A1F289")]*len(mode_data),
                             label=mode, edgecolors='black', linewidth=0.5)
 
     # Add quadrant lines
     if len(df) > 0:
         median_runtime = df["runtime"].median()
-        ax.axhline(y=0.9, color='#F48849', linestyle='--', alpha=0.5, linewidth=1.5, label='High accuracy (90%)')
-        ax.axvline(x=median_runtime, color='#6A00A8', linestyle='--', alpha=0.5, linewidth=1.5, label=f'Median runtime ({median_runtime:.0f}s)')
+        ax.axhline(y=0.9, color='#FF9898', linestyle='--', alpha=0.5, linewidth=1.5, label='High accuracy (90%)')
+        ax.axvline(x=median_runtime, color='#BFF1F5', linestyle='--', alpha=0.5, linewidth=1.5, label=f'Median runtime ({median_runtime:.0f}s)')
 
     ax.set_xlabel("Average Runtime (seconds)", fontsize=12, fontweight='bold')
     ax.set_ylabel("Autometric Success Rate", fontsize=12, fontweight='bold')
@@ -438,7 +444,7 @@ def _plot_efficiency_frontier(records: List[Dict], output_path: Path, llm_backen
     ax.legend(loc='best', framealpha=0.9)
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    _savefig(fig, output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -500,7 +506,7 @@ def _plot_reliability_heatmap(records: List[Dict], output_path: Path, llm_backen
     cbar.set_label("Autometric Success Rate", rotation=270, labelpad=20, fontweight='bold')
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    _savefig(fig, output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -551,22 +557,22 @@ def _plot_cost_benefit_analysis(records: List[Dict], output_path: Path, llm_back
     ax2 = ax.twinx()
 
     bars1 = ax.bar(x - width/2, task_summary["autometric_rate"], width,
-                   label='Autometric Rate', color='#B83289', alpha=0.8)
+                   label='Autometric Rate', color='#A1F289', alpha=0.8)
     bars2 = ax2.bar(x + width/2, task_summary["runtime"], width,
-                    label='Avg Runtime (s)', color='#6A00A8', alpha=0.8)
+                    label='Avg Runtime (s)', color='#BFF1F5', alpha=0.8)
 
     ax.set_xlabel("Task (by complexity)", fontsize=12, fontweight='bold')
-    ax.set_ylabel("Autometric Success Rate", fontsize=11, fontweight='bold', color='#B83289')
-    ax2.set_ylabel("Average Runtime (seconds)", fontsize=11, fontweight='bold', color='#6A00A8')
+    ax.set_ylabel("Autometric Success Rate", fontsize=11, fontweight='bold', color='#A1F289')
+    ax2.set_ylabel("Average Runtime (seconds)", fontsize=11, fontweight='bold', color='#BFF1F5')
 
     ax.set_title("Cost-Benefit Analysis: Success vs Runtime by Task", fontsize=13, fontweight='bold')
     ax.set_xticks(x)
     ax.set_xticklabels(task_summary["task"], rotation=30, ha='right')
     ax.set_ylim(0, 1.05)
-    ax.tick_params(axis='y', labelcolor='#B83289')
-    ax2.tick_params(axis='y', labelcolor='#6A00A8')
+    ax.tick_params(axis='y', labelcolor='#A1F289')
+    ax2.tick_params(axis='y', labelcolor='#BFF1F5')
 
-    ax.axhline(y=0.9, color='#F48849', linestyle='--', alpha=0.5, linewidth=1)
+    ax.axhline(y=0.9, color='#FF9898', linestyle='--', alpha=0.5, linewidth=1)
 
     # Combine legends
     lines1, labels1 = ax.get_legend_handles_labels()
@@ -576,7 +582,7 @@ def _plot_cost_benefit_analysis(records: List[Dict], output_path: Path, llm_back
     ax.grid(True, alpha=0.3, linestyle='--', axis='y')
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    _savefig(fig, output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -611,7 +617,7 @@ def _plot_complexity_resilience(records: List[Dict], output_path: Path, llm_back
 
     # Plot by LLM backend
     llms = sorted(df["llm_backend"].unique())
-    colors = {"chatgpt": "#F48849", "deepseek": "#0D0887", "claude": "#B83289"}
+    colors = {"chatgpt": "#FF9898", "deepseek": "#BFF1F5", "claude": "#A1F289"}
 
     for llm in llms:
         llm_data = df[df["llm_backend"] == llm].groupby("complexity").agg({
@@ -620,9 +626,9 @@ def _plot_complexity_resilience(records: List[Dict], output_path: Path, llm_back
 
         ax.plot(llm_data["complexity"], llm_data["autometric_rate"],
                 marker='o', linewidth=2.5, markersize=10,
-                label=llm, color=colors.get(llm, "#FEBC2A"))
+                label=llm, color=colors.get(llm, "#A1F289"))
 
-    ax.axhline(y=0.9, color='#F48849', linestyle='--', alpha=0.5, linewidth=1.5, label='90% threshold')
+    ax.axhline(y=0.9, color='#FF9898', linestyle='--', alpha=0.5, linewidth=1.5, label='90% threshold')
     ax.set_xlabel("Task Complexity", fontsize=12, fontweight='bold')
     ax.set_ylabel("Autometric Success Rate", fontsize=12, fontweight='bold')
     ax.set_title("Complexity vs Resilience: How Success Degrades with Complexity", fontsize=13, fontweight='bold')
@@ -632,7 +638,7 @@ def _plot_complexity_resilience(records: List[Dict], output_path: Path, llm_back
     ax.legend(loc='best', framealpha=0.9)
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    _savefig(fig, output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -675,8 +681,8 @@ def _plot_execution_mode_dashboard(records: List[Dict], output_path: Path, llm_b
     fig.suptitle("Execution Mode Comparison Dashboard", fontsize=15, fontweight='bold')
 
     modes = sorted(mode_summary["mode"].unique())
-    colors_map = {"one_shot": "#0D0887", "single_agent": "#B83289", "full_system": "#F48849"}
-    colors = [colors_map.get(m, "#FEBC2A") for m in modes]
+    colors_map = {"one_shot": "#BFF1F5", "single_agent": "#A1F289", "full_system": "#FF9898"}
+    colors = [colors_map.get(m, "#A1F289") for m in modes]
 
     # Top-left: Autometric rate by mode
     ax = axes[0, 0]
@@ -684,7 +690,7 @@ def _plot_execution_mode_dashboard(records: List[Dict], output_path: Path, llm_b
     ax.set_ylabel("Autometric Success Rate", fontweight='bold')
     ax.set_title("Average Success Rate by Mode", fontweight='bold')
     ax.set_ylim(0, 1.05)
-    ax.axhline(y=0.9, color='#F48849', linestyle='--', alpha=0.5)
+    ax.axhline(y=0.9, color='#FF9898', linestyle='--', alpha=0.5)
     ax.grid(axis='y', alpha=0.3, linestyle='--')
     for bar, val in zip(bars, mode_summary["autometric_rate"]):
         height = bar.get_height()
@@ -722,8 +728,8 @@ def _plot_execution_mode_dashboard(records: List[Dict], output_path: Path, llm_b
         }).reset_index()
         ax.plot(mode_data["complexity"], mode_data["autometric_rate"],
                 marker='o', linewidth=2, markersize=8,
-                label=mode, color=colors_map.get(mode, "#FEBC2A"))
-    ax.axhline(y=0.9, color='#F48849', linestyle='--', alpha=0.5)
+                label=mode, color=colors_map.get(mode, "#A1F289"))
+    ax.axhline(y=0.9, color='#FF9898', linestyle='--', alpha=0.5)
     ax.set_xlabel("Task Complexity", fontweight='bold')
     ax.set_ylabel("Autometric Success Rate", fontweight='bold')
     ax.set_title("Success vs Complexity by Mode", fontweight='bold')
@@ -740,7 +746,7 @@ def _plot_execution_mode_dashboard(records: List[Dict], output_path: Path, llm_b
         }).reset_index()
         ax.plot(mode_data["complexity"], mode_data["runtime"],
                 marker='o', linewidth=2, markersize=8,
-                label=mode, color=colors_map.get(mode, "#FEBC2A"))
+                label=mode, color=colors_map.get(mode, "#A1F289"))
     ax.set_xlabel("Task Complexity", fontweight='bold')
     ax.set_ylabel("Average Runtime (seconds)", fontweight='bold')
     ax.set_title("Runtime vs Complexity by Mode", fontweight='bold')
@@ -754,12 +760,12 @@ def _plot_execution_mode_dashboard(records: List[Dict], output_path: Path, llm_b
         mode_data = df[df["mode"] == mode]
         ax.scatter(mode_data["runtime"], mode_data["autometric_rate"],
                   s=mode_data["complexity"]*100, alpha=0.6,
-                  c=[colors_map.get(mode, "#FEBC2A")]*len(mode_data),
+                  c=[colors_map.get(mode, "#A1F289")]*len(mode_data),
                   label=mode, edgecolors='black', linewidth=0.5)
-    ax.axhline(y=0.9, color='#F48849', linestyle='--', alpha=0.5)
+    ax.axhline(y=0.9, color='#FF9898', linestyle='--', alpha=0.5)
     if len(df) > 0:
         median_runtime = df["runtime"].median()
-        ax.axvline(x=median_runtime, color='#6A00A8', linestyle='--', alpha=0.5)
+        ax.axvline(x=median_runtime, color='#BFF1F5', linestyle='--', alpha=0.5)
     ax.set_xlabel("Average Runtime (seconds)", fontweight='bold')
     ax.set_ylabel("Autometric Success Rate", fontweight='bold')
     ax.set_title("Efficiency Frontier by Mode", fontweight='bold')
@@ -768,7 +774,7 @@ def _plot_execution_mode_dashboard(records: List[Dict], output_path: Path, llm_b
     ax.legend(loc='best')
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    _savefig(fig, output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 

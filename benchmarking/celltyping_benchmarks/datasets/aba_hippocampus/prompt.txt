@@ -1,0 +1,56 @@
+I need you to analyze this single-cell RNA-seq dataset from mouse hippocampus. This is a central nervous system dataset from the Allen Brain Atlas Whole Mouse Brain project (Yao et al., Nature 2023) and will need to be integrated across samples/libraries.
+
+Please perform a complete analysis including:
+
+**Quality Control**
+- Remove low-quality cells and doublets
+- Filter out cells with high mitochondrial content or very low gene counts
+- Show me QC plots before and after filtering
+
+**Data Integration**
+- This dataset has multiple samples/libraries that need to be integrated
+- Please integrate the data so we can compare cell types across samples
+- Make sure the sample-to-sample variation is removed while preserving biological cell type structure
+- Save the integrated data to `adata.obsm['integration']` and ensure batch labels are in `adata.obs['batch']`
+
+**Cell Type Identification**
+- Use the tools available to you to cell type the data
+- Target these desired labels using the reference subgroup names (match strings exactly; do not invent or substitute other names, and do not use plurals or synonyms):
+  Astro; CA1-ProS; CA2-IG-FC; CA3; Car3; CR; CT SUB; DG; Endo; L2/3 IT CTX;
+  L2/3 IT ENTl; L2/3 IT PPP; L2/3 IT RHP; L2 IT ENTl; L2 IT ENTm; L3 IT ENT;
+  L4/5 IT CTX; L4 RSP-ACA; L5/6 IT TPE-ENT; L5/6 NP CTX; L5 IT CTX; L5 PPP;
+  L5 PT CTX; L6b/CT ENT; L6b CTX; L6 CT CTX; L6 IT CTX; L6 IT ENTl; Lamp5;
+  Meis2; Micro-PVM; NP PPP; NP SUB; Oligo; Pvalb; SMC-Peri; Sncg; Sst;
+  Sst Chodl; SUB-ProS; Vip; VLMC
+
+**Marker Gene Analysis**
+- Find the genes that define each cell type
+- Show me the key markers that distinguish different populations
+
+**Final Outputs**
+Please save:
+- The fully processed and annotated dataset to `/workspace/outputs/annotated_dataset.h5ad`
+- All plots showing the analysis steps to `/workspace/outputs/`
+- A summary of your findings including cell counts, quality metrics, and biological interpretation
+
+**REQUIRED OUTPUT SCHEMA — these exact field names are mandatory for downstream evaluation:**
+
+The saved h5ad file `/workspace/outputs/annotated_dataset.h5ad` MUST contain the following fields with EXACTLY these names:
+
+| Location | Field name | Type | Description |
+|---|---|---|---|
+| `adata.obs['batch']` | `batch` | string | Sample / library ID |
+| `adata.obs['cluster']` | `cluster` | string or int | Leiden or other cluster label |
+| `adata.obs['cell_type']` | `cell_type` | string | Final cell type annotation — **use this exact key, NOT** `celltypist_prediction`, `cell_type_predicted`, or any other variant |
+| `adata.obs['n_genes_by_counts']` | `n_genes_by_counts` | float | Genes detected per cell (from scanpy QC) |
+| `adata.obs['pct_counts_mt']` | `pct_counts_mt` | float | Mitochondrial % per cell |
+| `adata.obsm['X_umap']` | `X_umap` | ndarray | 2-D UMAP coordinates |
+| `adata.obsm['X_pca']` | `X_pca` | ndarray | PCA coordinates |
+| `adata.obsm['integration']` | `integration` | ndarray | Batch-integrated embedding (scVI / Harmony / etc.) |
+| `adata.layers['counts']` | `counts` | sparse matrix | Raw integer counts (before normalisation) |
+
+If you use CellTypist or another tool that stores predictions under a different key (e.g. `celltypist_prediction`), you MUST copy those predictions into `adata.obs['cell_type']` before saving.
+
+The output file MUST be saved to exactly `/workspace/outputs/annotated_dataset.h5ad`.
+
+This is a benchmark dataset from the Allen Brain Atlas project, so please use best practices and be thorough in your analysis.
