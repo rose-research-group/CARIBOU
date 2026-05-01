@@ -1,66 +1,95 @@
 Bootstrap: docker
-From: python:3.11-slim
+From: nvidia/cuda:12.0.0-devel-ubuntu22.04
 
 # ---------------------------------------------------------------
 # Copy project files (runs on the host before %post is executed)
 # ---------------------------------------------------------------
 %setup
-mkdir -p "${SINGULARITY_ROOTFS}/opt/app"
-cp "requirements.txt"  "${SINGULARITY_ROOTFS}/opt/app/requirements.txt"
-cp "kernel_api.py"     "${SINGULARITY_ROOTFS}/opt/app/kernel_api.py"
-cp "start_kernel.py"   "${SINGULARITY_ROOTFS}/opt/app/start_kernel.py"
-cp "start.sh"          "${SINGULARITY_ROOTFS}/opt/app/start.sh"
-cp "offline_kernel.py"   "${SINGULARITY_ROOTFS}/opt/offline_kernel.py"
+    mkdir -p "${SINGULARITY_ROOTFS}/opt/app"
+    cp "environment.yml"   "${SINGULARITY_ROOTFS}/opt/app/environment.yml"
+    cp "requirements.txt"  "${SINGULARITY_ROOTFS}/opt/app/requirements.txt"
+    cp "kernel_api.py"     "${SINGULARITY_ROOTFS}/opt/app/kernel_api.py"
+    cp "start_kernel.py"   "${SINGULARITY_ROOTFS}/opt/app/start_kernel.py"
+    cp "start.sh"          "${SINGULARITY_ROOTFS}/opt/app/start.sh"
+    cp "offline_kernel.py"   "${SINGULARITY_ROOTFS}/opt/offline_kernel.py"
 
 # ---------------------------------------------------------------
 # Build steps executed INSIDE the container
 # ---------------------------------------------------------------
 %post
-export DEBIAN_FRONTEND=noninteractive
+    export DEBIAN_FRONTEND=noninteractive
 
-# --- 1 ▸ System packages ---------------------------------------
-apt-get update && apt-get install -y --no-install-recommends \
-    tini tzdata build-essential pkg-config libhdf5-dev libsodium-dev \
-    libzmq3-dev gcc g++ sudo curl wget git vim nano unzip zip && \
-    ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime && \
-    dpkg-reconfigure --frontend noninteractive tzdata && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    # --- 1 ▸ System packages ---------------------------------------
+    apt-get update && apt-get install -y --no-install-recommends \
+        tini tzdata build-essential pkg-config libhdf5-dev libsodium-dev \
+        libzmq3-dev gcc g++ sudo curl wget git vim nano unzip zip && \
+        ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime && \
+        dpkg-reconfigure --frontend noninteractive tzdata && \
+        apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# --- 2 ▸ Non‑root user ----------------------------------------
-NB_USER="sandboxuser"
-NB_UID=1001
-NB_GID=1001
-groupadd  -g "$NB_GID" "$NB_USER"
-useradd   -m -s /bin/bash -u "$NB_UID" -g "$NB_GID" "$NB_USER"
-echo "$NB_USER ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+    # --- 2 ▸ Non‑root user ----------------------------------------
+    NB_USER="sandboxuser"
+    NB_UID=1001
+    NB_GID=1001
+    groupadd  -g "$NB_GID" "$NB_USER"
+    useradd   -m -s /bin/bash -u "$NB_UID" -g "$NB_GID" "$NB_USER"
+    echo "$NB_USER ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-# --- 3 ▸ Python dependencies -----------------------------------
-pip install --no-cache-dir --upgrade pip
-pip install --no-cache-dir -r /opt/app/requirements.txt
+    # --- 3 ▸ Micromamba & RAPIDS environment -----------------------
+    # Install micromamba
+    curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C /usr/local bin/micromamba
 
-# --- 4 ▸ Permissions & executables -----------------------------
-chown -R "$NB_USER:$NB_GID" /opt/app
-chmod +x /opt/app/start_kernel.py /opt/app/start.sh
+    # Create conda environment from file (explicit prefix to match runtime PATH)
+    export MAMBA_ROOT_PREFIX="/usr/local"
+    /usr/local/bin/micromamba create -y -p /usr/local/envs/rapids -f /opt/app/environment.yml
+        
+    # --- 4 ▸ Permissions & executables -----------------------------
+    chown -R "$NB_USER:$NB_GID" /opt/app
+    chmod +x /opt/app/start_kernel.py /opt/app/start.sh
 
-chown "$NB_USER:$NB_GID" /opt/offline_kernel.py
-chmod +x /opt/offline_kernel.py
+    chown "$NB_USER:$NB_GID" /opt/offline_kernel.py
+    chmod +x /opt/offline_kernel.py
+
+    # --- 5 ▸ Create home directory structure and mamba config ------
+    # Ensure home directory and subdirectories exist with proper permissions
+    mkdir -p "/home/$NB_USER/.config/mamba"
+    # Create minimal .mambarc to prevent warnings
+    cat > "/home/$NB_USER/.mambarc" << 'EOF'
+# Minimal mamba config
+show_banner: false
+EOF
+    chown -R "$NB_USER:$NB_GID" "/home/$NB_USER"
+
+    # Clean up
+    micromamba clean -a -y
 
 # ---------------------------------------------------------------
 # Runtime environment
 # ---------------------------------------------------------------
 %environment
-export DEBIAN_FRONTEND=noninteractive
-export USER=sandboxuser
-export HOME=/home/sandboxuser
-export PATH=$HOME/.local/bin:$PATH
-export IPY_BASE_PORT=4000
+    export DEBIAN_FRONTEND=noninteractive
+    export USER=sandboxuser
+    export HOME=/home/sandboxuser
+    # Set full PATH including conda environment and system paths
+    export PATH="/usr/local/envs/rapids/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    export IPY_BASE_PORT=4000
+    export MAMBA_ROOT_PREFIX="/usr/local"
+    export MAMBA_EXE="/usr/local/bin/micromamba"
+    # Suppress micromamba warnings and messages
+    export MAMBA_NO_BANNER=1
+    export MAMBA_NO_LOW_SPEED_LIMIT=1
+    export PYTHONUNBUFFERED=1
+    # Set conda environment variables directly (no need for shell hook/activation)
+    export CONDA_PREFIX="/usr/local/envs/rapids"
+    export CONDA_DEFAULT_ENV="rapids"
+    export CONDA_SHLVL=1
 
 # ---------------------------------------------------------------
 # What happens on ‘apptainer run …’
 # ---------------------------------------------------------------
 %runscript
-exec /usr/bin/tini -- /opt/app/start.sh "$@"
+    exec /usr/bin/tini -- /opt/app/start.sh "$@"
 
 # Optional: behaviour for ‘apptainer instance start …’
 %startscript
-exec /usr/bin/tini -- /opt/app/start.sh "$@"
+    exec /usr/bin/tini -- /opt/app/start.sh "$@"

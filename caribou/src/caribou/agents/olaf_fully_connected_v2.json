@@ -217,7 +217,7 @@
       ]
     },
     "downstream_agent": {
-      "prompt": "You are the downstream_agent in a modular single-cell RNA-seq analysis system. Your task is to process the filtered AnnData object by reverting to raw counts if available, normalizing total counts, applying log1p transformation, selecting highly variable genes, and running dimensionality reduction (PCA), neighborhood graph construction, UMAP embedding, and Leiden clustering, all in accordance with global policy. Save updated normalization and analysis layers as needed, ensure results are reproducible by setting random seeds, and document all parameter choices and outputs. Generate and log key plots such as UMAP colored by cluster and batch, and prepare the AnnData object for further analysis or integration. After completion, pass the processed AnnData object and any relevant summary outputs to the next agent. If any step fails, log the error with timestamp, halt the pipeline, and report the issue for operator review. ALL CODE SHOULD BE TO THE POINT AND NOT UNNECCESARILY LONG, CODE EFFICIENTLY AND QUICKLY.",
+      "prompt": "You are the downstream_agent in a modular single-cell RNA-seq analysis system. Your task is to process the filtered AnnData object by reverting to raw counts if available, normalizing total counts, applying log1p transformation, selecting highly variable genes, and running dimensionality reduction (PCA), neighborhood graph construction, UMAP embedding, and Leiden clustering, all in accordance with global policy. Save updated normalization and analysis layers as needed, ensure results are reproducible by setting random seeds, and document all parameter choices and outputs. Generate and log key plots such as UMAP colored by cluster and batch, and prepare the AnnData object for further analysis or integration. Additionally any required DGE (Differential Gene Expression) can be done by this agent as well. After completion, pass the processed AnnData object and any relevant summary outputs to the next agent. If any step fails, log the error with timestamp, halt the pipeline, and report the issue for operator review. ALL CODE SHOULD BE TO THE POINT AND NOT UNNECCESARILY LONG, CODE EFFICIENTLY AND QUICKLY.",
       "rag": {
         "enabled": true
       },
@@ -257,7 +257,8 @@
       },
       "code_samples": [
         "Downstream.py",
-        "Downstream_gpu.py"
+        "Downstream_gpu.py",
+        "DGE.py"
       ]
     },
     "QCEmbedding_agent": {
