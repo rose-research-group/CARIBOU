@@ -19,5 +19,17 @@ benchmarking/task_benchmarks/results/
 benchmarking/task_benchmarks/analysis/plots/
 benchmarking/task_benchmarks/analysis/plots_no_claude/
 benchmarking/task_benchmarks/analysis_slurm/logs/
+benchmarking/integration_benchmarks/results/
+benchmarking/integration_benchmarks/analysis/outputs/
+benchmarking/integration_benchmarks/analysis/plots/
+benchmarking/integration_benchmarks/slurm/logs/
+benchmarking/celltyping_benchmarks/results/
+benchmarking/celltyping_benchmarks/analysis/outputs/
+benchmarking/celltyping_benchmarks/analysis/plots/
+benchmarking/celltyping_benchmarks/slurm/logs/
+benchmarking/celltyping_benchmarks/clean_plots/aba_hippocampus/
+benchmarking/celltyping_benchmarks/clean_plots/tsp_large_intestine/
 !benchmarking/auto_runs/auto_run_template.sh
 *.note
+manuscript/
+.codex

@@ -161,7 +161,8 @@ Wrap all code in ```python ... ``` blocks."""
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.0
+            temperature=0.0,
+            max_tokens=8192,
         )
 
         llm_response = response.choices[0].message.content

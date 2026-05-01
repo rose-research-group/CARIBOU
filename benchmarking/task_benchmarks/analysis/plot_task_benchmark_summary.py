@@ -1,5 +1,6 @@
 import argparse
 import json
+import sys
 from pathlib import Path
 from statistics import mean
 from typing import Dict, Iterable, List, Optional
@@ -7,6 +8,45 @@ from typing import Dict, Iterable, List, Optional
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.lines import Line2D
+from matplotlib.patches import Rectangle
+
+
+TASK_BENCH_DIR = Path(__file__).resolve().parent.parent
+CARIBOU_ROOT = TASK_BENCH_DIR.parent.parent
+sys.path.insert(0, str(CARIBOU_ROOT / "dev"))
+
+CIVIDIS_CMAP = plt.get_cmap("cividis")
+CIVIDIS_TONES = {
+    "one_shot": CIVIDIS_CMAP(0.18),
+    "single_agent": CIVIDIS_CMAP(0.52),
+    "full_system": CIVIDIS_CMAP(0.84),
+}
+
+MODE_ORDER = ["one_shot", "single_agent", "full_system"]
+MODE_LABELS = {
+    "one_shot": "One-shot",
+    "single_agent": "Single agent",
+    "full_system": "Full system",
+}
+LLM_ORDER = ["chatgpt", "deepseek"]
+LLM_LABELS = {
+    "chatgpt": "ChatGPT",
+    "deepseek": "DeepSeek",
+}
+TASK_PANEL_ORDER = ["load_data", "doublet_task", "full_qc_task", "deg_task"]
+TASK_PANEL_LABELS = {
+    "load_data": "Load data",
+    "doublet_task": "Doublet",
+    "full_qc_task": "Full QC",
+    "deg_task": "DEG",
+}
+
+
+def _savefig(fig: plt.Figure, output_path: Path, **kwargs) -> None:
+    fig.savefig(output_path, **kwargs)
+    svg_kwargs = {k: v for k, v in kwargs.items() if k != "dpi"}
+    fig.savefig(output_path.with_suffix(".svg"), **svg_kwargs)
 
 
 def _load_summary(path: Path) -> List[Dict]:
@@ -188,7 +228,7 @@ def _plot_grouped_bars(
 
     fig, ax = plt.subplots(figsize=(10, 5))
     x = np.arange(len(labels))
-    ax.bar(x, cleaned, color="#4C78A8")
+    ax.bar(x, cleaned, color=CIVIDIS_CMAP(0.52))
     ax.set_title(title)
     ax.set_ylabel(ylabel)
     if ylim:
@@ -197,7 +237,7 @@ def _plot_grouped_bars(
     ax.set_xticklabels(labels, rotation=30, ha="right")
     ax.grid(axis="y", linestyle="--", alpha=0.4)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    _savefig(fig, output_path, dpi=150)
     plt.close(fig)
 
 
@@ -233,7 +273,7 @@ def _plot_matrix(
         return
 
     fig, ax = plt.subplots(figsize=(max(5, len(llms) * 1.2), max(3, len(modes) * 0.8)))
-    im = ax.imshow(values, aspect="auto", cmap="viridis", vmin=None if not ylim else ylim[0], vmax=None if not ylim else ylim[1])
+    im = ax.imshow(values, aspect="auto", cmap="cividis", vmin=None if not ylim else ylim[0], vmax=None if not ylim else ylim[1])
     ax.set_title(title)
     ax.set_xticks(np.arange(len(llms)))
     ax.set_xticklabels(llms, rotation=30, ha="right")
@@ -243,66 +283,262 @@ def _plot_matrix(
     ax.set_ylabel(ylabel)
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    _savefig(fig, output_path, dpi=150)
     plt.close(fig)
 
 
 def _plot_performance_time_combined(task: str, records: List[Dict], output_path: Path) -> None:
-    """Create a side-by-side plot of autometric rate and runtime for presentations."""
-    sorted_records = sorted(records, key=_sort_key)
-    labels = [f"{r.get('mode', 'unknown')}/{r.get('llm_backend', 'unknown')}" for r in sorted_records]
-
-    autometric_values = [r.get("autometric_success_rate") for r in sorted_records]
-    runtime_values = [r.get("avg_runtime_seconds") for r in sorted_records]
-
-    # Filter out None values
-    valid_indices = [i for i, (a, r) in enumerate(zip(autometric_values, runtime_values))
-                     if a is not None or r is not None]
-
-    if not valid_indices:
+    """Create a mode × LLM matrix with color = success and size = runtime."""
+    if not records:
         return
 
-    labels = [labels[i] for i in valid_indices]
-    autometric_values = [autometric_values[i] if autometric_values[i] is not None else 0 for i in valid_indices]
-    runtime_values = [runtime_values[i] if runtime_values[i] is not None else 0 for i in valid_indices]
+    modes = sorted({r.get("mode") or "" for r in records})
+    llms = sorted({r.get("llm_backend") or "" for r in records})
+    if not modes or not llms:
+        return
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    success = np.full((len(modes), len(llms)), np.nan)
+    runtime = np.full((len(modes), len(llms)), np.nan)
 
-    # Left: Autometric success rate
-    x = np.arange(len(labels))
-    bars1 = ax1.bar(x, autometric_values, color='#4C78A8', width=0.6)
-    ax1.set_ylabel("Autometric Success Rate", fontsize=11)
-    ax1.set_title(f"{task}: Autometric Success Rate", fontsize=12, fontweight='bold')
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(labels, rotation=30, ha='right')
-    ax1.set_ylim(0, 1.05)
-    ax1.grid(axis='y', linestyle='--', alpha=0.4)
-    ax1.axhline(y=0.9, color='green', linestyle='--', alpha=0.5, linewidth=1)
+    for r in records:
+        mode = r.get("mode") or ""
+        llm = r.get("llm_backend") or ""
+        if mode not in modes or llm not in llms:
+            continue
+        m = modes.index(mode)
+        l = llms.index(llm)
+        success_val = r.get("autometric_success_rate")
+        runtime_val = r.get("avg_runtime_seconds")
+        success[m, l] = float(success_val) if isinstance(success_val, (int, float)) else np.nan
+        runtime[m, l] = float(runtime_val) if isinstance(runtime_val, (int, float)) else np.nan
 
-    # Add value labels on bars
-    for bar, val in zip(bars1, autometric_values):
-        height = bar.get_height()
-        if height > 0:
-            ax1.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{val:.2f}', ha='center', va='bottom', fontsize=9)
+    if np.all(np.isnan(success)) and np.all(np.isnan(runtime)):
+        print(f"Skipping {output_path.name}: no numeric values for success/runtime")
+        return
 
-    # Right: Avg runtime
-    bars2 = ax2.bar(x, runtime_values, color='#E15759', width=0.6)
-    ax2.set_ylabel("Average Runtime (seconds)", fontsize=11)
-    ax2.set_title(f"{task}: Average Runtime", fontsize=12, fontweight='bold')
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(labels, rotation=30, ha='right')
-    ax2.grid(axis='y', linestyle='--', alpha=0.4)
+    fig, ax = plt.subplots(figsize=(max(5, len(llms) * 1.2), max(3.5, len(modes) * 0.9)))
+    cmap = CIVIDIS_CMAP.copy()
+    cmap.set_bad("#f2f2f2")
+    im = ax.imshow(success, aspect="auto", cmap=cmap, vmin=0, vmax=1)
 
-    # Add value labels on bars
-    for bar, val in zip(bars2, runtime_values):
-        height = bar.get_height()
-        if height > 0:
-            ax2.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{val:.0f}s', ha='center', va='bottom', fontsize=9)
+    ax.set_title(f"{task}: Autometric Success (color) & Runtime (size)", fontsize=12, fontweight="bold")
+    ax.set_xticks(np.arange(len(llms)))
+    ax.set_xticklabels(llms, rotation=30, ha="right")
+    ax.set_yticks(np.arange(len(modes)))
+    ax.set_yticklabels(modes)
+    ax.set_xlabel("LLM", fontsize=11)
+    ax.set_ylabel("Mode", fontsize=11)
+
+    runtime_vals = runtime[~np.isnan(runtime)]
+    size_min, size_max = 60, 420
+    if runtime_vals.size:
+        r_min = float(runtime_vals.min())
+        r_max = float(runtime_vals.max())
+        denom = r_max - r_min if r_max > r_min else 1.0
+        for i in range(len(modes)):
+            for j in range(len(llms)):
+                if np.isnan(runtime[i, j]):
+                    continue
+                size = size_min + (runtime[i, j] - r_min) / denom * (size_max - size_min)
+                ax.scatter(j, i, s=size, facecolor="none", edgecolor="black", linewidth=0.8)
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Autometric Success Rate", rotation=270, labelpad=16, fontsize=10)
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    _savefig(fig, output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _scale_runtime_to_bubble_size(value: float, r_min: float, r_max: float, size_min: float = 120, size_max: float = 850) -> float:
+    """Map runtime values to scatter areas for manuscript bubble plots."""
+    denom = r_max - r_min if r_max > r_min else 1.0
+    return size_min + (value - r_min) / denom * (size_max - size_min)
+
+
+def _round_runtime_for_legend(value: float) -> int:
+    """Round runtime values to clean legend labels."""
+    if value >= 100:
+        return int(round(value / 50.0) * 50)
+    if value >= 30:
+        return int(round(value / 10.0) * 10)
+    return int(round(value / 5.0) * 5)
+
+
+def _plot_unit_task_manuscript_panel(records: List[Dict], output_path: Path) -> None:
+    """Create one manuscript-ready panel for unit task performance."""
+    selected = [
+        r for r in records
+        if r.get("task") in TASK_PANEL_ORDER
+        and r.get("mode") in MODE_ORDER
+        and r.get("llm_backend") in LLM_ORDER
+    ]
+    if not selected:
+        print(f"Skipping {output_path.name}: no unit-task records found")
+        return
+
+    data = {
+        (r.get("task"), r.get("mode"), r.get("llm_backend")): r
+        for r in selected
+    }
+    runtime_vals = np.array([
+        float(r["avg_runtime_seconds"])
+        for r in selected
+        if isinstance(r.get("avg_runtime_seconds"), (int, float))
+    ])
+    success_vals = np.array([
+        float(r["autometric_success_rate"])
+        for r in selected
+        if isinstance(r.get("autometric_success_rate"), (int, float))
+    ])
+    if runtime_vals.size == 0 or success_vals.size == 0:
+        print(f"Skipping {output_path.name}: missing runtime/success values")
+        return
+
+    r_min = float(runtime_vals.min())
+    r_max = float(runtime_vals.max())
+    cmap = CIVIDIS_CMAP.copy()
+    cmap.set_bad("#f2f2f2")
+
+    fig, ax = plt.subplots(figsize=(11.4, 4.6))
+
+    group_gap = 0.75
+    cell_width = 0.92
+    cell_height = 0.84
+    x_positions: Dict[tuple, float] = {}
+    task_centers: Dict[str, float] = {}
+    xticks = []
+    xticklabels = []
+    x_cursor = 0.0
+
+    for task in TASK_PANEL_ORDER:
+        group_positions = []
+        for llm in LLM_ORDER:
+            x_positions[(task, llm)] = x_cursor
+            group_positions.append(x_cursor)
+            xticks.append(x_cursor)
+            xticklabels.append(LLM_LABELS[llm])
+            x_cursor += 1.0
+        task_centers[task] = float(np.mean(group_positions))
+        x_cursor += group_gap
+
+    y_positions = {
+        mode: len(MODE_ORDER) - 1 - idx
+        for idx, mode in enumerate(MODE_ORDER)
+    }
+
+    for task in TASK_PANEL_ORDER:
+        x_left = x_positions[(task, LLM_ORDER[0])] - 0.5
+        x_right = x_positions[(task, LLM_ORDER[-1])] + 0.5
+        ax.add_patch(
+            Rectangle(
+                (x_left, len(MODE_ORDER) - 0.15),
+                x_right - x_left,
+                0.42,
+                facecolor="#f6f6f6",
+                edgecolor="none",
+                zorder=0,
+            )
+        )
+        ax.text(
+            task_centers[task],
+            len(MODE_ORDER) + 0.02,
+            TASK_PANEL_LABELS[task],
+            ha="center",
+            va="bottom",
+            fontsize=11,
+            fontweight="bold",
+        )
+
+        for mode in MODE_ORDER:
+            y = y_positions[mode]
+            for llm in LLM_ORDER:
+                x = x_positions[(task, llm)]
+                rec = data.get((task, mode, llm))
+                success = rec.get("autometric_success_rate") if rec else None
+                runtime = rec.get("avg_runtime_seconds") if rec else None
+                facecolor = cmap(float(success)) if isinstance(success, (int, float)) else "#f2f2f2"
+                ax.add_patch(
+                    Rectangle(
+                        (x - cell_width / 2.0, y - cell_height / 2.0),
+                        cell_width,
+                        cell_height,
+                        facecolor=facecolor,
+                        edgecolor="white",
+                        linewidth=1.4,
+                        zorder=1,
+                    )
+                )
+                if isinstance(runtime, (int, float)):
+                    size = _scale_runtime_to_bubble_size(float(runtime), r_min, r_max)
+                    ax.scatter(
+                        x,
+                        y,
+                        s=size,
+                        facecolors="none",
+                        edgecolors="black",
+                        linewidths=1.0,
+                        zorder=3,
+                    )
+
+    for task in TASK_PANEL_ORDER[:-1]:
+        divider = x_positions[(task, LLM_ORDER[-1])] + 0.5 + group_gap / 2.0
+        ax.axvline(divider, color="#d7d7d7", linewidth=1.0, zorder=2)
+
+    for mode in MODE_ORDER:
+        y = y_positions[mode]
+        ax.axhline(y + 0.5, color="#ebebeb", linewidth=0.9, zorder=0)
+
+    ax.set_xlim(min(xticks) - 0.65, max(xticks) + 0.65)
+    ax.set_ylim(-0.7, len(MODE_ORDER) + 0.35)
+    ax.set_xticks(xticks)
+    ax.set_xticklabels(xticklabels, fontsize=10)
+    ax.set_yticks([y_positions[m] for m in MODE_ORDER])
+    ax.set_yticklabels([MODE_LABELS[m] for m in MODE_ORDER], fontsize=10)
+    ax.set_xlabel("LLM backend within each task", fontsize=11)
+    ax.set_ylabel("Execution mode", fontsize=11)
+    ax.set_title("Unit task benchmark summary: success by color, runtime by bubble size", fontsize=13, fontweight="bold", pad=12)
+    ax.tick_params(axis="x", length=0)
+    ax.tick_params(axis="y", length=0)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_visible(False)
+    ax.spines["bottom"].set_color("#bbbbbb")
+
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=0, vmax=1))
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, fraction=0.035, pad=0.02)
+    cbar.set_label("Autometric success rate", rotation=270, labelpad=16, fontsize=10)
+
+    legend_values = np.quantile(runtime_vals, [0.2, 0.55, 0.9])
+    legend_values = [_round_runtime_for_legend(float(v)) for v in legend_values]
+    legend_values = sorted({max(v, 1) for v in legend_values})
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="None",
+            markerfacecolor="none",
+            markeredgecolor="black",
+            markeredgewidth=1.0,
+            markersize=np.sqrt(_scale_runtime_to_bubble_size(v, r_min, r_max)),
+            label=f"{v}s",
+        )
+        for v in legend_values
+    ]
+    ax.legend(
+        handles=legend_handles,
+        title="Runtime",
+        frameon=False,
+        loc="upper left",
+        bbox_to_anchor=(1.12, 0.42),
+        borderaxespad=0.0,
+        labelspacing=1.2,
+    )
+
+    fig.tight_layout()
+    _savefig(fig, output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -358,15 +594,15 @@ def _plot_complexity_ladder(records: List[Dict], output_path: Path, llm_backend:
     fig, ax = plt.subplots(figsize=(10, 6))
 
     modes = sorted(grouped["mode"].unique())
-    colors = {"one_shot": "#E15759", "single_agent": "#F28E2B", "full_system": "#4E79A7"}
+    colors = CIVIDIS_TONES
 
     for mode in modes:
         mode_data = grouped[grouped["mode"] == mode].sort_values("complexity")
         ax.plot(mode_data["complexity"], mode_data["autometric_rate"],
                 marker='o', linewidth=2, markersize=8,
-                label=mode, color=colors.get(mode, "#76B7B2"))
+                label=mode, color=colors.get(mode, CIVIDIS_CMAP(0.52)))
 
-    ax.axhline(y=0.9, color='green', linestyle='--', alpha=0.5, linewidth=1, label='90% threshold')
+    ax.axhline(y=0.9, color=CIVIDIS_CMAP(0.65), linestyle='--', alpha=0.5, linewidth=1, label='90% threshold')
     ax.set_xlabel("Task Complexity", fontsize=12, fontweight='bold')
     ax.set_ylabel("Autometric Success Rate", fontsize=12, fontweight='bold')
     ax.set_title("Task Complexity Ladder: Success Rate vs Complexity", fontsize=13, fontweight='bold')
@@ -376,7 +612,7 @@ def _plot_complexity_ladder(records: List[Dict], output_path: Path, llm_backend:
     ax.legend(loc='best')
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    _savefig(fig, output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -413,20 +649,20 @@ def _plot_efficiency_frontier(records: List[Dict], output_path: Path, llm_backen
     fig, ax = plt.subplots(figsize=(10, 7))
 
     modes = sorted(df["mode"].unique())
-    colors = {"one_shot": "#E15759", "single_agent": "#F28E2B", "full_system": "#4E79A7"}
+    colors = CIVIDIS_TONES
 
     for mode in modes:
         mode_data = df[df["mode"] == mode]
         scatter = ax.scatter(mode_data["runtime"], mode_data["autometric_rate"],
                             s=mode_data["complexity"]*100, alpha=0.6,
-                            c=[colors.get(mode, "#76B7B2")]*len(mode_data),
+                            c=[colors.get(mode, CIVIDIS_CMAP(0.5))]*len(mode_data),
                             label=mode, edgecolors='black', linewidth=0.5)
 
     # Add quadrant lines
     if len(df) > 0:
         median_runtime = df["runtime"].median()
-        ax.axhline(y=0.9, color='green', linestyle='--', alpha=0.5, linewidth=1.5, label='High accuracy (90%)')
-        ax.axvline(x=median_runtime, color='orange', linestyle='--', alpha=0.5, linewidth=1.5, label=f'Median runtime ({median_runtime:.0f}s)')
+        ax.axhline(y=0.9, color=CIVIDIS_CMAP(0.65), linestyle='--', alpha=0.5, linewidth=1.5, label='High accuracy (90%)')
+        ax.axvline(x=median_runtime, color=CIVIDIS_CMAP(0.25), linestyle='--', alpha=0.5, linewidth=1.5, label=f'Median runtime ({median_runtime:.0f}s)')
 
     ax.set_xlabel("Average Runtime (seconds)", fontsize=12, fontweight='bold')
     ax.set_ylabel("Autometric Success Rate", fontsize=12, fontweight='bold')
@@ -436,7 +672,7 @@ def _plot_efficiency_frontier(records: List[Dict], output_path: Path, llm_backen
     ax.legend(loc='best', framealpha=0.9)
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    _savefig(fig, output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -474,7 +710,7 @@ def _plot_reliability_heatmap(records: List[Dict], output_path: Path, llm_backen
 
     fig, ax = plt.subplots(figsize=(8, 6))
 
-    im = ax.imshow(pivot.values, aspect='auto', cmap='RdYlGn', vmin=0, vmax=1)
+    im = ax.imshow(pivot.values, aspect='auto', cmap='cividis', vmin=0, vmax=1)
 
     ax.set_xticks(np.arange(len(pivot.columns)))
     ax.set_xticklabels(pivot.columns, rotation=30, ha='right')
@@ -498,7 +734,7 @@ def _plot_reliability_heatmap(records: List[Dict], output_path: Path, llm_backen
     cbar.set_label("Autometric Success Rate", rotation=270, labelpad=20, fontweight='bold')
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    _savefig(fig, output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -549,22 +785,22 @@ def _plot_cost_benefit_analysis(records: List[Dict], output_path: Path, llm_back
     ax2 = ax.twinx()
 
     bars1 = ax.bar(x - width/2, task_summary["autometric_rate"], width,
-                   label='Autometric Rate', color='#4E79A7', alpha=0.8)
+                   label='Autometric Rate', color=CIVIDIS_CMAP(0.52), alpha=0.8)
     bars2 = ax2.bar(x + width/2, task_summary["runtime"], width,
-                    label='Avg Runtime (s)', color='#E15759', alpha=0.8)
+                    label='Avg Runtime (s)', color=CIVIDIS_CMAP(0.18), alpha=0.8)
 
     ax.set_xlabel("Task (by complexity)", fontsize=12, fontweight='bold')
-    ax.set_ylabel("Autometric Success Rate", fontsize=11, fontweight='bold', color='#4E79A7')
-    ax2.set_ylabel("Average Runtime (seconds)", fontsize=11, fontweight='bold', color='#E15759')
+    ax.set_ylabel("Autometric Success Rate", fontsize=11, fontweight='bold', color=CIVIDIS_CMAP(0.52))
+    ax2.set_ylabel("Average Runtime (seconds)", fontsize=11, fontweight='bold', color=CIVIDIS_CMAP(0.18))
 
     ax.set_title("Cost-Benefit Analysis: Success vs Runtime by Task", fontsize=13, fontweight='bold')
     ax.set_xticks(x)
     ax.set_xticklabels(task_summary["task"], rotation=30, ha='right')
     ax.set_ylim(0, 1.05)
-    ax.tick_params(axis='y', labelcolor='#4E79A7')
-    ax2.tick_params(axis='y', labelcolor='#E15759')
+    ax.tick_params(axis='y', labelcolor=CIVIDIS_CMAP(0.52))
+    ax2.tick_params(axis='y', labelcolor=CIVIDIS_CMAP(0.18))
 
-    ax.axhline(y=0.9, color='green', linestyle='--', alpha=0.5, linewidth=1)
+    ax.axhline(y=0.9, color=CIVIDIS_CMAP(0.84), linestyle='--', alpha=0.5, linewidth=1)
 
     # Combine legends
     lines1, labels1 = ax.get_legend_handles_labels()
@@ -574,7 +810,7 @@ def _plot_cost_benefit_analysis(records: List[Dict], output_path: Path, llm_back
     ax.grid(True, alpha=0.3, linestyle='--', axis='y')
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    _savefig(fig, output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -609,7 +845,7 @@ def _plot_complexity_resilience(records: List[Dict], output_path: Path, llm_back
 
     # Plot by LLM backend
     llms = sorted(df["llm_backend"].unique())
-    colors = {"chatgpt": "#F28E2B", "deepseek": "#4E79A7", "claude": "#E15759"}
+    colors = {"chatgpt": CIVIDIS_CMAP(0.15), "deepseek": CIVIDIS_CMAP(0.50), "claude": CIVIDIS_CMAP(0.85)}
 
     for llm in llms:
         llm_data = df[df["llm_backend"] == llm].groupby("complexity").agg({
@@ -618,9 +854,9 @@ def _plot_complexity_resilience(records: List[Dict], output_path: Path, llm_back
 
         ax.plot(llm_data["complexity"], llm_data["autometric_rate"],
                 marker='o', linewidth=2.5, markersize=10,
-                label=llm, color=colors.get(llm, "#76B7B2"))
+                label=llm, color=colors.get(llm, CIVIDIS_CMAP(0.52)))
 
-    ax.axhline(y=0.9, color='green', linestyle='--', alpha=0.5, linewidth=1.5, label='90% threshold')
+    ax.axhline(y=0.9, color=CIVIDIS_CMAP(0.84), linestyle='--', alpha=0.5, linewidth=1.5, label='90% threshold')
     ax.set_xlabel("Task Complexity", fontsize=12, fontweight='bold')
     ax.set_ylabel("Autometric Success Rate", fontsize=12, fontweight='bold')
     ax.set_title("Complexity vs Resilience: How Success Degrades with Complexity", fontsize=13, fontweight='bold')
@@ -630,7 +866,7 @@ def _plot_complexity_resilience(records: List[Dict], output_path: Path, llm_back
     ax.legend(loc='best', framealpha=0.9)
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    _savefig(fig, output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -673,8 +909,8 @@ def _plot_execution_mode_dashboard(records: List[Dict], output_path: Path, llm_b
     fig.suptitle("Execution Mode Comparison Dashboard", fontsize=15, fontweight='bold')
 
     modes = sorted(mode_summary["mode"].unique())
-    colors_map = {"one_shot": "#E15759", "single_agent": "#F28E2B", "full_system": "#4E79A7"}
-    colors = [colors_map.get(m, "#76B7B2") for m in modes]
+    colors_map = {"one_shot": CIVIDIS_CMAP(0.18), "single_agent": CIVIDIS_CMAP(0.52), "full_system": CIVIDIS_CMAP(0.84)}
+    colors = [colors_map.get(m, CIVIDIS_CMAP(0.52)) for m in modes]
 
     # Top-left: Autometric rate by mode
     ax = axes[0, 0]
@@ -682,7 +918,7 @@ def _plot_execution_mode_dashboard(records: List[Dict], output_path: Path, llm_b
     ax.set_ylabel("Autometric Success Rate", fontweight='bold')
     ax.set_title("Average Success Rate by Mode", fontweight='bold')
     ax.set_ylim(0, 1.05)
-    ax.axhline(y=0.9, color='green', linestyle='--', alpha=0.5)
+    ax.axhline(y=0.9, color=CIVIDIS_CMAP(0.84), linestyle='--', alpha=0.5)
     ax.grid(axis='y', alpha=0.3, linestyle='--')
     for bar, val in zip(bars, mode_summary["autometric_rate"]):
         height = bar.get_height()
@@ -720,8 +956,8 @@ def _plot_execution_mode_dashboard(records: List[Dict], output_path: Path, llm_b
         }).reset_index()
         ax.plot(mode_data["complexity"], mode_data["autometric_rate"],
                 marker='o', linewidth=2, markersize=8,
-                label=mode, color=colors_map.get(mode, "#76B7B2"))
-    ax.axhline(y=0.9, color='green', linestyle='--', alpha=0.5)
+                label=mode, color=colors_map.get(mode, CIVIDIS_CMAP(0.52)))
+    ax.axhline(y=0.9, color=CIVIDIS_CMAP(0.84), linestyle='--', alpha=0.5)
     ax.set_xlabel("Task Complexity", fontweight='bold')
     ax.set_ylabel("Autometric Success Rate", fontweight='bold')
     ax.set_title("Success vs Complexity by Mode", fontweight='bold')
@@ -738,7 +974,7 @@ def _plot_execution_mode_dashboard(records: List[Dict], output_path: Path, llm_b
         }).reset_index()
         ax.plot(mode_data["complexity"], mode_data["runtime"],
                 marker='o', linewidth=2, markersize=8,
-                label=mode, color=colors_map.get(mode, "#76B7B2"))
+                label=mode, color=colors_map.get(mode, CIVIDIS_CMAP(0.52)))
     ax.set_xlabel("Task Complexity", fontweight='bold')
     ax.set_ylabel("Average Runtime (seconds)", fontweight='bold')
     ax.set_title("Runtime vs Complexity by Mode", fontweight='bold')
@@ -752,12 +988,12 @@ def _plot_execution_mode_dashboard(records: List[Dict], output_path: Path, llm_b
         mode_data = df[df["mode"] == mode]
         ax.scatter(mode_data["runtime"], mode_data["autometric_rate"],
                   s=mode_data["complexity"]*100, alpha=0.6,
-                  c=[colors_map.get(mode, "#76B7B2")]*len(mode_data),
+                  c=[colors_map.get(mode, CIVIDIS_CMAP(0.52))]*len(mode_data),
                   label=mode, edgecolors='black', linewidth=0.5)
-    ax.axhline(y=0.9, color='green', linestyle='--', alpha=0.5)
+    ax.axhline(y=0.9, color=CIVIDIS_CMAP(0.84), linestyle='--', alpha=0.5)
     if len(df) > 0:
         median_runtime = df["runtime"].median()
-        ax.axvline(x=median_runtime, color='orange', linestyle='--', alpha=0.5)
+        ax.axvline(x=median_runtime, color=CIVIDIS_CMAP(0.18), linestyle='--', alpha=0.5)
     ax.set_xlabel("Average Runtime (seconds)", fontweight='bold')
     ax.set_ylabel("Autometric Success Rate", fontweight='bold')
     ax.set_title("Efficiency Frontier by Mode", fontweight='bold')
@@ -766,7 +1002,7 @@ def _plot_execution_mode_dashboard(records: List[Dict], output_path: Path, llm_b
     ax.legend(loc='best')
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    _savefig(fig, output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -787,6 +1023,9 @@ def plot_summary(summary_path: Path, output_dir: Path) -> None:
     # Create scalability subfolder
     scalability_dir = output_dir / "scalability"
     scalability_dir.mkdir(parents=True, exist_ok=True)
+
+    manuscript_dir = output_dir / "manuscript"
+    manuscript_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate scalability plots (excluding qc_task)
     print("Generating scalability plots...")
@@ -817,6 +1056,11 @@ def plot_summary(summary_path: Path, output_dir: Path) -> None:
     _plot_cost_benefit_analysis(records, combined_dir / "cost_benefit_analysis.png")
     _plot_complexity_resilience(records, combined_dir / "complexity_resilience.png")
     _plot_execution_mode_dashboard(records, combined_dir / "execution_mode_dashboard.png")
+
+    _plot_unit_task_manuscript_panel(
+        records=records,
+        output_path=manuscript_dir / "unit_task_performance_panel.png",
+    )
 
     for task, task_records in grouped.items():
         # Create combined performance/time plot for presentations

@@ -1,0 +1,84 @@
+{
+  "name": "Allen Brain Atlas Hippocampus",
+  "id": "aba_hippocampus",
+  "description": "Mouse hippocampus (HIP region) single-cell RNA-seq from the Allen Brain Atlas Whole Mouse Brain project. 10Xv2 chemistry, multi-sample.",
+  "organism": "mouse",
+  "tissue": "hippocampus",
+  "source": "Allen Brain Atlas / ABC Atlas",
+  "paper_reference": "Yao et al., Nature 2023",
+
+  "input_dataset_path": "/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/datasets/aba_subset_HIP_test.h5ad",
+
+  "reference_path": "/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/datasets/official_aba_processed/abc_atlas_cache/expression_matrices/WMB-10Xv2/20230630/WMB-10Xv2-HIP-raw-intersected.h5ad",
+  "processed_reference_path": "/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/datasets/official_aba_processed/abc_atlas_cache/expression_matrices/WMB-10Xv2/20230630/WMB-10Xv2-HIP-raw-intersected_basic_pp.h5ad",
+  "reference_celltype_key": "cell_type",
+  "reference_batch_key": "library_label",
+  "reference_gene_symbol_col": "gene_symbol",
+
+  "input_n_cells": 85955,
+
+  "barcode_join": {
+    "caribou_strip_suffix": true,
+    "caribou_sample_col": "sample",
+    "reference_barcode_col": "cell_barcode",
+    "reference_library_col": "library_label"
+  },
+
+  "metadata_join": {
+    "csv_path": "/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/comparisons/datasets/aba_hippocampus/metadata.csv",
+    "csv_celltype_col": "subclass_label",
+    "csv_index_split_on": "-L",
+    "csv_barcode_col": "cell_barcode",
+    "csv_library_col": "library_label"
+  },
+
+  "coarse_celltype_mapping": {
+    "CA1-ProS":   "CA1 pyramidal",
+    "CA2-IG-FC":  "CA2 pyramidal",
+    "CA3":        "CA3 pyramidal",
+    "DG":         "Dentate gyrus granule",
+    "Pvalb":      "Interneuron",
+    "Sst":        "Interneuron",
+    "Sst Chodl":  "Interneuron",
+    "Vip":        "Interneuron",
+    "Lamp5":      "Interneuron",
+    "Sncg":       "Interneuron",
+    "Meis2":      "Interneuron",
+    "Car3":       "Interneuron",
+    "CR":         "Interneuron",
+    "Astro":      "Astrocyte",
+    "Oligo":      "Oligodendrocyte",
+    "Micro-PVM":  "Microglia",
+    "Endo":       "Endothelial"
+  },
+
+  "caribou_celltype_mapping": {
+    "Astrocyte":            "Astro",
+    "Astrocytes":           "Astro",
+    "Oligodendrocyte":      "Oligo",
+    "Oligodendrocytes":     "Oligo",
+    "Microglia":            "Micro-PVM",
+    "Endothelial":          "Endo",
+    "Endothelial Cells":    "Endo"
+  },
+
+  "expected_celltypes": [
+    "CA1 pyramidal", "CA2 pyramidal", "CA3 pyramidal",
+    "Dentate gyrus granule", "Interneuron",
+    "Astrocyte", "Oligodendrocyte", "Microglia",
+    "Endothelial"
+  ],
+
+  "scib": {
+    "caribou_batch_key": "sample",
+    "caribou_celltype_key": "cell_type",
+    "caribou_embedding_key": "X_pca",
+    "reference_batch_key": "library_label",
+    "reference_embedding_key": "X_pca"
+  },
+
+  "n_cells_approx": 85000,
+  "n_batches": 10,
+  "slurm_mem": "64G",
+  "slurm_time": "12:00:00"
+}

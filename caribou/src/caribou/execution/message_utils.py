@@ -15,7 +15,8 @@ from typing import List, Optional, Tuple
 
 # --- Regex Patterns ---
 _DELEG_RE = re.compile(r"delegate_to_([A-Za-z0-9_]+)")
-_RAG_RE = re.compile(r"query_rag_<([^>]+)>")
+# Matches both `query_rag_<topic>` (canonical) and `query_rag_topic` (LLMs often drop the brackets)
+_RAG_RE = re.compile(r"query_rag_(?:<([^>]+)>|([A-Za-z0-9_.]+))")
 _END_SESSION_RE = re.compile(r"^\s*end_session\s*$", re.MULTILINE)
 _CODE_BLOCK_RE = re.compile(r"```(?:python)?[ \t]*\n[\s\S]*?\n```", re.MULTILINE)
 
@@ -27,9 +28,11 @@ def detect_delegation(msg: str) -> Optional[str]:
 
 
 def detect_rag(msg: str) -> Optional[str]:
-    """Return the *partial* RAG command if present."""
+    """Return the RAG topic if present (handles both `<topic>` and bare-word forms)."""
     m = _RAG_RE.search(msg)
-    return m.group(1) if m else None
+    if m:
+        return m.group(1) or m.group(2)
+    return None
 
 
 def detect_end_session(msg: str) -> bool:

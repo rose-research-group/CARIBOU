@@ -14,7 +14,7 @@ from rich.prompt import Prompt
 # --- Project-specific Imports ---
 try:
     from caribou.agents.AgentSystem import Agent, AgentSystem
-    from caribou.core.io_helpers import display, extract_python_code, format_execute_response
+    from caribou.core.io_helpers import display, extract_python_code_blocks, format_execute_response
     from caribou.execution.MemoryManager import MemoryManager
     from caribou.execution.ActionSpace import AgentActionSpace
     from caribou.execution.artifacts import SessionArtifacts
@@ -212,9 +212,14 @@ def run_agent_session(
                     session_end_reason = "agent_finished"
                     break
 
+        # Track whether any substantive action fires this turn (for loop-detection feedback)
+        _action_fired = False
+        _delegated = False
+
         # --- RAG handling ---
         query_from_re = detect_rag(msg)
         if query_from_re and current_agent.is_rag_enabled:
+            _action_fired = True
             console.print(f"[yellow]🔍 Triggering RAG query: {query_from_re}[/yellow]")
             rag_client = get_rag_client(console)
             retrieved_docs = rag_client.query(query_from_re)
@@ -230,6 +235,7 @@ def run_agent_session(
 
         cmd = detect_delegation(msg)
         if cmd and cmd in current_agent.commands:
+            _action_fired = True
             target_agent_name = current_agent.commands[cmd].target_agent
             new_agent = agent_system.get_agent(target_agent_name)
             if new_agent:
@@ -266,67 +272,115 @@ def run_agent_session(
                 if report_memory:
                     report_memory.update_agent_prompt(prompt_with_context)
                     current_agent_history_start = len(history)
+                _delegated = True
 
-        code = extract_python_code(msg)
-        if code:
-            last_code_snippet = code
-            console.print("[cyan]Executing code in sandbox…[/cyan]")
-            exec_result = sandbox_manager.exec_code(code, timeout=600)
-            code_exec_attempts += 1
-            if exec_result.get("status") != "ok":
-                code_exec_failures += 1
-                consecutive_failures += 1
-                if consecutive_failures == 2:
-                    correction_count += 1
-            else:
-                consecutive_failures = 0
-            feedback = format_execute_response(exec_result, output_dir if output_dir else get_default_runs_dir())
-            if memory_manager:
-                memory_manager.add_message("system", feedback)
-                if exec_result.get("status") == "ok":
-                    memory_manager.add_pivotal_code(code)
-            action_space.add_action(
-                "code_execution",
-                f"Ran code block:\n{_code_preview(code)}",
-                status=exec_result.get("status"),
+        code_blocks = extract_python_code_blocks(msg)
+        if code_blocks:
+            _action_fired = True
+            total_blocks = len(code_blocks)
+            rag_short_circuit = False
+            for idx, code in enumerate(code_blocks, start=1):
+                last_code_snippet = code
+                console.print("[cyan]Executing code in sandbox…[/cyan]")
+                exec_result = sandbox_manager.exec_code(code, timeout=600)
+                code_exec_attempts += 1
+                if exec_result.get("status") != "ok":
+                    code_exec_failures += 1
+                    consecutive_failures += 1
+                    if consecutive_failures == 2:
+                        correction_count += 1
+                else:
+                    consecutive_failures = 0
+                feedback = format_execute_response(exec_result, output_dir if output_dir else get_default_runs_dir())
+                if total_blocks > 1:
+                    feedback = feedback.replace(
+                        "Code execution result:",
+                        f"Code execution result (block {idx}/{total_blocks}):",
+                        1,
+                    )
+                if memory_manager:
+                    memory_manager.add_message("system", feedback)
+                    if exec_result.get("status") == "ok":
+                        memory_manager.add_pivotal_code(code)
+                action_label = "Ran code block"
+                if total_blocks > 1:
+                    action_label = f"Ran code block {idx}/{total_blocks}"
+                action_space.add_action(
+                    "code_execution",
+                    f"{action_label}:\n{_code_preview(code)}",
+                    status=exec_result.get("status"),
+                )
+                summary_msg = action_space.to_message()
+                history.append({"role": "system", "content": summary_msg})
+                if memory_manager:
+                    memory_manager.add_message("system", summary_msg)
+                history.append({"role": "assistant", "content": feedback})
+                display(console, "code execution result", feedback)
+
+                stderr = exec_result.get("stderr", "")
+                if stderr and current_agent.is_rag_enabled:
+                    func_error_patterns = [
+                        r"(\w+)\(.*\) missing \d+ required positional argument",  # TypeError missing arguments
+                        r"NameError: name '(\w+)' is not defined",  # NameError
+                        r"AttributeError: .* has no attribute '(\w+)'",  # AttributeError
+                        r"'(\w+)\(.*\) got an unexpected keyword argument"  # Unexpected keyword argument
+                    ]
+
+                    function_name = ""
+                    retrieved_docs = ""
+
+                    for pat in func_error_patterns:
+                        match = re.search(pat, stderr)
+                        if match:
+                            function_name = [g for g in match.groups() if g]
+                            break
+
+                    if function_name:
+                        function_name = function_name[0]
+                        console.print(
+                            f"[yellow]🔍 Incorrect function signature detected: {function_name}, function database search...[/yellow]"
+                        )
+                        rag_client = get_rag_client(console)
+                        retrieved_docs = rag_client.retrieve_function(function_name)
+                        if retrieved_docs:
+                            console.print("[green] Query successful - Function signature found. [/green]")
+                            feedback += (
+                                f"\n {function_name} produced an error. The correct function signature for "
+                                f"{function_name} is:\n{retrieved_docs}"
+                            )
+                            history.append({"role": "system", "content": feedback})
+                            rag_short_circuit = True
+                            break
+                        else:
+                            print("Error Query unsuccessful - Function signature does not exist in the current database.")
+            if rag_short_circuit:
+                continue
+
+        # If delegation happened (with or without a code block), let the new agent
+        # reply immediately rather than waiting for user input.
+        if _delegated:
+            continue
+
+        if is_auto and not _action_fired:
+            # No action was taken this turn — give the LLM explicit feedback so it
+            # doesn't silently repeat the same output indefinitely.
+            rag_hint = ""
+            if current_agent.is_rag_enabled:
+                rag_hint = (
+                    " To query the knowledge base write `query_rag_<topic>` "
+                    "(with angle brackets) on its own line, e.g. `query_rag_<Celltyping API>`."
+                )
+            no_action_msg = (
+                f"[SYSTEM] No action was recognised in your last message "
+                f"(no Python code block, no delegation command, no RAG query).{rag_hint} "
+                f"Please either write executable Python code in a ```python ... ``` block, "
+                f"issue a delegation command, or use a RAG query. "
+                f"Do not output plain text descriptions of what you intend to do."
             )
-            summary_msg = action_space.to_message()
-            history.append({"role": "system", "content": summary_msg})
+            console.print(f"[red]{no_action_msg}[/red]")
+            history.append({"role": "system", "content": no_action_msg})
             if memory_manager:
-                memory_manager.add_message("system", summary_msg)
-            history.append({"role": "assistant", "content": feedback})
-            display(console, "code execution result", feedback)
-
-            stderr = exec_result.get('stderr', '')
-            if stderr and current_agent.is_rag_enabled:
-                func_error_patterns = [
-                    r"(\w+)\(.*\) missing \d+ required positional argument",  # TypeError missing arguments
-                    r"NameError: name '(\w+)' is not defined",  # NameError
-                    r"AttributeError: .* has no attribute '(\w+)'",  # AttributeError
-                    r"'(\w+)\(.*\) got an unexpected keyword argument"  # Unexpected keyword argument
-                ]
-
-                function_name = ""
-                retrieved_docs = ""
-
-                for pat in func_error_patterns:
-                    match = re.search(pat, stderr)
-                    if match:
-                        function_name = [g for g in match.groups() if g]
-                        break
-
-                if function_name:
-                    function_name = function_name[0]
-                    console.print(f"[yellow]🔍 Incorrect function signature detected: {function_name}, function database search...[/yellow]")
-                    rag_client = get_rag_client(console)
-                    retrieved_docs = rag_client.retrieve_function(function_name)
-                    if retrieved_docs:
-                        console.print(f"[green] Query successful - Function signature found. [/green]")
-                        feedback += f"\n {function_name} produced an error. The correct function signature for {function_name} is:\n{retrieved_docs}"
-                        history.append({"role": "system", "content": feedback})
-                        continue
-                    else:
-                        print(f"Error Query unsuccessful - Function signature does not exist in the current database.")
+                memory_manager.add_message("system", no_action_msg)
 
         if is_auto:
             if benchmark_modules:

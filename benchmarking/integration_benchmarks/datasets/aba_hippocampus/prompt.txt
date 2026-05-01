@@ -1,0 +1,56 @@
+I need you to analyse this single-cell RNA-seq dataset from mouse hippocampus. This is a multi-sample, multi-library dataset from the Allen Brain Atlas Whole Mouse Brain project (Yao et al., Nature 2023). The primary goal is high-quality batch integration across the multiple samples, while preserving biological cell-type structure.
+
+Please perform a complete analysis including:
+
+**Quality Control**
+- Remove low-quality cells and doublets
+- Filter cells with high mitochondrial content or very low gene counts
+- Show QC plots before and after filtering
+
+**Data Integration**
+- This dataset has multiple samples/libraries that MUST be integrated
+- Apply a quantitative batch correction method (Harmony, scVI, BBKNN, or equivalent)
+- Evaluate integration quality — confirm that sample-to-sample batch variation is reduced while biological structure is retained
+- Save the batch-integrated embedding to `adata.obsm['integration']`
+- Ensure batch labels are stored in `adata.obs['batch']`
+
+**Dimensionality Reduction & Clustering**
+- Run PCA on the integrated / corrected data
+- Compute a UMAP for visualisation
+- Apply Leiden clustering; store cluster labels in `adata.obs['cluster']`
+
+**Cell Type Identification**
+- Annotate clusters using marker genes and/or automated methods (e.g. CellTypist)
+- Target these reference subclass labels (match strings exactly; do not invent or substitute names, do not use plurals or synonyms):
+  Astro; CA1-ProS; CA2-IG-FC; CA3; Car3; CR; DG; Endo; Lamp5; Meis2;
+  Micro-PVM; Oligo; Pvalb; Sncg; Sst; Sst Chodl; Vip
+
+**Marker Gene Analysis**
+- Identify the genes that define each cluster / cell type
+- Visualise key markers
+
+**Final Outputs**
+Please save:
+- The fully processed and annotated dataset to `/workspace/outputs/annotated_dataset.h5ad`
+- All plots to `/workspace/outputs/`
+- A brief summary of findings (cell counts, QC metrics, batch integration quality, cell-type composition)
+
+**REQUIRED OUTPUT SCHEMA — these exact field names are mandatory for downstream evaluation:**
+
+The saved h5ad file `/workspace/outputs/annotated_dataset.h5ad` MUST contain the following fields with EXACTLY these names:
+
+| Location | Field name | Type | Description |
+|---|---|---|---|
+| `adata.obs['batch']` | `batch` | string | Sample / library ID |
+| `adata.obs['cluster']` | `cluster` | string or int | Leiden or other cluster label |
+| `adata.obs['cell_type']` | `cell_type` | string | Final cell type annotation — use this exact key, NOT `celltypist_prediction`, `cell_type_predicted`, or any other variant |
+| `adata.obs['n_genes_by_counts']` | `n_genes_by_counts` | float | Genes detected per cell (from scanpy QC) |
+| `adata.obs['pct_counts_mt']` | `pct_counts_mt` | float | Mitochondrial % per cell |
+| `adata.obsm['X_umap']` | `X_umap` | ndarray | 2-D UMAP coordinates |
+| `adata.obsm['X_pca']` | `X_pca` | ndarray | PCA coordinates |
+| `adata.obsm['integration']` | `integration` | ndarray | Batch-integrated embedding (scVI / Harmony / etc.) — this field is REQUIRED |
+| `adata.layers['counts']` | `counts` | sparse matrix | Raw integer counts (before normalisation) |
+
+If you use CellTypist or another tool that stores predictions under a different key (e.g. `celltypist_prediction`), you MUST copy those predictions into `adata.obs['cell_type']` before saving.
+
+The output file MUST be saved to exactly `/workspace/outputs/annotated_dataset.h5ad`.

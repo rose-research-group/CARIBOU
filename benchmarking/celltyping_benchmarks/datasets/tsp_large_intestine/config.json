@@ -1,0 +1,154 @@
+{
+  "name": "Tabula Sapiens Large Intestine",
+  "id": "tsp_large_intestine",
+  "description": "Human large intestine (colon ascending + sigmoid) single-cell RNA-seq from the Tabula Sapiens project. 10X 3-prime v2/v3, 6 matched donors.",
+  "organism": "human",
+  "tissue": "large intestine",
+  "source": "Tabula Sapiens / CellXGene",
+  "paper_reference": "Tabula Sapiens Consortium, Science 2022",
+
+  "input_dataset_path": "/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/datasets/LI_TSP_cellxgene_check/LI_TSP_common_samples.h5ad",
+
+  "reference_path": "/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/datasets/LI_TSP_cellxgene_check/tabular_sapiens_large_intestine_cellxgene_common_samples.h5ad",
+  "reference_celltype_key": "cell_type",
+  "reference_batch_key": "sample_id",
+
+  "barcode_join": {
+    "_comment": "Reference index = '{sample_id}_{barcode}'; CARIBOU index = '{barcode}-{lane}-{sample_id}'",
+    "reference_index_extract": "split_underscore_last",
+    "reference_library_col":   "sample_id",
+    "caribou_index_extract":   "split_hyphen_first",
+    "caribou_sample_col":      "batch"
+  },
+
+  "expected_celltypes": [
+    "Colonocyte", "Goblet cell", "Enteroendocrine cell",
+    "Tuft cell", "Stem cell",
+    "Smooth muscle cell", "Fibroblast",
+    "Endothelial cell", "B cell", "T cell",
+    "Macrophage", "Mast cell"
+  ],
+
+  "coarse_celltype_mapping": {
+    "enterocyte of epithelium of large intestine": "Colonocyte",
+    "BEST4+ enterocyte":                           "Colonocyte",
+    "large intestine goblet cell":                 "Goblet cell",
+    "intestinal crypt stem cell of colon":         "Stem cell",
+    "transit amplifying cell of colon":            "Stem cell",
+    "paneth cell of colon":                        "Enteroendocrine cell",
+    "type L enteroendocrine cell":                 "Enteroendocrine cell",
+    "enterochromaffin-like cell":                  "Enteroendocrine cell",
+    "tuft cell of colon":                          "Tuft cell",
+    "fibroblast":                                  "Fibroblast",
+    "myofibroblast cell":                          "Smooth muscle cell",
+    "colon endothelial cell":                      "Endothelial cell",
+    "B cell":                                      "B cell",
+    "plasma cell":                                 "B cell",
+    "CD4-positive, alpha-beta T cell":             "T cell",
+    "CD8-positive, alpha-beta T cell":             "T cell",
+    "regulatory T cell":                           "T cell",
+    "gamma-delta T cell":                          "T cell",
+    "naive thymus-derived CD4-positive, alpha-beta T cell": "T cell",
+    "mature NK T cell":                            "T cell",
+    "innate lymphoid cell":                        "T cell",
+    "natural killer cell":                         "T cell",
+    "colon macrophage":                            "Macrophage",
+    "myeloid leukocyte":                           "Macrophage",
+    "monocyte":                                    "Macrophage",
+    "myeloid dendritic cell":                      "Macrophage",
+    "mast cell":                                   "Mast cell",
+    "enteroglial cell":                            "Other"
+  },
+
+  "_comment_caribou_mapping": "Maps CARIBOU output cell_type labels to the same coarse vocabulary as coarse_celltype_mapping. Cluster_* labels are unresolved clusters with no reference equivalent.",
+  "caribou_celltype_mapping": {
+    "_comment": "Maps any CARIBOU cell_type label variant → canonical coarse vocab. Add new variants here as they appear.",
+
+    "B cell":             "B cell",
+    "B cells":            "B cell",
+    "B_cells":            "B cell",
+
+    "Colonocyte":                       "Colonocyte",
+    "Colonocytes":                      "Colonocyte",
+    "Colonocytes_Absorptive":           "Colonocyte",
+    "Colonocytes/Absorptive enterocytes": "Colonocyte",
+    "Absorptive enterocytes":           "Colonocyte",
+    "Epithelial":                       "Colonocyte",
+
+    "Endothelial cell":   "Endothelial cell",
+    "Endothelial cells":  "Endothelial cell",
+    "Endothelial":        "Endothelial cell",
+
+    "Enteroendocrine cell":  "Enteroendocrine cell",
+    "Enteroendocrine cells": "Enteroendocrine cell",
+    "Enteroendocrine":       "Enteroendocrine cell",
+
+    "Fibroblast":         "Fibroblast",
+    "Fibroblasts":        "Fibroblast",
+    "Fibroblast_Stromal": "Fibroblast",
+    "Stromal fibroblasts":"Fibroblast",
+
+    "Goblet cell":        "Goblet cell",
+    "Goblet cells":       "Goblet cell",
+    "Goblet":             "Goblet cell",
+
+    "Macrophage":         "Macrophage",
+    "Macrophages":        "Macrophage",
+    "Monocytes":          "Macrophage",
+    "Monocyte":           "Macrophage",
+    "Dendritic cells":    "Macrophage",
+
+    "Mast cell":          "Mast cell",
+    "Mast cells":         "Mast cell",
+    "Mast_cells":         "Mast cell",
+    "Mast":               "Mast cell",
+
+    "Smooth muscle cell":   "Smooth muscle cell",
+    "Smooth muscle cells":  "Smooth muscle cell",
+    "Smooth_muscle":        "Smooth muscle cell",
+
+    "Stem cell":          "Stem cell",
+    "Stem cells":         "Stem cell",
+    "Stem":               "Stem cell",
+
+    "T cell":             "T cell",
+    "T cells":            "T cell",
+    "T_cells":            "T cell",
+    "NK cells":           "T cell",
+    "NK cell":            "T cell",
+
+    "Tuft cell":          "Tuft cell",
+    "Tuft cells":         "Tuft cell",
+    "Tuft":               "Tuft cell",
+
+    "Unknown":            "Other",
+    "Unassigned":         "Other",
+    "Cluster_0":          "Other",
+    "Cluster_1":          "Other",
+    "Cluster_2":          "Other",
+    "Cluster_3":          "Other",
+    "Cluster_4":          "Other",
+    "Cluster_5":          "Other",
+    "Cluster_6":          "Other",
+    "Cluster_7":          "Other",
+    "Cluster_8":          "Other",
+    "Cluster_9":          "Other",
+    "Cluster_10":         "Other",
+    "Cluster_11":         "Other",
+    "Cluster_12":         "Other",
+    "Cluster_13":         "Other",
+    "Cluster_14":         "Other",
+    "Cluster_15":         "Other",
+    "Cluster_16":         "Other",
+    "Cluster_17":         "Other",
+    "Cluster_18":         "Other",
+    "Cluster_19":         "Other",
+    "Cluster_20":         "Other"
+  },
+
+  "input_n_cells": 68097,
+  "n_cells_approx": 30000,
+  "n_batches": 6,
+  "slurm_mem": "64G",
+  "slurm_time": "12:00:00"
+}

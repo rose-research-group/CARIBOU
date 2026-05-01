@@ -12,6 +12,7 @@ from rich.prompt import Prompt, Confirm
 
 # Import from the central config to know where chat logs are stored by default
 from caribou.config import CARIBOU_HOME
+from caribou.core.io_helpers import split_message_by_fence
 
 utils_app = typer.Typer(
     name="utils",
@@ -68,41 +69,25 @@ def _convert_history_to_notebook(history_path: Path, output_path: Path):
         "nbformat_minor": 5
     }
 
-    # This regex specifically finds Python code blocks
-    code_block_re = re.compile(r"```python\n(.*?)\n```", re.DOTALL)
-
     for message in history:
         role = message.get("role")
         content = message.get("content", "")
         
         # We are primarily interested in the agent's responses
         if role and "assistant" in role:
-            # Split the content by code blocks to interleave markdown and code
-            parts = code_block_re.split(content)
-            
-            for i, part in enumerate(parts):
-                part = part.strip()
-                if not part:
-                    continue
-                
-                # Odd-indexed parts are the code blocks captured by the regex
-                if i % 2 == 1:
+            parts = split_message_by_fence(content)
+            for kind, part in parts:
+                if kind == "code":
                     cell = {
                         "cell_type": "code",
                         "execution_count": None,
                         "metadata": {},
                         "outputs": [],
-                        "source": part
+                        "source": part,
                     }
-                    notebook["cells"].append(cell)
-                # Even-indexed parts are the explanatory text outside the code blocks
                 else:
-                    cell = {
-                        "cell_type": "markdown",
-                        "metadata": {},
-                        "source": part
-                    }
-                    notebook["cells"].append(cell)
+                    cell = {"cell_type": "markdown", "metadata": {}, "source": part}
+                notebook["cells"].append(cell)
 
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
