@@ -32,3 +32,4 @@ benchmarking/celltyping_benchmarks/clean_plots/tsp_large_intestine/
 !benchmarking/auto_runs/auto_run_template.sh
 *.note
 manuscript/
+.codex

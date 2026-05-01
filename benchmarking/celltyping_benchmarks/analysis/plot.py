@@ -25,11 +25,12 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-# Custom colormap: white → plasma warm end (pink → orange → yellow).
-_plasma_base = plt.get_cmap("plasma")
-WHITE_PLASMA = LinearSegmentedColormap.from_list(
-    "white_plasma",
-    [(1, 1, 1, 1)] + [_plasma_base(x) for x in np.linspace(0.35, 1.0, 255)],
+CIVIDIS_CMAP = plt.get_cmap("cividis")
+
+# Custom colormap: white → cividis.
+WHITE_CIVIDIS = LinearSegmentedColormap.from_list(
+    "white_cividis",
+    [(1, 1, 1, 1)] + [CIVIDIS_CMAP(x) for x in np.linspace(0.2, 1.0, 255)],
 )
 
 COMP_DIR   = Path(__file__).parent.parent
@@ -59,12 +60,16 @@ METRIC_LABELS = {
 
 MODE_ORDER  = ["one_shot", "single_agent", "full_system", "full_system_no_mem"]
 MODE_COLORS = {
-    "one_shot":          "#E15759",
-    "single_agent":      "#F28E2B",
-    "full_system":       "#4E79A7",
-    "full_system_no_mem":"#76B7B2",
+    "one_shot":           CIVIDIS_CMAP(0.18),
+    "single_agent":       CIVIDIS_CMAP(0.52),
+    "full_system":        CIVIDIS_CMAP(0.84),
+    "full_system_no_mem": CIVIDIS_CMAP(0.84),
 }
-LLM_COLORS = {"chatgpt": "#4E79A7", "deepseek": "#F28E2B", "claude": "#59A14F"}
+LLM_COLORS = {
+    "chatgpt":  CIVIDIS_CMAP(0.15),
+    "deepseek": CIVIDIS_CMAP(0.50),
+    "claude":   CIVIDIS_CMAP(0.85),
+}
 
 
 def _save(fig, path: Path, dpi: int = 300):
@@ -173,7 +178,7 @@ def plot_celltyping_heatmaps(df: pd.DataFrame, dataset_id: str, out: Path):
         if pivot.shape[0] < 1 or pivot.shape[1] < 1:
             continue
         fig, ax = plt.subplots(figsize=(4 + 1.2 * pivot.shape[1], 2.5 + 0.6 * pivot.shape[0]))
-        sns.heatmap(pivot, annot=True, fmt=".2f", cmap=WHITE_PLASMA, linewidths=0.5, ax=ax)
+        sns.heatmap(pivot, annot=True, fmt=".2f", cmap=WHITE_CIVIDIS, linewidths=0.5, ax=ax)
         ax.set_title(f"{dataset_id}: {label} (mean)")
         ax.set_xlabel("LLM")
         ax.set_ylabel("Mode")
@@ -368,7 +373,7 @@ def plot_confusion_matrix(cm_path: Path, dataset_id: str, run_name: str, out: Pa
     n_cols = len(labels)
     cell_size = max(0.7, min(1.2, 12 / max(n_rows, n_cols)))
     fig, ax = plt.subplots(figsize=(n_cols * cell_size + 2, n_rows * cell_size + 1.5))
-    sns.heatmap(cm_norm, annot=True, fmt=".2f", cmap=WHITE_PLASMA,
+    sns.heatmap(cm_norm, annot=True, fmt=".2f", cmap=WHITE_CIVIDIS,
                 xticklabels=labels, yticklabels=row_labels,
                 vmin=0, vmax=1, linewidths=0.3, linecolor="#eee",
                 cbar_kws={"label": "Fraction of reference cells"}, ax=ax)

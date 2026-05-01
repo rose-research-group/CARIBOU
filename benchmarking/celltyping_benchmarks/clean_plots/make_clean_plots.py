@@ -51,18 +51,20 @@ MODE_DISPLAY_NAMES = {
 # Ordered list of modes to show (top → bottom on y-axis / left → right on x)
 MODE_ORDER = ["one_shot", "single_agent", "full_system_no_mem"]
 
-# Categorical colors per mode (CARIBOU palette)
+CIVIDIS_CMAP = plt.get_cmap("cividis")
+
+# Categorical colors per mode
 PLASMA_CATS = {
-    "one_shot":           "#BFF1F5",   # blue
-    "single_agent":       "#A1F289",   # green
-    "full_system_no_mem": "#FF9898",   # red
+    "one_shot":           CIVIDIS_CMAP(0.18),
+    "single_agent":       CIVIDIS_CMAP(0.52),
+    "full_system_no_mem": CIVIDIS_CMAP(0.84),
 }
 
-# LLM colors (CARIBOU palette)
+# LLM colors
 LLM_COLORS_PLASMA = {
-    "chatgpt":  "#FF9898",   # red
-    "deepseek": "#BFF1F5",   # blue
-    "claude":   "#A1F289",   # green
+    "chatgpt":  CIVIDIS_CMAP(0.15),
+    "deepseek": CIVIDIS_CMAP(0.50),
+    "claude":   CIVIDIS_CMAP(0.85),
 }
 
 LLM_DISPLAY = {
@@ -74,21 +76,18 @@ LLM_DISPLAY = {
 # SCIB-like metrics to include in the review panel
 SCIB_METRICS = [
     ("ari",                  "Adjusted Rand Index"),
-    ("nmi",                  "Normalized Mutual Info"),
-    ("weighted_f1",          "Weighted F1"),
+    ("nmi",                  "Normalized Mutual Information"),
+    ("weighted_f1",          "Weighted F1 Score"),
     ("gene_expr_spearman_r", "Gene Expr. Spearman r"),
     ("hvg_jaccard",          "HVG Jaccard"),
-    ("umap_knn_overlap",     "UMAP kNN Overlap"),
-    ("pca_knn_overlap",      "PCA kNN Overlap"),
+    ("umap_knn_overlap",     "UMAP k-nearest-neighbor overlap"),
+    ("pca_knn_overlap",      "PCA k-nearest-neighbor overlap"),
 ]
 
-# Custom colormap: white → plasma warm end (pink → orange → yellow).
-# Replaces the dark purple/blue low end of plasma with white so that
-# zero/low values read as blank rather than dark.
-_plasma_base = plt.get_cmap("plasma")
-WHITE_PLASMA = LinearSegmentedColormap.from_list(
-    "white_plasma",
-    [(1, 1, 1, 1)] + [_plasma_base(x) for x in np.linspace(0.35, 1.0, 255)],
+# Custom colormap: white → cividis.
+WHITE_CIVIDIS = LinearSegmentedColormap.from_list(
+    "white_cividis",
+    [(1, 1, 1, 1)] + [CIVIDIS_CMAP(x) for x in np.linspace(0.2, 1.0, 255)],
 )
 
 # Global matplotlib style
@@ -111,8 +110,11 @@ def _save(fig, path: Path, dpi: int = 300):
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    svg_path = path.with_suffix(".svg")
+    fig.savefig(svg_path, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved: {path.relative_to(COMP_DIR)}")
+    print(f"  Saved: {svg_path.relative_to(COMP_DIR)}")
 
 
 def _load_dataset(dataset_id: str) -> pd.DataFrame:
@@ -190,7 +192,7 @@ def plot_weighted_f1_heatmap(df: pd.DataFrame, dataset_id: str, out: Path):
         pivot,
         annot=True,
         fmt=".2f",
-        cmap=WHITE_PLASMA,
+        cmap=WHITE_CIVIDIS,
         vmin=0.0,
         vmax=1.0,
         linewidths=0.8,
@@ -428,7 +430,7 @@ def plot_marker_gene_comparison(
         jaccard_df,
         annot=True,
         fmt=".2f",
-        cmap=WHITE_PLASMA,
+        cmap=WHITE_CIVIDIS,
         vmin=0.0,
         vmax=1.0,
         linewidths=0.6,
@@ -469,7 +471,7 @@ def plot_marker_gene_comparison(
         squeeze=False,
     )
 
-    cmap = WHITE_PLASMA
+    cmap = WHITE_CIVIDIS
     dot_max = 280
 
     for ci, ct in enumerate(ct_order):

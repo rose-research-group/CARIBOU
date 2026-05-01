@@ -21,6 +21,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 
@@ -29,8 +30,7 @@ CARIBOU_ROOT = INTBENCH_DIR.parent.parent
 sys.path.insert(0, str(INTBENCH_DIR))
 sys.path.insert(0, str(CARIBOU_ROOT / "dev"))
 
-from src.data_loader import available_datasets
-from colors import MODE_COLORS as _MC, GREEN, BLUE, RED
+from colors import MODE_COLORS as _MC, CIVIDIS_CMAP
 
 ANALYSIS_DIR = INTBENCH_DIR / "analysis"
 
@@ -108,6 +108,13 @@ def _mode_legend(fig, modes_present):
     if patches:
         fig.legend(handles=patches, loc="lower center", ncol=len(patches),
                    bbox_to_anchor=(0.5, -0.04), fontsize=9, handlelength=1.2)
+
+
+def _mode_legend_handles(modes_present):
+    return [
+        mpatches.Patch(color=MODE_COLORS[m], label=MODE_LABELS.get(m, m))
+        for m in MODE_ORDER if m in modes_present
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +251,7 @@ def plot_quality_panel(df: pd.DataFrame, dataset_id: str, out: Path):
 
 # Cell-type palette for UMAPs — up to 28 distinct categories using project
 # primary colours anchored at positions 0/1/2 and tab20c filling the rest.
-_UMAP_BASE = [RED, GREEN, BLUE]
+_UMAP_BASE = [CIVIDIS_CMAP(0.84), CIVIDIS_CMAP(0.52), CIVIDIS_CMAP(0.18)]
 
 
 def _celltype_palette(labels: list[str]) -> dict[str, tuple]:
@@ -332,6 +339,179 @@ def plot_umap_comparison(df: pd.DataFrame, dataset_id: str, outputs_dir: Path, o
     _save(fig, out / "umap_comparison.png")
 
 
+def plot_integration_summary(df: pd.DataFrame, dataset_id: str, outputs_dir: Path, out: Path):
+    """Compact manuscript summary: full-agent UMAP column + key metrics column."""
+    if df.empty:
+        return
+
+    ref_path = outputs_dir / dataset_id / "reference_umap.npz"
+    if not ref_path.exists():
+        print(f"  [{dataset_id}] No reference_umap.npz — skipping integration summary")
+        return
+
+    plot_df = df.copy()
+    if "llm" in plot_df.columns:
+        plot_df = plot_df[plot_df["llm"].isin(["chatgpt", "deepseek"])].copy()
+    full_modes = [m for m in ["full_system", "full_system_no_mem"] if m in set(plot_df.get("mode", []))]
+    if full_modes:
+        plot_df = plot_df[plot_df["mode"].isin(full_modes)].copy()
+    if plot_df.empty:
+        print(f"  [{dataset_id}] No full-agent runs found — skipping integration summary")
+        return
+
+    llm_order_map = {"chatgpt": 0, "deepseek": 1}
+    mode_order_map = {"full_system": 0, "full_system_no_mem": 1}
+    plot_df["_llm_order"] = plot_df["llm"].map(llm_order_map).fillna(99)
+    plot_df["_mode_order"] = plot_df["mode"].map(mode_order_map).fillna(99)
+    plot_df = plot_df.sort_values(["_llm_order", "_mode_order"]).reset_index(drop=True)
+
+    summary_metrics = [
+        ("car_asw_batch", "baseline_ref_asw_batch", "Average silhouette width (batch)"),
+        ("car_graph_connectivity", "baseline_ref_graph_connectivity", "Graph connectivity"),
+        ("car_ilisi", "baseline_ref_ilisi", "Integration local inverse Simpson's index (iLISI)"),
+        ("car_asw_celltype", "baseline_ref_asw_celltype", "Average silhouette width (cell type)"),
+    ]
+    avail_metrics = [(c, b, t) for c, b, t in summary_metrics if _avail(plot_df, c)]
+    if not avail_metrics:
+        print(f"  [{dataset_id}] No key metrics available — skipping integration summary")
+        return
+
+    ref = np.load(ref_path, allow_pickle=True)
+    ref_coords = ref["coords"]
+    ref_labels = ref["labels"].astype(str)
+
+    run_panels = []
+    for _, row in plot_df.iterrows():
+        npz = outputs_dir / dataset_id / str(row.get("run_name", "")) / "umap_coords.npz"
+        if not npz.exists():
+            continue
+        d = np.load(npz, allow_pickle=True)
+        llm = str(row.get("llm", ""))
+        mode = str(row.get("mode", ""))
+        if llm == "chatgpt":
+            title = "ChatGPT"
+        elif llm == "deepseek":
+            title = "DeepSeek"
+        else:
+            title = _run_label(row)
+        if mode == "full_system_no_mem":
+            title += " (no mem)"
+        run_panels.append({
+            "coords": d["coords"],
+            "labels": d["labels"].astype(str),
+            "title": title,
+            "mode": mode,
+            "llm": llm,
+        })
+    if not run_panels:
+        print(f"  [{dataset_id}] No per-run umap_coords.npz found — skipping integration summary")
+        return
+
+    all_labels = ref_labels.tolist()
+    for rp in run_panels:
+        all_labels.extend(rp["labels"].tolist())
+    palette = _celltype_palette(all_labels)
+    unknown = (0.75, 0.75, 0.75, 1.0)
+    cividis = matplotlib.colormaps["cividis"]
+    llm_colors = {
+        "chatgpt": cividis(0.22),
+        "deepseek": cividis(0.78),
+    }
+
+    fig = plt.figure(figsize=(11.8, 8.8))
+    outer = fig.add_gridspec(1, 2, width_ratios=[1.05, 1.0], wspace=0.20)
+    umap_gs = outer[0, 0].subgridspec(3, 1, hspace=0.14)
+    metric_gs = outer[0, 1].subgridspec(len(avail_metrics), 1, hspace=0.36)
+
+    def _summary_umap(ax, coords, labels, title, border_color=None):
+        c = [palette.get(lb, unknown) for lb in labels]
+        ax.scatter(coords[:, 0], coords[:, 1], c=c, s=0.55, linewidths=0, rasterized=True, alpha=0.78)
+        ax.set_title(title, fontsize=11, fontweight="bold", pad=5)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_edgecolor(border_color or "#d9d9d9")
+            spine.set_linewidth(1.2 if border_color is None else 1.8)
+
+    ax_ref = fig.add_subplot(umap_gs[0, 0])
+    _summary_umap(ax_ref, ref_coords, ref_labels, "Reference")
+
+    for i, rp in enumerate(run_panels[:2], start=1):
+        ax = fig.add_subplot(umap_gs[i, 0])
+        _summary_umap(ax, rp["coords"], rp["labels"], rp["title"], border_color=llm_colors.get(rp["llm"], "#999999"))
+
+    llm_display = {"chatgpt": "ChatGPT", "deepseek": "DeepSeek", "claude": "Claude"}
+    run_labels = []
+    for _, row in plot_df.iterrows():
+        llm = str(row.get("llm", ""))
+        mode = str(row.get("mode", ""))
+        label = llm_display.get(llm, llm.capitalize() if llm else "Run")
+        if mode == "full_system_no_mem":
+            label += "\nAgent system (no mem)"
+        else:
+            label += "\nAgent system"
+        run_labels.append(label)
+    y = np.arange(len(plot_df))
+    colors = [llm_colors.get(str(llm), "#888888") for llm in plot_df["llm"]]
+
+    for col_i, (car_col, ref_col, label) in enumerate(avail_metrics):
+        ax = fig.add_subplot(metric_gs[col_i, 0])
+        vals = plot_df[car_col].values
+        ref_val = (
+            plot_df[ref_col].dropna().iloc[0]
+            if ref_col and ref_col in plot_df.columns and plot_df[ref_col].notna().any()
+            else None
+        )
+        if ref_val is not None:
+            ax.axvline(ref_val, color="black", linestyle="--", linewidth=1.3, alpha=0.7, zorder=1)
+        bars = ax.barh(y, vals, color=colors, edgecolor="white", linewidth=0.8, height=0.58, zorder=2)
+        for bar, val in zip(bars, vals):
+            if val is not None and not np.isnan(float(val)):
+                ax.text(
+                    min(float(val) + 0.02, 0.995),
+                    bar.get_y() + bar.get_height() / 2,
+                    f"{float(val):.2f}",
+                    va="center",
+                    ha="left",
+                    fontsize=8,
+                )
+        ax.set_title(label, fontsize=8.7, fontweight="bold", pad=4)
+        ax.set_xlim(0, 1.02)
+        ax.set_ylim(-0.5, len(plot_df) - 0.5)
+        ax.grid(axis="x", color="#e3e3e3", linewidth=0.8)
+        ax.set_axisbelow(True)
+        ax.set_yticks(y)
+        ax.set_yticklabels(run_labels, fontsize=8)
+        ax.tick_params(axis="y", length=0)
+        ax.invert_yaxis()
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color("#bbbbbb")
+        ax.spines["bottom"].set_color("#bbbbbb")
+
+    legend_handles = [
+        mpatches.Patch(color=llm_colors["chatgpt"], label="ChatGPT agent system"),
+        mpatches.Patch(color=llm_colors["deepseek"], label="DeepSeek agent system"),
+        Line2D([0], [0], color="black", linestyle="--", linewidth=1.3, label="Reference baseline"),
+    ]
+    fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        bbox_to_anchor=(0.52, -0.01),
+        ncol=max(1, len(legend_handles)),
+        fontsize=9,
+        frameon=False,
+        handlelength=1.5,
+    )
+
+    fig.suptitle(f"Integration summary — {dataset_id}", fontsize=14, fontweight="bold", y=0.98)
+    fig.subplots_adjust(left=0.07, right=0.98, top=0.92, bottom=0.10)
+    _save(fig, out / "integration_summary_panel.png")
+
+
 # ---------------------------------------------------------------------------
 # Clean-plot filter
 # ---------------------------------------------------------------------------
@@ -379,6 +559,8 @@ def plot_dataset(dataset_id: str, output_dir: Path, outputs_dir: Path):
 
     # Clean plots — no claude, full_system_no_mem relabelled as full_system
     ok_clean = _prepare_clean(ok)
+    summary_df = ok_clean if len(ok_clean) > 0 else ok
+    plot_integration_summary(summary_df, dataset_id, outputs_dir, out)
     if len(ok_clean) > 0:
         out_clean = out / "clean_plots"
         out_clean.mkdir(parents=True, exist_ok=True)
@@ -386,6 +568,7 @@ def plot_dataset(dataset_id: str, output_dir: Path, outputs_dir: Path):
         plot_umap_comparison(ok_clean, dataset_id, outputs_dir, out_clean)
         plot_integration_comparison(ok_clean, dataset_id, out_clean)
         plot_quality_panel(ok_clean, dataset_id, out_clean)
+        plot_integration_summary(ok_clean, dataset_id, outputs_dir, out_clean)
 
 
 def main():
@@ -397,7 +580,11 @@ def main():
     parser.add_argument("--outputs-dir", type=Path, default=ANALYSIS_DIR / "outputs")
     args = parser.parse_args()
 
-    datasets = args.dataset or available_datasets()
+    if args.dataset:
+        datasets = args.dataset
+    else:
+        from src.data_loader import available_datasets
+        datasets = available_datasets()
     if not datasets:
         raise RuntimeError(f"No datasets found in {INTBENCH_DIR / 'datasets'}")
 
