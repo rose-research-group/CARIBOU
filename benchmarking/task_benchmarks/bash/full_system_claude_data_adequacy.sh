@@ -1,8 +1,8 @@
 #!/bin/bash
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
-# Configuration - uses existing OLAF system
-BLUEPRINT_PATH="$ROOT_DIR/caribou/src/caribou/agents/olaf_fully_connected_v2.json"
+# Configuration - uses CARIBOU system
+BLUEPRINT_PATH="$ROOT_DIR/caribou/src/caribou/agents/caribou_fully_connected_v2.json"
 DATASET_PATH="$ROOT_DIR/benchmarking/datasets/pbmc_1k_v2_v3_combined.h5ad"
 OUTPUT_BASE="$ROOT_DIR/benchmarking/task_benchmarks/results/data_adequacy_task/full_system"
 SANDBOX_BACKEND="singularity"

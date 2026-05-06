@@ -5,13 +5,13 @@
 1. **Activate your conda environment (if using conda):**
 
 ```bash
-conda activate olaf  # or your environment name
+conda activate caribou  # or your environment name
 ```
 
 2. **Install test dependencies:**
 
 ```bash
-cd /data1/peerd/riffled/riffled/Olaf_project/CARIBOU
+cd /path/to/CARIBOU
 python -m pip install pytest pytest-cov
 ```
 

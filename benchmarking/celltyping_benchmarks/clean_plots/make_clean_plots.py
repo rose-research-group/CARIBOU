@@ -32,6 +32,12 @@ OUTPUT_DIR = COMP_DIR / "analysis" / "outputs"
 PLOTS_DIR  = Path(__file__).parent
 RESULTS_DIR = COMP_DIR / "results"
 DATASETS_DIR = COMP_DIR / "datasets"
+REPO_ROOT = COMP_DIR.parent.parent
+
+
+def _repo_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else REPO_ROOT / path
 
 # ---------------------------------------------------------------------------
 # Display configuration
@@ -227,7 +233,7 @@ def _compute_reference_markers(config: dict, top_n: int = 5) -> pd.DataFrame:
     import scanpy as sc
     import warnings
 
-    ref_path = Path(config["reference_path"])
+    ref_path = _repo_path(config["reference_path"])
     coarse_map = config.get("coarse_celltype_mapping", {})
     celltype_col = config.get("reference_celltype_key", "cell_type")
     cache_path = ref_path.parent / "ref_top_markers_coarse.csv"
@@ -291,7 +297,7 @@ def _attach_metadata_celltypes(adata, config: dict) -> bool:
     if not mj:
         return False
 
-    csv_path = Path(mj["csv_path"])
+    csv_path = _repo_path(mj["csv_path"])
     if not csv_path.exists():
         print(f"    [skip marker plot] metadata_join csv not found: {csv_path}")
         return False

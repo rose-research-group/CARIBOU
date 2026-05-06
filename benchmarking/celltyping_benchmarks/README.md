@@ -44,7 +44,7 @@ sbatch benchmarking/celltyping_benchmarks/slurm/aba_hippocampus/run_plot.sh
 ### Evaluate and plot (local)
 
 ```bash
-PYTHON=/data1/peerd/riffled/riffled/conda_envs/olaf/bin/python
+PYTHON="${PYTHON:-python}"
 cd benchmarking/celltyping_benchmarks/analysis/
 
 $PYTHON evaluate.py --dataset aba_hippocampus
@@ -128,9 +128,7 @@ both defined per-dataset in `datasets/{id}/config.json`.
 
 ## Notes
 
-- All SLURM scripts use hardcoded absolute paths (CARIBOU root:
-  `/data1/peerd/riffled/riffled/Olaf_project/CARIBOU`). Update `run_celltyping.sh` and
-  per-dataset scripts if the repo is moved.
-- The Python environment is `/data1/peerd/riffled/riffled/conda_envs/olaf/bin/python`.
+- SLURM scripts derive the CARIBOU root from the script location or Git checkout.
+- Set `PYTHON=/path/to/python` before running analysis scripts if the default `python` is not the desired environment.
 - Source of truth for this module is `dev/comparisons` — this is a read-only port.
   Do not delete or modify anything in `dev/comparisons`.

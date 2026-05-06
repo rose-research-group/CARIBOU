@@ -34,6 +34,12 @@ from sklearn.neighbors import NearestNeighbors
 COMP_DIR     = Path(__file__).parent.parent
 DATASETS_DIR = COMP_DIR / "datasets"
 RESULTS_DIR  = COMP_DIR / "results"
+REPO_ROOT    = COMP_DIR.parent.parent
+
+
+def _repo_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else REPO_ROOT / path
 
 
 # ---------------------------------------------------------------------------
@@ -642,7 +648,7 @@ def _attach_metadata_celltypes(reference: sc.AnnData, cfg: Dict) -> None:
     if not mj:
         return
 
-    csv_path       = Path(mj["csv_path"])
+    csv_path       = _repo_path(mj["csv_path"])
     ct_col         = mj["csv_celltype_col"]
     split_on       = mj.get("csv_index_split_on")
     barcode_col    = mj.get("csv_barcode_col", "cell_barcode")
@@ -687,7 +693,7 @@ def evaluate_dataset(dataset_id: str, output_dir: Path):
     print(f"{'='*60}")
 
     config = load_dataset_config(dataset_id)
-    ref_path         = Path(config["reference_path"])
+    ref_path         = _repo_path(config["reference_path"])
     ref_ct_key       = config["reference_celltype_key"]
     barcode_join     = config.get("barcode_join")
     coarse_mapping   = config.get("coarse_celltype_mapping")

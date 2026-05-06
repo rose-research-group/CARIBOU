@@ -15,7 +15,14 @@
 set -euo pipefail
 
 DATASET_ID="tsp_large_intestine"
-CARIBOU_ROOT="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CARIBOU_ROOT="$(git -C "${SLURM_SUBMIT_DIR:-$(pwd)}" rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "$CARIBOU_ROOT" ]]; then
+    CARIBOU_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+fi
+if [[ -z "$CARIBOU_ROOT" ]]; then
+    CARIBOU_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+fi
 ANALYSIS_DIR="$CARIBOU_ROOT/benchmarking/celltyping_benchmarks/analysis"
 OUTPUT_DIR="$ANALYSIS_DIR/outputs"
 

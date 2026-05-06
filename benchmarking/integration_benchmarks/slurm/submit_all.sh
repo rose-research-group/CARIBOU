@@ -10,8 +10,8 @@
 #
 set -euo pipefail
 
-SCRIPT_DIR="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/benchmarking/integration_benchmarks/slurm"
-INTBENCH_DIR="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/benchmarking/integration_benchmarks"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INTBENCH_DIR="$(dirname "$SCRIPT_DIR")"
 
 # ---------------------------------------------------------------------------
 # Configuration — edit these

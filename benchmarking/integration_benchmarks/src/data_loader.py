@@ -20,6 +20,12 @@ import scanpy as sc
 INTBENCH_DIR = Path(__file__).parent.parent
 DATASETS_DIR = INTBENCH_DIR / "datasets"
 RESULTS_DIR  = INTBENCH_DIR / "results"
+REPO_ROOT    = INTBENCH_DIR.parent.parent
+
+
+def _repo_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else REPO_ROOT / path
 
 
 def load_dataset_config(dataset_id: str) -> Dict:
@@ -135,7 +141,7 @@ def attach_metadata_celltypes(reference: sc.AnnData, cfg: Dict) -> None:
     if not mj:
         return
 
-    csv_path    = Path(mj["csv_path"])
+    csv_path    = _repo_path(mj["csv_path"])
     ct_col      = mj["csv_celltype_col"]
     split_on    = mj.get("csv_index_split_on")
     barcode_col = mj.get("csv_barcode_col", "cell_barcode")
@@ -175,7 +181,7 @@ def attach_metadata_celltypes(reference: sc.AnnData, cfg: Dict) -> None:
 
 def load_raw_reference(cfg: Dict) -> sc.AnnData:
     """Load the raw reference h5ad, remap gene symbols, attach cell types from CSV."""
-    ref_path = Path(cfg["reference_path"])
+    ref_path = _repo_path(cfg["reference_path"])
     if not ref_path.exists():
         raise FileNotFoundError(f"Reference not found: {ref_path}")
 
@@ -193,7 +199,7 @@ def load_raw_reference(cfg: Dict) -> sc.AnnData:
 
 def load_processed_reference(cfg: Dict) -> sc.AnnData:
     """Load the consortium-processed reference (with X_pca/X_umap) and attach cell types."""
-    proc_path = Path(cfg["processed_reference_path"])
+    proc_path = _repo_path(cfg["processed_reference_path"])
     if not proc_path.exists():
         raise FileNotFoundError(f"Processed reference not found: {proc_path}")
 

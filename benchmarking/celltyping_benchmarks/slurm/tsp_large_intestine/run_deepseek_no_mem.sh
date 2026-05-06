@@ -14,5 +14,5 @@
 
 set -euo pipefail
 
-RUN_SCRIPT="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/benchmarking/celltyping_benchmarks/slurm/run_celltyping.sh"
+RUN_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/run_celltyping.sh"
 bash "$RUN_SCRIPT" --dataset tsp_large_intestine --llm deepseek --mode full_system_no_mem

@@ -7,9 +7,9 @@
   "source": "Tabula Sapiens / CellXGene",
   "paper_reference": "Tabula Sapiens Consortium, Science 2022",
 
-  "input_dataset_path": "/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/datasets/LI_TSP_cellxgene_check/LI_TSP_common_samples.h5ad",
+  "input_dataset_path": "dev/datasets/LI_TSP_cellxgene_check/LI_TSP_common_samples.h5ad",
 
-  "reference_path": "/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/datasets/LI_TSP_cellxgene_check/tabular_sapiens_large_intestine_cellxgene_common_samples.h5ad",
+  "reference_path": "dev/datasets/LI_TSP_cellxgene_check/tabular_sapiens_large_intestine_cellxgene_common_samples.h5ad",
   "reference_celltype_key": "cell_type",
   "reference_batch_key": "sample_id",
 

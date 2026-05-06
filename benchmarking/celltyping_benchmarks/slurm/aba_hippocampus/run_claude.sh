@@ -24,5 +24,5 @@ set -euo pipefail
 MODES=("full_system" "single_agent" "one_shot" "full_system_no_mem")
 MODE="${MODES[$((SLURM_ARRAY_TASK_ID - 1))]}"
 
-RUN_SCRIPT="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/benchmarking/celltyping_benchmarks/slurm/run_celltyping.sh"
+RUN_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/run_celltyping.sh"
 bash "$RUN_SCRIPT" --dataset aba_hippocampus --llm claude --mode "$MODE"

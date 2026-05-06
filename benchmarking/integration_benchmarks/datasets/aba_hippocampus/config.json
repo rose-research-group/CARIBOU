@@ -7,10 +7,10 @@
   "source": "Allen Brain Atlas / ABC Atlas",
   "paper_reference": "Yao et al., Nature 2023",
 
-  "input_dataset_path": "/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/datasets/aba_subset_HIP_test.h5ad",
+  "input_dataset_path": "dev/datasets/aba_subset_HIP_test.h5ad",
 
-  "reference_path": "/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/datasets/official_aba_processed/abc_atlas_cache/expression_matrices/WMB-10Xv2/20230630/WMB-10Xv2-HIP-raw-intersected.h5ad",
-  "processed_reference_path": "/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/datasets/official_aba_processed/abc_atlas_cache/expression_matrices/WMB-10Xv2/20230630/WMB-10Xv2-HIP-raw-intersected_basic_pp.h5ad",
+  "reference_path": "dev/datasets/official_aba_processed/abc_atlas_cache/expression_matrices/WMB-10Xv2/20230630/WMB-10Xv2-HIP-raw-intersected.h5ad",
+  "processed_reference_path": "dev/datasets/official_aba_processed/abc_atlas_cache/expression_matrices/WMB-10Xv2/20230630/WMB-10Xv2-HIP-raw-intersected_basic_pp.h5ad",
   "reference_celltype_key": "cell_type",
   "reference_batch_key": "library_label",
   "reference_gene_symbol_col": "gene_symbol",
@@ -25,7 +25,7 @@
   },
 
   "metadata_join": {
-    "csv_path": "/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/comparisons/datasets/aba_hippocampus/metadata.csv",
+    "csv_path": "dev/comparisons/datasets/aba_hippocampus/metadata.csv",
     "csv_celltype_col": "subclass_label",
     "csv_index_split_on": "-L",
     "csv_barcode_col": "cell_barcode",

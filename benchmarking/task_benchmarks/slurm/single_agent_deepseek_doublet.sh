@@ -15,7 +15,7 @@ LOG_PATH="$LOG_DIR/single_agent_deepseek_doublet_${SLURM_JOB_ID}_${SLURM_ARRAY_T
 exec > "$LOG_PATH" 2>&1
 
 # Configuration
-BLUEPRINT_PATH="$ROOT_DIR/caribou/src/caribou/agents/olaf_fully_connected_v2.json"
+BLUEPRINT_PATH="$ROOT_DIR/caribou/src/caribou/agents/caribou_fully_connected_v2.json"
 DATASET_PATH="$ROOT_DIR/dev/datasets/pbmc_1k_v2_v3_combined.h5ad"
 OUTPUT_BASE="$ROOT_DIR/benchmarking/task_benchmarks/results/doublet_task/single_agent"
 SANDBOX_BACKEND="singularity"

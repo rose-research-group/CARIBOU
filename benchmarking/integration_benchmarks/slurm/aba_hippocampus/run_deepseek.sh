@@ -24,5 +24,13 @@ set -euo pipefail
 MODES=("full_system" "full_system_no_mem" "single_agent" "one_shot")
 MODE="${MODES[$((SLURM_ARRAY_TASK_ID - 1))]}"
 
-RUN_SCRIPT="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/benchmarking/integration_benchmarks/slurm/run_integration.sh"
+CARIBOU_ROOT="$(git -C "${SLURM_SUBMIT_DIR:-$(pwd)}" rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "$CARIBOU_ROOT" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    CARIBOU_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+fi
+if [[ -z "$CARIBOU_ROOT" ]]; then
+    CARIBOU_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+fi
+RUN_SCRIPT="$CARIBOU_ROOT/benchmarking/integration_benchmarks/slurm/run_integration.sh"
 bash "$RUN_SCRIPT" --dataset aba_hippocampus --llm deepseek --mode "$MODE"

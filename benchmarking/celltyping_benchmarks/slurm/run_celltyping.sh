@@ -41,7 +41,14 @@ fi
 # ---------------------------------------------------------------------------
 # Paths derived from dataset config
 # ---------------------------------------------------------------------------
-CARIBOU_ROOT="/data1/peerd/riffled/riffled/Olaf_project/CARIBOU"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CARIBOU_ROOT="$(git -C "${SLURM_SUBMIT_DIR:-$(pwd)}" rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "$CARIBOU_ROOT" ]]; then
+    CARIBOU_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+fi
+if [[ -z "$CARIBOU_ROOT" ]]; then
+    CARIBOU_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+fi
 COMP_DIR="$CARIBOU_ROOT/benchmarking/celltyping_benchmarks"
 DATASET_DIR="$COMP_DIR/datasets/$DATASET"
 CONFIG_PATH="$DATASET_DIR/config.json"
@@ -56,11 +63,11 @@ if [[ ! -f "$PROMPT_PATH" ]]; then
 fi
 
 # Read values from config (requires python/jq; using python for portability)
-DATASET_PATH=$(python3 -c "import json; c=json.load(open('$CONFIG_PATH')); print(c['input_dataset_path'])")
+DATASET_PATH=$(python3 -c "import json, pathlib; c=json.load(open('$CONFIG_PATH')); p=pathlib.Path(c['input_dataset_path']).expanduser(); print(p if p.is_absolute() else pathlib.Path('$CARIBOU_ROOT') / p)")
 SLURM_MEM=$(python3 -c "import json; c=json.load(open('$CONFIG_PATH')); print(c.get('slurm_mem','64G'))")
 
-BLUEPRINT_FULL="$CARIBOU_ROOT/caribou/src/caribou/agents/olaf_fully_connected_v2.json"
-BLUEPRINT_SINGLE="$CARIBOU_ROOT/caribou/src/caribou/agents/olaf_single_agent.json"
+BLUEPRINT_FULL="$CARIBOU_ROOT/caribou/src/caribou/agents/caribou_fully_connected_v2.json"
+BLUEPRINT_SINGLE="$CARIBOU_ROOT/caribou/src/caribou/agents/caribou_single_agent.json"
 RESULTS_DIR="$COMP_DIR/results/$DATASET"
 SANDBOX_BACKEND="singularity"
 

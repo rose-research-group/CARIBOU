@@ -5,7 +5,7 @@
 This testing framework compares three execution paradigms on the same scRNA-seq tasks:
 1. **One-Shot API** - Single LLM call with complete instructions (no agent framework)
 2. **Single Agent** - One agent running in auto mode (no delegation)
-3. **Full Agent System** - Multi-agent system with delegation (existing OLAF architecture)
+3. **Full Agent System** - Multi-agent system with delegation (CARIBOU architecture)
 
 All three modes use the **same initial prompt** and run in **auto mode** via **SLURM** for fair comparison.
 

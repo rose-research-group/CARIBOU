@@ -1,5 +1,5 @@
 {
     "description": "Shared parameters for QC benchmarking tests. This file is a placeholder.",
-    "dataset_path": "/data1/peerd/riffled/riffled/Olaf_project/CARIBOU/dev/datasets/pbmc_1k_v2_v3_combined.h5ad",
+    "dataset_path": "dev/datasets/pbmc_1k_v2_v3_combined.h5ad",
     "num_trials": 3
 }

@@ -39,7 +39,7 @@ if [ -z "$ROOT_DIR" ]; then
 fi
 
 INTBENCH_DIR="$ROOT_DIR/benchmarking/integration_benchmarks"
-PYTHON="/data1/peerd/riffled/riffled/conda_envs/olaf/bin/python"
+PYTHON="${PYTHON:-python}"
 
 ANALYSIS_DIR="$INTBENCH_DIR/analysis"
 OUTPUT_DIR="$ANALYSIS_DIR/outputs"
