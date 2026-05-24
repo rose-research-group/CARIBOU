@@ -61,9 +61,17 @@ def _run(code: str, ns: Dict) -> Dict:
                 import matplotlib
                 matplotlib.use("Agg")
                 import matplotlib.pyplot as plt  # noqa: F401
+                plt.rcParams["image.cmap"] = "cividis"
                 ns["plt"] = plt
             except ImportError:
                 pass  # Matplotlib not installed; fine unless user imports it
+
+            # Set scanpy figure defaults (optional)
+            try:
+                import scanpy as sc
+                sc.set_figure_params(color_map="cividis")
+            except ImportError:
+                pass
 
             exec(compile(code, "<repl>", "exec"), ns)
 
