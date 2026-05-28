@@ -14,7 +14,7 @@ from rich.prompt import Prompt
 # --- Project-specific Imports ---
 try:
     from caribou.agents.AgentSystem import Agent, AgentSystem
-    from caribou.core.io_helpers import display, extract_python_code_blocks, format_execute_response
+    from caribou.core.io_helpers import display, extract_code_blocks, extract_python_code_blocks, format_execute_response
     from caribou.execution.MemoryManager import MemoryManager
     from caribou.execution.ActionSpace import AgentActionSpace
     from caribou.execution.artifacts import SessionArtifacts
@@ -274,15 +274,16 @@ def run_agent_session(
                     current_agent_history_start = len(history)
                 _delegated = True
 
-        code_blocks = extract_python_code_blocks(msg)
+        code_blocks = extract_code_blocks(msg)
         if code_blocks:
             _action_fired = True
             total_blocks = len(code_blocks)
             rag_short_circuit = False
-            for idx, code in enumerate(code_blocks, start=1):
+            for idx, (language, code) in enumerate(code_blocks, start=1):
                 last_code_snippet = code
                 console.print("[cyan]Executing code in sandbox…[/cyan]")
-                exec_result = sandbox_manager.exec_code(code, timeout=600)
+                exec_code = f"%%R\n{code}" if language == "r" else code
+                exec_result = sandbox_manager.exec_code(exec_code, timeout=600)
                 code_exec_attempts += 1
                 if exec_result.get("status") != "ok":
                     code_exec_failures += 1
@@ -372,8 +373,9 @@ def run_agent_session(
                 )
             no_action_msg = (
                 f"[SYSTEM] No action was recognised in your last message "
-                f"(no Python code block, no delegation command, no RAG query).{rag_hint} "
+                f"(no Python code block, no R code block, no delegation command, no RAG query).{rag_hint} "
                 f"Please either write executable Python code in a ```python ... ``` block, "
+                f"executable R code in a ```r ... ``` block, "
                 f"issue a delegation command, or use a RAG query. "
                 f"Do not output plain text descriptions of what you intend to do."
             )

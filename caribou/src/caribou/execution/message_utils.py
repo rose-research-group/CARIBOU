@@ -18,7 +18,7 @@ _DELEG_RE = re.compile(r"delegate_to_([A-Za-z0-9_]+)")
 # Matches both `query_rag_<topic>` (canonical) and `query_rag_topic` (LLMs often drop the brackets)
 _RAG_RE = re.compile(r"query_rag_(?:<([^>]+)>|([A-Za-z0-9_.]+))")
 _END_SESSION_RE = re.compile(r"^\s*end_session\s*$", re.MULTILINE)
-_CODE_BLOCK_RE = re.compile(r"```(?:python)?[ \t]*\n[\s\S]*?\n```", re.MULTILINE)
+_CODE_BLOCK_RE = re.compile(r"```(?:python|r|R)?[ \t]*\n[\s\S]*?\n```", re.MULTILINE)
 
 
 def detect_delegation(msg: str) -> Optional[str]:

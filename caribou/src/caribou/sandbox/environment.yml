@@ -57,6 +57,12 @@ dependencies:
   - fastapi
   - uvicorn
   - python-multipart
+  # R runtime + bioinformatics packages
+  - r-base
+  - r-seurat
+
   - pip:
     - rapids-singlecell
     - scib-metrics
+    - rpy2
+    - anndata2ri

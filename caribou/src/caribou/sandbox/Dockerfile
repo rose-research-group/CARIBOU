@@ -62,6 +62,9 @@ RUN mkdir -p ${HOME}/.local/share/jupyter \
     chmod +x ${HOME}/start_kernel.py ${HOME}/start.sh && \
     chown -R ${NB_USER}:${NB_GID} ${HOME}
 
+COPY --chown=${NB_USER}:${NB_GID} ./startup/00_rpy2_init.py \
+     ${HOME}/.ipython/profile_default/startup/00_rpy2_init.py
+
 # --- Runtime Configuration ---
 USER ${NB_USER}
 WORKDIR ${HOME}

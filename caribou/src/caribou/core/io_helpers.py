@@ -14,31 +14,32 @@ import base64
 from datetime import datetime
 
 _FENCE_RE = re.compile(
-    r'^[ \t]*```(?:python)?[ \t]*\n'   # opening fence, with optional "python"
-    r'([\s\S]*?)'                     # capture all lines
-    r'^[ \t]*```[ \t]*$',             # closing fence
-    re.MULTILINE
+    r'^[ \t]*```(python|r|R)?[ \t]*\n'  # group 1: optional language tag
+    r'([\s\S]*?)'                        # group 2: code body
+    r'^[ \t]*```[ \t]*$',
+    re.MULTILINE,
 )
 
-def extract_python_code_blocks(txt: str) -> List[str]:
-    """Return all fenced code blocks in order, or an empty list if absent.
+def extract_code_blocks(txt: str) -> List[Tuple[str, str]]:
+    """Return [(language, code), ...] for all fenced code blocks in order.
 
-    Handles:
-    * ```python ... ```
-    * ``` ... ``` (no language tag)
-    * Leading indentation before fences (common in Markdown transcripts)
+    Language is normalised to 'python' or 'r'. Defaults to 'python' when no
+    language tag is present (bare ``` fences).
     """
     if not txt:
         return []
-    code_blocks = _FENCE_RE.findall(txt)
-    if not code_blocks:
-        return []
-    cleaned_blocks = []
-    for block in code_blocks:
-        cleaned = textwrap.dedent(block).strip()
+    results = []
+    for lang_tag, code in _FENCE_RE.findall(txt):
+        cleaned = textwrap.dedent(code).strip()
         if cleaned:
-            cleaned_blocks.append(cleaned)
-    return cleaned_blocks
+            lang = (lang_tag or "python").lower()
+            results.append((lang, cleaned))
+    return results
+
+
+def extract_python_code_blocks(txt: str) -> List[str]:
+    """Return all fenced code blocks in order, or an empty list if absent."""
+    return [code for _, code in extract_code_blocks(txt)]
 
 
 def extract_python_code(txt: str) -> Optional[str]:
@@ -61,9 +62,10 @@ def split_message_by_fence(txt: str) -> List[Tuple[str, str]]:
             text = txt[last_end:match.start()].strip()
             if text:
                 parts.append(("text", text))
-        code = textwrap.dedent(match.group(1)).strip()
+        lang = (match.group(1) or "python").lower()
+        code = textwrap.dedent(match.group(2)).strip()
         if code:
-            parts.append(("code", code))
+            parts.append((f"code_{lang}", code))
         last_end = match.end()
     if last_end < len(txt):
         text = txt[last_end:].strip()
@@ -112,9 +114,10 @@ def display(console: Console, role: str, content: str):
             if kind == "text":
                 _panel(console, title, chunk, style)
             else:
+                lang = "r" if kind == "code_r" else "python"
                 console.print(
                     Panel(
-                        Syntax(chunk, "python", theme="monokai", line_numbers=True),
+                        Syntax(chunk, lang, theme="monokai", line_numbers=True),
                         title=f"{title} (code)",
                         border_style=style,
                     )
@@ -323,13 +326,14 @@ def save_chat_history_as_notebook(console: Console, history: list, file_path: Pa
             content = message.get("content", "")
             parts = split_message_by_fence(content)
             for kind, part in parts:
-                if kind == "code":
+                if kind.startswith("code"):
+                    source = f"%%R\n{part}" if kind == "code_r" else part
                     cell = {
                         "cell_type": "code",
                         "execution_count": None,
                         "metadata": {},
                         "outputs": [],
-                        "source": part,
+                        "source": source,
                     }
                 else:
                     cell = {"cell_type": "markdown", "metadata": {}, "source": part}
