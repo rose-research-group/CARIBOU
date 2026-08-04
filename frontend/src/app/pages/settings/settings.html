@@ -85,6 +85,32 @@
         </div>
       </section>
 
+      <!-- Slurm -->
+      <section class="card">
+        <h2>Slurm</h2>
+        <p class="section-desc">
+          The partition CARIBOU submits and binds Slurm jobs on. Existing runs already bound to
+          the previous partition remain valid; only new submissions use the updated value. If
+          <code>caribou serve</code> is already running, restart it to pick up this change.
+        </p>
+
+        <div class="field">
+          <label>Partition <span class="editable-tag">editable</span></label>
+          <div class="path-edit">
+            <input
+              type="text"
+              [value]="slurmPartition()"
+              (input)="slurmPartition.set($any($event.target).value)"
+              placeholder="peerd"
+            />
+          </div>
+          <span class="path-note">
+            Currently <strong>{{ s.slurm_partition }}</strong> —
+            {{ s.slurm_partition === slurmPartition() ? 'unchanged' : 'will be updated on save' }}
+          </span>
+        </div>
+      </section>
+
       <!-- API keys -->
       <section class="card">
         <h2>API Keys</h2>

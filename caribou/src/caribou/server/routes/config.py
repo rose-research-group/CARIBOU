@@ -12,7 +12,14 @@ from pydantic import BaseModel
 
 import shutil
 
-from caribou.config import CARIBOU_HOME, DEFAULT_AGENT_DIR, ENV_FILE
+from caribou.config import (
+    CARIBOU_HOME,
+    DEFAULT_AGENT_DIR,
+    ENV_FILE,
+    InvalidSlurmPartitionError,
+    get_caribou_slurm_partition,
+    validate_slurm_partition,
+)
 from caribou.core.python_environments import (
     PythonEnvironmentCandidate,
     PythonEnvironmentError,
@@ -205,6 +212,7 @@ class ServerSettings(BaseModel):
     api_keys: Dict[str, str]  # key name → masked value
     ollama_host: str
     ollama_model: str
+    slurm_partition: str
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -215,6 +223,7 @@ class UpdateSettingsRequest(BaseModel):
     openrouter_api_key: Optional[str] = None
     ollama_host: Optional[str] = None
     ollama_model: Optional[str] = None
+    slurm_partition: Optional[str] = None
 
 
 @router.get("/settings", response_model=ServerSettings)
@@ -239,6 +248,7 @@ async def get_settings() -> ServerSettings:
         },
         ollama_host=normalize_host(os.environ.get("OLLAMA_HOST")),
         ollama_model=os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
+        slurm_partition=get_caribou_slurm_partition(),
     )
 
 
@@ -267,6 +277,13 @@ async def update_settings(body: UpdateSettingsRequest) -> dict:
     if body.ollama_model is not None:
         set_key(str(ENV_FILE), "OLLAMA_MODEL", body.ollama_model.strip())
         updated.append("OLLAMA_MODEL")
+    if body.slurm_partition is not None:
+        try:
+            validate_slurm_partition(body.slurm_partition.strip())
+        except InvalidSlurmPartitionError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        set_key(str(ENV_FILE), "CARIBOU_SLURM_PARTITION", body.slurm_partition.strip())
+        updated.append("CARIBOU_SLURM_PARTITION")
 
     if body.sessions_dir is not None:
         p = Path(body.sessions_dir).expanduser()

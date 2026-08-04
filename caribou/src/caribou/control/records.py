@@ -14,6 +14,7 @@ from pydantic import (
     model_validator,
 )
 
+from caribou.config import get_caribou_slurm_partition
 from caribou.domain.models import (
     Artifact,
     ContentHash,
@@ -69,7 +70,7 @@ class SlurmExecutionHandle(ControlRecord):
     )
     run_id: RunId
     job_id: NonEmptyStr
-    partition: Literal["peerd"] = "peerd"
+    partition: NonEmptyStr = Field(default_factory=get_caribou_slurm_partition)
     account: Optional[NonEmptyStr] = None
     qos: Optional[NonEmptyStr] = None
     script_path: NonEmptyStr
@@ -82,6 +83,14 @@ class SlurmExecutionHandle(ControlRecord):
     def validate_root_job_id(self) -> "SlurmExecutionHandle":
         if not self.job_id.isascii() or not self.job_id.isdigit():
             raise ValueError("Slurm job_id must be one numeric root job ID")
+        return self
+
+    @model_validator(mode="after")
+    def validate_partition(self) -> "SlurmExecutionHandle":
+        if self.partition != get_caribou_slurm_partition():
+            raise ValueError(
+                f"Slurm execution handle must bind partition '{get_caribou_slurm_partition()}'"
+            )
         return self
 
 
@@ -107,7 +116,7 @@ class SlurmAccounting(ControlRecord):
     )
     run_id: RunId
     job_id: NonEmptyStr
-    partition: Literal["peerd"] = "peerd"
+    partition: NonEmptyStr = Field(default_factory=get_caribou_slurm_partition)
     state: NonEmptyStr
     terminal: StrictBool
     exit_code: Optional[NonEmptyStr] = None
@@ -127,6 +136,14 @@ class SlurmAccounting(ControlRecord):
     def validate_root_job_id(self) -> "SlurmAccounting":
         if not self.job_id.isascii() or not self.job_id.isdigit():
             raise ValueError("Slurm job_id must be one numeric root job ID")
+        return self
+
+    @model_validator(mode="after")
+    def validate_partition(self) -> "SlurmAccounting":
+        if self.partition != get_caribou_slurm_partition():
+            raise ValueError(
+                f"Slurm accounting must record partition '{get_caribou_slurm_partition()}'"
+            )
         return self
 
 

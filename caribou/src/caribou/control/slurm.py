@@ -12,7 +12,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from caribou.config import CARIBOU_HOME
+from caribou.config import CARIBOU_HOME, get_caribou_slurm_partition
 from caribou.domain.enums import ExecutorKind, RunState
 from caribou.domain.models import Run, utc_now
 from caribou.domain.serialization import file_hash, sha256_bytes
@@ -187,7 +187,7 @@ def _render_script(store: ExperimentStore, run: Run) -> str:
     memory_mib = (run.resources.memory_bytes + 1024**2 - 1) // 1024**2
     directives = [
         f"#SBATCH --job-name={_job_name(run.run_id)}",
-        "#SBATCH --partition=peerd",
+        f"#SBATCH --partition={get_caribou_slurm_partition()}",
         f"#SBATCH --cpus-per-task={run.resources.cpu_cores}",
         f"#SBATCH --mem={memory_mib}M",
         f"#SBATCH --time={_slurm_time(run.resources.wall_seconds)}",
@@ -266,7 +266,7 @@ def _render_script(store: ExperimentStore, run: Run) -> str:
 
 
 class SlurmExecutor:
-    """Submit exactly one held peerd job and bind it before release."""
+    """Submit exactly one held job on the configured Slurm partition and bind it before release."""
 
     def __init__(
         self,
@@ -523,13 +523,13 @@ class SlurmExecutor:
             if observed_name != name:
                 continue
             if (
-                partition != "peerd"
+                partition != get_caribou_slurm_partition()
                 or not reason.startswith("JobHeld")
                 or user_id != str(os.geteuid())
             ):
                 raise ControlError(
                     "SLURM_RECOVERY_MISMATCH",
-                    "a same-name recovery candidate violates the held peerd contract",
+                    f"a same-name recovery candidate violates the held {get_caribou_slurm_partition()} contract",
                     exit_code=ExitCode.integrity,
                     details={"run_id": run.run_id, "job_id": job_id},
                 )
@@ -570,10 +570,10 @@ class SlurmExecutor:
 
     def launch(self, store: ExperimentStore, run_id: str) -> LaunchResult:
         run = store.run(run_id)
-        if run.executor != ExecutorKind.slurm or run.partition != "peerd":
+        if run.executor != ExecutorKind.slurm or run.partition != get_caribou_slurm_partition():
             raise ControlError(
                 "RUN_NOT_SLURM",
-                "the Slurm executor requires a peerd Slurm run",
+                f"the Slurm executor requires a {get_caribou_slurm_partition()} Slurm run",
                 exit_code=ExitCode.conflict,
                 details={"run_id": run_id},
             )
@@ -674,7 +674,7 @@ class SlurmExecutor:
                                     self.sbatch,
                                     "--parsable",
                                     "--hold",
-                                    "--partition=peerd",
+                                    f"--partition={get_caribou_slurm_partition()}",
                                     "--export=NIL",
                                     str(script_path),
                                 ]
@@ -1012,7 +1012,7 @@ class SlurmExecutor:
                 accounting = SlurmAccounting(
                     run_id=run_id,
                     job_id=observation.job_id,
-                    partition="peerd",
+                    partition=get_caribou_slurm_partition(),
                     state=observation.state,
                     terminal=True,
                     exit_code=observation.exit_code,

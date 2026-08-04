@@ -12,6 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
+from caribou.config import get_caribou_slurm_partition
 from caribou.core.deepseek import (
     DEEPSEEK_MODEL_IDS,
     deepseek_profile_for_model,
@@ -494,7 +495,11 @@ class PresetResolver:
                     gpu_enabled=False,
                     network_enabled=False,
                 ),
-                partition="peerd" if executor_kind == ExecutorKind.slurm else None,
+                partition=(
+                    get_caribou_slurm_partition()
+                    if executor_kind == ExecutorKind.slurm
+                    else None
+                ),
                 output_root=f"runs/presets/{preset_id}-{spec_id.removeprefix('spec_')}",
             ),
             budget=_unlimited_budget(),

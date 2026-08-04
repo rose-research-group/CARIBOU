@@ -7,7 +7,12 @@ from rich.console import Console
 from typing import Optional
 
 # Import the centralized ENV_FILE path
-from caribou.config import ENV_FILE
+from caribou.config import (
+    ENV_FILE,
+    InvalidSlurmPartitionError,
+    get_caribou_slurm_partition,
+    validate_slurm_partition,
+)
 from caribou.core.control_access import resolve_control_access_token
 from dotenv import load_dotenv, set_key
 
@@ -57,6 +62,36 @@ def get_control_token(
         "[yellow]Anyone with this token can operate experiments on this CARIBOU server. "
         "Do not paste a model-provider API key here or share this output publicly.[/yellow]"
     )
+
+
+@config_app.command("set-slurm-partition")
+def set_slurm_partition(
+    partition: str = typer.Argument(
+        ..., help="Slurm partition CARIBOU should submit and bind jobs on."
+    ),
+) -> None:
+    """Set the Slurm partition used for every CARIBOU Slurm execution."""
+    try:
+        validate_slurm_partition(partition)
+    except InvalidSlurmPartitionError as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(1) from exc
+
+    _save_provider_key("CARIBOU_SLURM_PARTITION", partition)
+    console.print(
+        f"[bold green]✅ Slurm partition set to '{partition}' in:[/bold green] {ENV_FILE}"
+    )
+    console.print(
+        "[dim]Runs already bound to the previous partition remain valid; "
+        "only new submissions use the updated partition. Restart 'caribou serve' "
+        "if it is already running.[/dim]"
+    )
+
+
+@config_app.command("show-slurm-partition")
+def show_slurm_partition() -> None:
+    """Show the Slurm partition CARIBOU is currently configured to use."""
+    console.print(get_caribou_slurm_partition(), markup=False)
 
 
 @config_app.command("set-openai-key")

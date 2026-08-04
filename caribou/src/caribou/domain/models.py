@@ -24,6 +24,8 @@ from pydantic import (
     model_validator,
 )
 
+from caribou.config import get_caribou_slurm_partition
+
 from .enums import (
     AggregateStatus,
     ArtifactType,
@@ -255,8 +257,10 @@ class ExecutionSpec(DomainModel):
 
     @model_validator(mode="after")
     def enforce_executor_contract(self) -> "ExecutionSpec":
-        if self.executor == ExecutorKind.slurm and self.partition != "peerd":
-            raise ValueError("CARIBOU Slurm execution requires partition 'peerd'")
+        if self.executor == ExecutorKind.slurm and self.partition != get_caribou_slurm_partition():
+            raise ValueError(
+                f"CARIBOU Slurm execution requires partition '{get_caribou_slurm_partition()}'"
+            )
         if self.executor == ExecutorKind.local and any(
             value is not None for value in (self.partition, self.account, self.qos)
         ):
@@ -565,8 +569,10 @@ class Run(DomainModel):
             if self.started_at is None:
                 raise ValueError(f"{self.state.value} run requires started_at")
         if self.executor == ExecutorKind.slurm:
-            if self.partition != "peerd":
-                raise ValueError("CARIBOU Slurm run must resolve to partition 'peerd'")
+            if self.partition != get_caribou_slurm_partition():
+                raise ValueError(
+                    f"CARIBOU Slurm run must resolve to partition '{get_caribou_slurm_partition()}'"
+                )
         elif self.partition is not None or self.scheduler_job_id is not None:
             raise ValueError("local run cannot carry Slurm partition or job ID")
         if (self.resumed_from_run_id is None) != (self.resume_checkpoint_id is None):

@@ -15,7 +15,7 @@ from typing import Iterator, Optional
 
 from pydantic import BaseModel
 
-from caribou.config import CARIBOU_HOME
+from caribou.config import CARIBOU_HOME, get_caribou_slurm_partition
 from caribou.domain.enums import (
     ArtifactType,
     CheckpointComponent,
@@ -2090,10 +2090,10 @@ class ExperimentStore:
         path = self.run_journal_path(handle.run_id)
         journal = read_run_journal(path)
         run = journal.run
-        if run.executor != ExecutorKind.slurm or run.partition != "peerd":
+        if run.executor != ExecutorKind.slurm or run.partition != get_caribou_slurm_partition():
             raise ControlError(
                 "RUN_NOT_SLURM",
-                "scheduler identity can be bound only to a peerd Slurm run",
+                f"scheduler identity can be bound only to a {get_caribou_slurm_partition()} Slurm run",
                 exit_code=ExitCode.conflict,
                 details={"run_id": handle.run_id, "executor": run.executor.value},
             )
@@ -2144,7 +2144,8 @@ class ExperimentStore:
             actor="slurm-executor",
             payload=HeartbeatPayload(
                 message=(
-                    f"Slurm job {handle.job_id} bound on partition peerd while held"
+                    f"Slurm job {handle.job_id} bound on partition "
+                    f"{get_caribou_slurm_partition()} while held"
                 )
             ),
         )
