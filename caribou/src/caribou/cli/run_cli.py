@@ -56,7 +56,8 @@ LLM_BACKEND_CHOICES = [
 ]
 LLM_BACKEND_HELP = (
     "LLM backend: 'chatgpt', 'claude', 'ollama', 'deepseek' (V4 Flash quick), "
-    "'openrouter', or 'deepseek-thinking' (V4 Pro thinking)."
+    "'deepseek-v4.1' (V4.1 Flash quick), 'openrouter', or 'deepseek-thinking' "
+    "(V4 Pro thinking)."
 )
 
 # --------------------------------------------------------------------------------------

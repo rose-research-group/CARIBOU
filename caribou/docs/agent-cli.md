@@ -153,7 +153,9 @@ the declared local CPU, memory, and storage maxima.
 
 For DeepSeek V4, frozen model parameters may additionally contain `thinking`
 (boolean) and `reasoning_effort` (`high` or `max`; valid only when thinking is
-enabled). The preset resolver locks `deepseek-v4-flash` to quick mode and
+enabled). The preset resolver locks `deepseek-v4-flash` and `deepseek-flash`
+(the `deepseek-v4.1` backend's model id — DeepSeek now serves V4.1 Flash
+under this id, not a separate "v4.1" string) to quick mode and
 `deepseek-v4-pro` to thinking mode at high effort so the effective request mode
 is preserved alongside the exact model ID. Standard CLI session reports created
 with `--make-report` also record these values as `model` and

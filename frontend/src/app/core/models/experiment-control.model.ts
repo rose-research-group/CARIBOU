@@ -125,6 +125,11 @@ export const DEEPSEEK_MODELS = [
     thinking: false,
   },
   {
+    id: 'deepseek-flash',
+    label: 'DeepSeek V4.1 Flash (Quick)',
+    thinking: false,
+  },
+  {
     id: 'deepseek-v4-pro',
     label: 'DeepSeek V4 Pro (Thinking)',
     thinking: true,
