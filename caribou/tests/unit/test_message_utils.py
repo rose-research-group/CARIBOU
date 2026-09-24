@@ -7,10 +7,30 @@ from caribou.core.io_helpers import extract_python_code_blocks
 from caribou.execution.message_utils import (
     detect_delegation,
     detect_rag,
+    extract_labeled_block,
     _extract_artifacts_from_msg,
     _count_code_blocks,
     _code_preview,
 )
+
+
+class TestExtractLabeledBlock:
+    def test_extracts_content_from_a_labeled_fence(self):
+        msg = 'Here is my brief:\n\n```brief\n{"deliverable": "x"}\n```\n\nThoughts?'
+        assert extract_labeled_block(msg, "brief") == '{"deliverable": "x"}'
+
+    def test_returns_none_with_no_matching_fence(self):
+        assert extract_labeled_block("just prose", "brief") is None
+        assert extract_labeled_block("```python\nprint(1)\n```", "brief") is None
+
+    def test_returns_none_for_an_empty_block(self):
+        assert extract_labeled_block("```brief\n\n```", "brief") is None
+
+    def test_ignores_a_different_label(self):
+        assert extract_labeled_block("```notes\nsome note\n```", "brief") is None
+
+    def test_empty_message_returns_none(self):
+        assert extract_labeled_block("", "brief") is None
 
 
 class TestDelegationDetection:

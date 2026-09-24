@@ -245,6 +245,22 @@ def _cmd_memory(_arg: str, ctx: UserCommandContext) -> None:
         )
 
 
+def _cmd_brief(_arg: str, ctx: UserCommandContext) -> None:
+    # brief.json lives beside the work-items store (WS-5.3 step 1: written
+    # to `<output_dir>/brief.json`, and work_items.root is
+    # `<output_dir>/work-items`) — no separate path needs threading through
+    # UserCommandContext just for this.
+    brief_path = ctx.work_items.root.parent / "brief.json"
+    if not brief_path.exists():
+        ctx.console.print(
+            "[yellow]No brief is frozen for this session.[/yellow]"
+        )
+        return
+    ctx.console.print(
+        Panel(brief_path.read_text(encoding="utf-8"), title="Session Brief", border_style="cyan")
+    )
+
+
 def _cmd_work_items(_arg: str, ctx: UserCommandContext) -> None:
     items = ctx.work_items.list()
     if not items:
@@ -366,6 +382,14 @@ _register(
         aliases=(),
         help="/evaluator status | /evaluator model --llm PROVIDER --model MODEL_ID [--reason TEXT]",
         handler=_cmd_evaluator,
+    )
+)
+_register(
+    UserCommand(
+        name="/brief",
+        aliases=(),
+        help="/brief — show this session's frozen brief, if any",
+        handler=_cmd_brief,
     )
 )
 _register(

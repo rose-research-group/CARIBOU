@@ -9,7 +9,7 @@ an `ExperimentSpec` and is not touched by the experiment control plane.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -125,3 +125,82 @@ class SessionBrief(BaseModel):
                 f"in_scope and out_of_scope overlap: {sorted(overlap)}"
             )
         return self
+
+
+def render_briefing_prompt() -> str:
+    """The briefing-phase instruction appendix — parallels
+    `work_items.render_work_item_prompt`: both are standalone appendix
+    strings usable either inside `Agent.get_full_prompt` or appended
+    directly to an already-built system prompt (as `runner.py` does for
+    `render_work_item_prompt`).
+    """
+    return (
+        "\n\n**BRIEFING PHASE.** Before any work starts, interview the human "
+        "about what they want, then propose a bounded commitment. Do not "
+        "write Python code and do not use work-item commands yet — both are "
+        "disabled until the brief is accepted. When you have enough to "
+        "propose a brief, emit ONLY this fenced block, alone in its own "
+        "message, with no other prose:\n\n"
+        "```brief\n"
+        "{\n"
+        '  "deliverable": "...",\n'
+        '  "in_scope": ["..."],\n'
+        '  "out_of_scope": ["..."],\n'
+        '  "done_when": ["..."]\n'
+        "}\n"
+        "```\n\n"
+        "Optional fields: `precedent`, `interface_delta`, `risks`, "
+        '`review_class` ("routine"|"shared"|"scientific"|"docs"), `source`. '
+        "The human will accept, reject, or edit your proposal — you cannot "
+        "finalize it yourself. If rejected or edited, revise and re-propose."
+    )
+
+
+class BriefParseError(ValueError):
+    """The agent's ```brief block failed to parse or validate.
+
+    `feedback` is ready to append to history verbatim for the repair loop
+    (WS-5.3): "parse the block, validate against SessionBrief, and on
+    failure append a system message with the validation errors for repair".
+    """
+
+    def __init__(self, feedback: str) -> None:
+        super().__init__(feedback)
+        self.feedback = feedback
+
+
+def parse_brief_block(raw: str, *, created_by: str) -> SessionBrief:
+    """Parse and validate a brief block's raw JSON content (the text
+    `extract_labeled_block(msg, "brief")` returned) into a `SessionBrief`.
+    `created_at`/`created_by`/`schema_version` are the harness's to set, not
+    the agent's — they're stripped from the agent's JSON if present and
+    always set here, so a stale or spoofed value in the block can't stick.
+
+    Raises `BriefParseError` with agent-facing feedback on any failure.
+    """
+    import json
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise BriefParseError(
+            f"Brief block is not valid JSON: {exc}. Resend a corrected "
+            "```brief block with the same fields."
+        ) from exc
+    if not isinstance(payload, dict):
+        raise BriefParseError(
+            "Brief block must be a JSON object, not a list or scalar."
+        )
+    payload = dict(payload)
+    payload.pop("schema_version", None)
+    payload.pop("created_at", None)
+    payload.pop("created_by", None)
+    payload["created_at"] = datetime.now(timezone.utc)
+    payload["created_by"] = created_by
+    try:
+        return SessionBrief(**payload)
+    except Exception as exc:  # pydantic ValidationError, or a bad field type
+        raise BriefParseError(
+            f"Brief block failed validation: {exc}. Resend a corrected "
+            "```brief block."
+        ) from exc

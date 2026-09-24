@@ -80,6 +80,26 @@ def detect_end_session(msg: str) -> bool:
     return bool(_END_SESSION_RE.search(msg))
 
 
+def extract_labeled_block(msg: str, label: str) -> Optional[str]:
+    """Return the (raw, unparsed) content of the first ```<label> fenced block,
+    or None if there isn't one. Used for the session-brief block during the
+    briefing phase (WS-5); this module has fenced-block helpers for code,
+    notes/todos, and RAG, but nothing generic for an arbitrary label, so this
+    is new rather than reused.
+    """
+    if not msg:
+        return None
+    pattern = re.compile(
+        r"```" + re.escape(label) + r"[ \t]*\n([\s\S]*?)^[ \t]*```[ \t]*$",
+        re.MULTILINE,
+    )
+    match = pattern.search(msg)
+    if not match:
+        return None
+    content = match.group(1).strip()
+    return content or None
+
+
 def _extract_artifacts_from_msg(msg: str) -> Tuple[List[str], List[str]]:
     """Return (notes, todos) extracted from assistant content."""
     notes: List[str] = []

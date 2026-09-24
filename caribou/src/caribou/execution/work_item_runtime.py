@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from caribou.execution.session_brief import SessionBrief
 from caribou.execution.work_items import (
     WorkItemCommandResult,
     WorkItemPolicy,
@@ -223,3 +224,62 @@ def _peek_policy(work_items_dir: Path) -> WorkItemPolicy:
     return WorkItemPolicy.from_dict(
         {k: v for k, v in raw.items() if k in {"qc_mode", "stall_turns", "stall_halt_turns"}}
     )
+
+
+def freeze_brief(
+    brief: SessionBrief,
+    *,
+    brief_path: Path,
+    store: WorkItemStore,
+    brief_mode: str,
+    owner: str,
+    turn: int,
+) -> Optional[Dict[str, Any]]:
+    """Freeze an accepted brief (WS-5.3, "Freeze (on accept)" steps 1-3):
+    write `brief.json`, commit it into the work-item store's history as
+    provenance, and — if `brief_mode == "seed_item"` — open the seed work
+    item. Steps 4 (pin to history) and 5 (flip phase) are the caller's
+    responsibility, since they touch engine-specific state (`history`/
+    `_Session`) this module doesn't own.
+
+    Returns the seed item dict, or `None` in `context` mode.
+    """
+    brief_json = brief.model_dump_json(indent=2)
+    brief_path.parent.mkdir(parents=True, exist_ok=True)
+    brief_path.write_text(brief_json + "\n", encoding="utf-8")
+    store.record_brief_provenance(brief_json)
+    if brief_mode == "seed_item":
+        return seed_brief_item(store, brief, owner=owner, turn=turn)
+    return None
+
+
+def render_brief_pin(brief: SessionBrief) -> str:
+    """The brief rendered as a pinned system message (WS-5.3 step 4, WS-5.4)."""
+    lines = [
+        "SESSION BRIEF (frozen — read-only for the rest of this session):",
+        f"Deliverable: {brief.deliverable}",
+        "In scope:",
+        *(f"  - {item}" for item in brief.in_scope),
+    ]
+    if brief.out_of_scope:
+        lines.append("Out of scope:")
+        lines.extend(f"  - {item}" for item in brief.out_of_scope)
+    lines.append("Done when:")
+    lines.extend(f"  - {item}" for item in brief.done_when)
+    if brief.risks:
+        lines.append("Risks:")
+        lines.extend(f"  - {item}" for item in brief.risks)
+    return "\n".join(lines)
+
+
+def seed_brief_item(
+    store: WorkItemStore, brief: SessionBrief, *, owner: str, turn: int
+) -> Dict[str, Any]:
+    """Open the top-level work item #0 for a frozen, `seed_item`-mode brief,
+    so `end_session` is blocked on the deliverable until it closes (WS-5.3
+    step 3). The title is the deliverable; the body carries done_when so the
+    owner sees the completion criteria without re-reading the brief.
+    """
+    body_lines = [brief.deliverable, "", "Done when:"]
+    body_lines.extend(f"- {criterion}" for criterion in brief.done_when)
+    return store.open(brief.deliverable, "\n".join(body_lines), owner, turn)
