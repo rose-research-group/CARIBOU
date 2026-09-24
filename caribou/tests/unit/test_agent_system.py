@@ -332,6 +332,50 @@ class TestAgentSystemLoadFromJSON:
         assert system.work_item_policy.qc_mode == "required"
         assert system.get_evaluator_agent().name == "reviewer"
 
+    def test_brief_policy_defaults_to_disabled_context_mode(self, tmp_path):
+        path = tmp_path / "plain.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "global_policy": "Policy",
+                    "agents": {"worker": {"prompt": "Work", "neighbors": {}}},
+                }
+            )
+        )
+        system = AgentSystem.load_from_json(str(path))
+        assert system.brief_policy.enabled is False
+        assert system.brief_policy.mode == "context"
+        assert system.brief_policy.require_confirmation is True
+
+    def test_brief_policy_is_parsed_from_blueprint(self, tmp_path):
+        path = tmp_path / "briefed.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "global_policy": "Policy",
+                    "brief_policy": {"enabled": True, "mode": "seed_item"},
+                    "agents": {"worker": {"prompt": "Work", "neighbors": {}}},
+                }
+            )
+        )
+        system = AgentSystem.load_from_json(str(path))
+        assert system.brief_policy.enabled is True
+        assert system.brief_policy.mode == "seed_item"
+
+    def test_invalid_brief_mode_is_rejected(self, tmp_path):
+        path = tmp_path / "bad.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "global_policy": "Policy",
+                    "brief_policy": {"enabled": True, "mode": "sideways"},
+                    "agents": {"worker": {"prompt": "Work", "neighbors": {}}},
+                }
+            )
+        )
+        with pytest.raises(ValueError, match="brief_policy.mode"):
+            AgentSystem.load_from_json(str(path))
+
     def test_load_with_commands(self):
         """Test loading configuration with commands."""
         config = {

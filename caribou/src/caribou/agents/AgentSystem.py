@@ -2,6 +2,7 @@ import json
 from typing import Dict, Optional
 from pathlib import Path
 
+from caribou.execution.session_brief import BriefPolicy
 from caribou.execution.work_items import WorkItemPolicy, render_work_item_prompt
 
 # Import the central CARIBOU_HOME path from our config module
@@ -111,11 +112,13 @@ class AgentSystem:
         agents: Dict[str, Agent],
         evaluator_agent_name: Optional[str] = None,
         work_item_policy: Optional[WorkItemPolicy] = None,
+        brief_policy: Optional[BriefPolicy] = None,
     ):
         self.global_policy = global_policy
         self.agents = agents
         self.evaluator_agent_name = evaluator_agent_name
         self.work_item_policy = work_item_policy or WorkItemPolicy()
+        self.brief_policy = brief_policy or BriefPolicy()
 
     @classmethod
     def load_from_json(cls, file_path: str) -> "AgentSystem":
@@ -130,6 +133,7 @@ class AgentSystem:
         global_policy = config.get("global_policy", "")
         evaluator_agent_name = config.get("evaluator_agent") or None
         work_item_policy = WorkItemPolicy.from_dict(config.get("work_item_policy"))
+        brief_policy = BriefPolicy.from_dict(config.get("brief_policy"))
         agents: Dict[str, Agent] = {}
 
         for agent_name, agent_data in config.get("agents", {}).items():
@@ -212,6 +216,7 @@ class AgentSystem:
             agents,
             evaluator_agent_name=evaluator_agent_name,
             work_item_policy=work_item_policy,
+            brief_policy=brief_policy,
         )
 
     def get_agent(self, name: str) -> Optional[Agent]:

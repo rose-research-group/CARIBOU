@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -17,8 +18,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 
-WORK_ITEM_SCHEMA = "caribou.work_item.v1"
-WORK_ITEM_INDEX_SCHEMA = "caribou.work_item_index.v1"
+WORK_ITEM_SCHEMA = "caribou.work_item.v2"
+WORK_ITEM_INDEX_SCHEMA = "caribou.work_item_index.v2"
 WORK_ITEM_STATUSES = ("Backlog", "Ready", "In progress", "In review", "Done")
 QcMode = Literal["optional", "required"]
 
@@ -48,6 +49,8 @@ class WorkItemPersistenceError(RuntimeError):
 @dataclass(frozen=True)
 class WorkItemPolicy:
     qc_mode: QcMode = "optional"
+    stall_turns: int = 4
+    stall_halt_turns: int = 8
 
     @classmethod
     def from_dict(cls, raw: object) -> "WorkItemPolicy":
@@ -60,10 +63,27 @@ class WorkItemPolicy:
             raise ValueError(
                 "work_item_policy.qc_mode must be 'optional' or 'required'"
             )
-        return cls(qc_mode=qc_mode)
+        stall_turns = raw.get("stall_turns", 4)
+        stall_halt_turns = raw.get("stall_halt_turns", 8)
+        if not isinstance(stall_turns, int) or stall_turns < 1:
+            raise ValueError("work_item_policy.stall_turns must be a positive integer")
+        if not isinstance(stall_halt_turns, int) or stall_halt_turns <= stall_turns:
+            raise ValueError(
+                "work_item_policy.stall_halt_turns must be a positive integer "
+                "greater than stall_turns"
+            )
+        return cls(
+            qc_mode=qc_mode,
+            stall_turns=stall_turns,
+            stall_halt_turns=stall_halt_turns,
+        )
 
-    def to_dict(self) -> Dict[str, str]:
-        return {"qc_mode": self.qc_mode}
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "qc_mode": self.qc_mode,
+            "stall_turns": self.stall_turns,
+            "stall_halt_turns": self.stall_halt_turns,
+        }
 
 
 @dataclass(frozen=True)
@@ -118,34 +138,31 @@ def parse_work_item_command(message: str) -> Optional[WorkItemCommand]:
     return None
 
 
-def parse_delegation_item_id(message: str, command_name: str) -> Optional[int]:
-    """Return the optional item id from an exact delegation command.
-
-    ``None`` also represents a legacy delegation without an item.  Callers use
-    this only after ordinary delegation detection has matched ``command_name``.
-    """
-    if not message or len(message.splitlines()) != 1:
-        return None
-    try:
-        tokens = shlex.split(message.strip())
-    except ValueError:
-        return None
-    if len(tokens) == 2 and tokens[0] == command_name and tokens[1].isdigit():
-        return int(tokens[1])
-    return None
-
-
 class WorkItemStore:
     """A per-run, commit-backed work-item ledger."""
 
     _lock_registry_guard = threading.Lock()
     _locks: Dict[str, threading.RLock] = {}
 
-    def __init__(self, base_dir: Path, run_id: str, policy: WorkItemPolicy) -> None:
-        self.root = Path(base_dir) / "work-items"
+    def __init__(
+        self,
+        work_items_dir: Path,
+        *,
+        session_id: str,
+        policy: WorkItemPolicy,
+        origin_run_id: Optional[str] = None,
+    ) -> None:
+        self.root = Path(work_items_dir)
         self.items_dir = self.root / "items"
-        self.run_id = run_id
+        self.session_id = session_id
+        self.origin_run_id = origin_run_id or session_id
         self.policy = policy
+        # Invalidated by every mutating call (`_commit`); safe because all
+        # reads and writes happen under `self._lock`, and a store is meant to
+        # be held as a per-session singleton (see WS-0) rather than
+        # constructed fresh per call, which would make this cache observe
+        # stale state written by another instance.
+        self._index_cache: Optional[Dict[str, Any]] = None
         lock_key = str(self.root.resolve())
         with self._lock_registry_guard:
             self._lock = self._locks.setdefault(lock_key, threading.RLock())
@@ -215,22 +232,39 @@ class WorkItemStore:
         self._atomic_json(self.items_dir / f"{item['id']}.json", item)
         self._git("add", "index.json", f"items/{item['id']}.json")
         self._git("commit", "--quiet", "-m", message)
+        self._index_cache = None
         return self._git("rev-parse", "HEAD").stdout.strip()
 
     def _index(self) -> Dict[str, Any]:
-        index = self._read_head_json(
-            "index.json",
-            {
-                "schema_version": WORK_ITEM_INDEX_SCHEMA,
-                "run_id": self.run_id,
-                "qc_mode": self.policy.qc_mode,
-                "next_id": 0,
-                "items": [],
-            },
-        )
+        if self._index_cache is None:
+            self._index_cache = self._read_head_json(
+                "index.json",
+                {
+                    "schema_version": WORK_ITEM_INDEX_SCHEMA,
+                    "session_id": self.session_id,
+                    "origin_run_id": self.origin_run_id,
+                    "forked_from_session_id": None,
+                    "qc_mode": self.policy.qc_mode,
+                    "stall_turns": self.policy.stall_turns,
+                    "stall_halt_turns": self.policy.stall_halt_turns,
+                    "next_id": 0,
+                    "items": [],
+                },
+            )
+        index = dict(self._index_cache)
+        # Reconcile the full committed policy, not just qc_mode: a partial
+        # reconciliation would silently reset any field it skips back to
+        # WorkItemPolicy()'s defaults on every _index() call, discarding
+        # whatever the blueprint or a prior commit set.
         committed_mode = index.get("qc_mode")
         if committed_mode in {"optional", "required"}:
-            self.policy = WorkItemPolicy(qc_mode=committed_mode)
+            self.policy = WorkItemPolicy(
+                qc_mode=committed_mode,
+                stall_turns=index.get("stall_turns", self.policy.stall_turns),
+                stall_halt_turns=index.get(
+                    "stall_halt_turns", self.policy.stall_halt_turns
+                ),
+            )
         return index
 
     def _item(self, item_id: int) -> Dict[str, Any]:
@@ -290,7 +324,8 @@ class WorkItemStore:
             timestamp = utc_now()
             item = {
                 "schema_version": WORK_ITEM_SCHEMA,
-                "run_id": index.get("run_id", self.run_id),
+                "session_id": index.get("session_id", self.session_id),
+                "origin_run_id": index.get("origin_run_id", self.origin_run_id),
                 "id": item_id,
                 "title": title.strip(),
                 "body": body.strip(),
@@ -316,6 +351,7 @@ class WorkItemStore:
                     }
                 ],
                 "reviews": [],
+                "notes": [],
             }
             index["next_id"] = item_id + 1
             self._update_index(index, item)
@@ -397,12 +433,100 @@ class WorkItemStore:
             )
             return self.read(item_id)
 
+    def transfer_active(
+        self, from_owner: str, to_owner: str, turn: int
+    ) -> List[Dict[str, Any]]:
+        """Hand off every in-progress item the delegating agent owns.
+
+        This is the harness-side ownership rule: an agent delegates with a bare
+        ``delegate_to_<agent>`` command and every active work item it owns
+        follows to the receiving agent automatically. Agents never need to know
+        or emit item ids. Returns the updated items (possibly empty).
+        """
+        transferred: List[Dict[str, Any]] = []
+        for summary in self.list():
+            if summary.get("owner") != from_owner:
+                continue
+            if summary.get("status") != "In progress":
+                continue
+            transferred.append(
+                self.transfer(int(summary["id"]), from_owner, to_owner, turn)
+            )
+        return transferred
+
+    def note(self, item_id: int, actor: str, turn: int, text: str) -> Dict[str, Any]:
+        """Record a non-status-changing note on an item (e.g. a stall halt)."""
+        with self._lock:
+            index = self._index()
+            item = self._item(item_id)
+            timestamp = utc_now()
+            item.setdefault("notes", []).append(
+                {"actor": actor, "turn": turn, "timestamp": timestamp, "text": text}
+            )
+            self._update_index(index, item)
+            self._commit(f"work-item {item_id}: note", index, item)
+            return self.read(item_id)
+
     def blocking_for_owner(self, owner: str) -> List[Dict[str, Any]]:
         return [
             item
             for item in self.list()
             if item.get("owner") == owner and item.get("status") != "Done"
         ]
+
+    @staticmethod
+    def last_transition_turn(item: Dict[str, Any]) -> int:
+        """The turn of an item's most recent transition, derived on read.
+
+        Not persisted as a separate field — it would duplicate
+        ``transitions[-1]["turn"]`` and could drift from it.
+        """
+        transitions = item.get("transitions") or []
+        if not transitions:
+            return int(item.get("created_turn", 0))
+        return int(transitions[-1]["turn"])
+
+    def copy_to(
+        self, dst_dir: Path, *, child_session_id: str, forked_from_session_id: str
+    ) -> "WorkItemStore":
+        """Copy this store's full on-disk state (including `.git` history)
+        to `dst_dir` for a forked session, recording provenance in the
+        child's index.
+
+        Held under `self._lock` for the whole copy so a concurrent write to
+        this store cannot be caught mid-commit; the working tree always
+        matches HEAD when unlocked (commits are atomic via `os.replace`), so
+        a lock-protected `shutil.copytree` yields a valid child `.git`.
+        """
+        dst_dir = Path(dst_dir)
+        with self._lock:
+            if dst_dir.exists():
+                raise WorkItemConflict(f"fork destination already exists: {dst_dir}")
+            shutil.copytree(self.root, dst_dir)
+        child = WorkItemStore(
+            dst_dir,
+            session_id=child_session_id,
+            policy=self.policy,
+            origin_run_id=self.origin_run_id,
+        )
+        with child._lock:
+            index = child._index()
+            index["session_id"] = child_session_id
+            index["forked_from_session_id"] = forked_from_session_id
+            child._atomic_json(child.root / "index.json", index)
+            for item_path in child.items_dir.glob("*.json"):
+                item = json.loads(item_path.read_text(encoding="utf-8"))
+                item["session_id"] = child_session_id
+                child._atomic_json(item_path, item)
+            child._git("add", "index.json", "items")
+            child._git(
+                "commit",
+                "--quiet",
+                "-m",
+                f"fork: recorded from session {forked_from_session_id}",
+            )
+            child._index_cache = None
+        return child
 
     def review_diff(self, item_id: int) -> str:
         with self._lock:
@@ -434,6 +558,11 @@ class WorkItemStore:
         with self._lock:
             index = self._index()
             item = self._item(item_id)
+            if evaluator == item["owner"]:
+                raise WorkItemConflict(
+                    f"work item {item_id} cannot be reviewed by its own owner "
+                    f"({evaluator})"
+                )
             if self.policy.qc_mode == "required" and item["status"] != "In review":
                 raise WorkItemConflict(
                     f"required-QC review needs In review status, found {item['status']}"
@@ -481,14 +610,14 @@ class WorkItemStore:
 def render_work_item_prompt(policy: WorkItemPolicy) -> str:
     close_result = "Done" if policy.qc_mode == "optional" else "In review"
     return (
-        "\n\nWork items are enforced in this interactive run. Use exactly one command on "
+        "\n\nWork items are enforced in this run. Use exactly one command on "
         "a standalone line, with no prose, Markdown, or code in the same message:\n"
         '- `open_work_item "<title>" "<body>"`\n'
         '- `close_work_item <id> "<completion summary>"`\n'
         "- `list_work_items`\n"
         "- `read_work_item <id>`\n"
-        "To transfer one item during delegation, use `delegate_to_<agent> <id>`. "
-        "Delegation without an id transfers nothing. "
+        "Delegating to another agent automatically transfers your in-progress "
+        "work items to that agent; you do not need to mention an item id. "
         f"Closing moves the item to {close_result}. You cannot use `end_session` "
         "while you own a work item that is not Done."
     )

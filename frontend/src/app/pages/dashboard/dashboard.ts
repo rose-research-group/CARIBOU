@@ -162,6 +162,17 @@ export class DashboardComponent implements OnInit {
     evaluator_model: { mode: 'inherit_worker' },
   };
 
+  // Separate from `form.brief_mode`: the wizard needs a fourth state
+  // ("use whatever the blueprint says") that has no representation as a
+  // SessionCreateRequest value — that field is undefined/omitted for it,
+  // not a fourth enum member on the wire.
+  briefModeChoice: 'blueprint' | 'off' | 'context' | 'seed_item' = 'blueprint';
+
+  onBriefModeChange(choice: 'blueprint' | 'off' | 'context' | 'seed_item'): void {
+    this.briefModeChoice = choice;
+    this.form.brief_mode = choice === 'blueprint' ? undefined : choice;
+  }
+
   availableBackends = computed(() =>
     this.configSvc
       .backends()
@@ -250,6 +261,8 @@ export class DashboardComponent implements OnInit {
     this.form.memory_working_history_size = 4;
     this.form.memory_summarization_threshold = 20;
     this.form.memory_chunk_size = 10;
+    this.briefModeChoice = 'blueprint';
+    this.form.brief_mode = undefined;
     this.applyOllamaDefaultModel();
   }
 

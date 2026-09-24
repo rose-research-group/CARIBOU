@@ -136,6 +136,10 @@ class SessionCreateRequest(BaseModel):
     compress_memory: bool = False
     agent_report_memory: bool = False
     evaluator_model: EvaluatorModelConfig = Field(default_factory=EvaluatorModelConfig)
+    # None = use the blueprint's own brief_policy (its default). An explicit
+    # value overrides the blueprint for this session only — e.g. turning
+    # briefing on for a blueprint that doesn't declare brief_policy at all.
+    brief_mode: Optional[Literal["off", "context", "seed_item"]] = None
 
 
 class ResolvedModelInfo(BaseModel):
@@ -286,6 +290,10 @@ class SessionResponse(BaseModel):
     recovery_substep_total: Optional[int] = None
     checkpoint_turn: Optional[int] = None
     checkpoint_healthy: bool = False
+    # The effective brief mode for this session (session override, if any,
+    # else the blueprint's own brief_policy) — "off" if briefing is
+    # disabled. None until the agent system has loaded (still initializing).
+    brief_mode: Optional[Literal["off", "context", "seed_item"]] = None
 
 
 class SessionResumeRequest(BaseModel):

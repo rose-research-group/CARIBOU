@@ -66,6 +66,9 @@ export interface Session {
   recovery_substep_total: number | null;
   checkpoint_turn: number | null;
   checkpoint_healthy: boolean;
+  // The effective brief mode — session override if one was set, else the
+  // blueprint's own default. Null until the agent system has loaded.
+  brief_mode: 'off' | 'context' | 'seed_item' | null;
 }
 
 export type RecoveryMode = 'smart' | 'literal_replay';
@@ -142,6 +145,9 @@ export interface SessionCreateRequest {
   compress_memory?: boolean;
   agent_report_memory?: boolean;
   evaluator_model?: EvaluatorModelConfig;
+  // undefined/omitted = use the blueprint's own brief_policy default.
+  // An explicit value overrides it for this session only.
+  brief_mode?: 'off' | 'context' | 'seed_item';
 }
 
 export interface OpenRouterModel {
