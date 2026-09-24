@@ -472,7 +472,17 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.subs.add(this.stream.codeSubmitted$.subscribe(ev => {
       const d = ev.data as CodeSubmittedData;
       const key = `${ev.turn}-${d.block_index}`;
+      // The server replays the full event history on every WebSocket
+      // (re)connect, so a code_submitted event for a block already rendered
+      // must not append a second card.
+      const alreadyRendered = this.chatItems().some(
+        item => item.kind === 'code' && item.turn === ev.turn &&
+          item.codeEvent?.submitted.block_index === d.block_index
+      );
       this.pendingCode.update(m => { const n = new Map(m); n.set(key, d); return n; });
+      if (alreadyRendered) {
+        return;
+      }
       this.awaitingCodeResult.set(true);
       this.chatItems.update(items => [...items, {
         kind: 'code',
