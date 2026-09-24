@@ -1242,6 +1242,29 @@ class SessionManager:
             )
         return session.work_item_store
 
+    def get_brief_state(self, session_id: str) -> Dict[str, Any]:
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise KeyError("Session not found")
+        return {"phase": session.phase, "brief": session.brief}
+
+    def submit_brief_decision(
+        self,
+        session_id: str,
+        *,
+        decision: str,
+        reason: Optional[str] = None,
+        brief: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise KeyError("Session not found")
+        if session.phase != "briefing":
+            raise ValueError("session is not in the briefing phase")
+        session.brief_decision_queue.put(
+            {"decision": decision, "reason": reason, "brief": brief}
+        )
+
     def list_work_items(self, session_id: str) -> List[Dict[str, Any]]:
         session = self._sessions.get(session_id)
         if session is None:
@@ -1701,6 +1724,11 @@ class SessionManager:
                     resume_state=resume_state,
                     start_waiting=start_waiting,
                     work_item_store=self._work_item_store(session),
+                    phase=session.phase,
+                    brief_policy=session.brief_policy,
+                    brief_decision_queue=(
+                        session.brief_decision_queue if not is_auto else None
+                    ),
                 )
             except asyncio.CancelledError:
                 # Propagate after cleanup so shutdown_all/delete_session can await it.
@@ -1864,6 +1892,12 @@ class SessionManager:
             )
             session.artifacts.append(record)
 
+        elif t == "phase_change":
+            session.phase = data.get("phase", session.phase)
+
+        elif t == "brief_accepted":
+            session.brief = data.get("brief")
+
     @staticmethod
     def _finish_latest_attempt(session: _Session, outcome: str) -> None:
         """Close the current provenance record once; completed attempts stay immutable."""
@@ -1971,10 +2005,42 @@ class SessionManager:
             session.analysis_context = analysis_context
 
             driver = session.driver_agent
+
+            # --- Session brief (WS-5) ---
+            from caribou.execution.session_brief import SessionBrief
+
+            frozen_brief: Optional[SessionBrief] = None
+            if session.config.brief is not None:
+                raw = dict(session.config.brief)
+                raw.setdefault("created_at", datetime.utcnow().isoformat() + "Z")
+                raw.setdefault("created_by", "human")
+                # created_at is a string here (JSON has no datetime type);
+                # SessionBrief's strict=True config rejects a str where a
+                # real datetime is expected unless told not to be strict.
+                frozen_brief = SessionBrief.model_validate(raw, strict=False)
+            should_run_briefing = (
+                frozen_brief is None
+                and session.brief_policy is not None
+                and session.brief_policy.enabled
+                and session.config.mode == SessionMode.interactive
+            )
+            session.phase = "briefing" if should_run_briefing else "execution"
+
             # Work items are active in both interactive and auto sessions
             # (WS-1) — the grammar appendix must not be suppressed for auto.
+            # During briefing, the work-item grammar is suppressed in favor
+            # of the briefing instructions (mirrors runner.py's `elif`).
+            if should_run_briefing:
+                from caribou.execution.session_brief import render_briefing_prompt
+
+                appendix = render_briefing_prompt()
+            else:
+                appendix = ""
             system_prompt = (
-                driver.get_full_prompt(None, agent_sys.work_item_policy)
+                driver.get_full_prompt(
+                    None, None if should_run_briefing else agent_sys.work_item_policy
+                )
+                + appendix
                 + "\n\n"
                 + analysis_context
             )
@@ -1985,6 +2051,33 @@ class SessionManager:
                 },
                 {"role": "system", "content": system_prompt},
             ]
+
+            if frozen_brief is not None:
+                from caribou.execution.work_item_runtime import (
+                    freeze_brief,
+                    render_brief_pin,
+                )
+
+                seed_item = freeze_brief(
+                    frozen_brief,
+                    brief_path=session.output_dir.parent / "brief.json",
+                    store=self._work_item_store(session),
+                    brief_mode=session.brief_policy.mode
+                    if session.brief_policy is not None
+                    else "context",
+                    owner=driver.name,
+                    turn=0,
+                )
+                session.brief = frozen_brief.model_dump(mode="json")
+                session.initial_history.append(
+                    {"role": "system", "content": render_brief_pin(frozen_brief)}
+                )
+                if seed_item is not None and log:
+                    log.info(
+                        "Seeded work item %s from frozen brief: %s",
+                        seed_item["id"],
+                        seed_item["title"],
+                    )
             _emit_init(
                 "system_message",
                 {

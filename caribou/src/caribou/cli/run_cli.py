@@ -447,7 +447,10 @@ def initialize_context(
         raw.setdefault("created_at", datetime.utcnow().isoformat() + "Z")
         raw.setdefault("created_by", "human")
         try:
-            context.brief = SessionBrief(**raw)
+            # created_at is a string here (JSON has no datetime type);
+            # SessionBrief's strict=True config rejects a str where a real
+            # datetime is expected unless told not to be strict.
+            context.brief = SessionBrief.model_validate(raw, strict=False)
         except Exception as exc:  # pydantic ValidationError
             raise typer.BadParameter(f"--brief failed validation: {exc}") from exc
 

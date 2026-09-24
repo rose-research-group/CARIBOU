@@ -137,6 +137,14 @@ class _Session:
     # briefing conversation phase itself (WS-5.3-5.5) isn't implemented, so
     # this currently only records the effective policy for display/future use.
     brief_policy: Any = None
+    # "briefing" while the interview conversation is active, "execution"
+    # once a frozen brief is pinned (or briefing never applied). See WS-5.
+    phase: str = "execution"
+    # The frozen brief, as a plain dict (SessionBrief.model_dump), once
+    # accepted — None until then. Draft proposals live only in the WS event
+    # stream (brief_draft), not here; only the frozen brief is durable state.
+    brief: Optional[Dict[str, Any]] = None
+    brief_decision_queue: queue.Queue = field(default_factory=queue.Queue)
 
     def to_response(self) -> SessionResponse:
         memory = None

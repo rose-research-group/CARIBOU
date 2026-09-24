@@ -12,6 +12,7 @@ same helpers and execution model but replaces Console output with events.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import queue
 import threading
@@ -87,10 +88,21 @@ def run_session_sync(
     resume_state: Optional[Dict[str, Any]] = None,
     start_waiting: bool = False,
     work_item_store: Optional["WorkItemStore"] = None,
+    phase: str = "execution",
+    brief_policy: Optional["BriefPolicy"] = None,
+    brief_decision_queue: Optional[queue.Queue] = None,
 ) -> None:
     """
     Main agent session loop. Replaces Console output with emit() calls.
     Designed to be run in a thread via asyncio.to_thread or ThreadPoolExecutor.
+
+    `phase`/`brief_policy`/`brief_decision_queue` (WS-5, web half): if
+    `phase == "briefing"`, runs the interview loop before the first
+    execution turn, mirroring `runner.py`'s `_run_briefing_phase`. The brief
+    itself, if any, is already pinned into `history` by
+    `session_manager._initialize_session` before this function is ever
+    called (same as `runner.py`'s history[1] injection) — this function
+    only needs `phase` to know whether to run the interview.
 
     `work_item_store`: pass the session's cached singleton instance so the
     turn loop and REST work-item routes see the same in-memory index cache
@@ -108,6 +120,7 @@ def run_session_sync(
         detect_delegation,
         detect_end_session,
         detect_rag,
+        extract_labeled_block,
     )
     from caribou.execution.rag_client import get_rag_client
     from caribou.execution.work_items import (
@@ -120,9 +133,14 @@ def run_session_sync(
     from caribou.execution.work_item_runtime import (
         apply_command as apply_work_item_command,
         end_session_block,
+        render_brief_pin,
         render_work_item_state,
         stall_report,
         transfer_on_delegation,
+    )
+    from caribou.execution.session_brief import (
+        BriefParseError,
+        parse_brief_block,
     )
     from caribou.core.io_helpers import (
         extract_python_code_blocks,
@@ -331,7 +349,167 @@ def run_session_sync(
             except queue.Empty:
                 continue
 
+    def _run_briefing_phase() -> tuple[Optional[dict], bool]:
+        """Run the interview loop until the human accepts a brief or ends
+        the session. Mirrors runner.py's `_run_briefing_phase`, simplified
+        relative to the main turn loop the same way the CLI version is: raw
+        `history` passed straight to the provider (no memory-manager context
+        assembly), and no checkpointing — briefing runs entirely before any
+        checkpoint boundary, so a crash mid-briefing loses the conversation,
+        same limitation as the CLI.
+
+        Returns `(brief_dict, ended)`: `brief_dict` is the accepted brief
+        (as a plain dict), or `None` if the session ended during briefing
+        instead (`ended=True` in that case).
+        """
+        _emit("status_change", {"status": "running", "reason": "briefing"})
+        while True:
+            if not _wait_for_user(0, "briefing_waiting"):
+                return None, True
+            if stop_flag.is_set():
+                return None, True
+
+            full_msg = ""
+            for token in _stream_tokens(llm_client, model_name, history):
+                if stop_flag.is_set() or cancel_response_flag.is_set():
+                    break
+                full_msg += token
+                _emit(
+                    "token", {"agent_name": driver_agent.name, "token": token}, turn=0
+                )
+            msg = full_msg
+            history.append({"role": "assistant", "content": msg})
+            if memory_manager is not None:
+                memory_manager.add_message("assistant", msg)
+            _emit(
+                "message_complete",
+                {
+                    "message": {
+                        "id": f"msg_{session_id}_briefing_{len(history)}",
+                        "turn": 0,
+                        "role": "assistant",
+                        "agent_name": driver_agent.name,
+                        "content": msg,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                },
+                turn=0,
+            )
+
+            if detect_end_session(msg):
+                _emit(
+                    "status_change",
+                    {"status": "stopped", "reason": "briefing_declined"},
+                )
+                return None, True
+
+            block = extract_labeled_block(msg, "brief")
+            if block is None:
+                continue
+
+            try:
+                draft = parse_brief_block(block, created_by=driver_agent.name)
+            except BriefParseError as exc:
+                feedback = exc.feedback
+                history.append({"role": "system", "content": feedback})
+                if memory_manager is not None:
+                    memory_manager.add_message("system", feedback)
+                _emit(
+                    "system_message",
+                    {"content": feedback, "category": "Brief"},
+                    turn=0,
+                )
+                continue
+
+            draft_dict = draft.model_dump(mode="json")
+            _emit("brief_draft", {"brief": draft_dict}, turn=0)
+            if brief_decision_queue is None:
+                # No decision channel wired up (e.g. a lower-level unit
+                # test) — treat any valid draft as auto-accepted so callers
+                # that don't exercise the confirmation gate aren't forced
+                # to supply one.
+                return draft_dict, False
+
+            decision: Optional[Dict[str, Any]] = None
+            while decision is None:
+                if stop_flag.is_set():
+                    return None, True
+                try:
+                    decision = brief_decision_queue.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+
+            kind = decision.get("decision")
+            if kind == "accept":
+                return draft_dict, False
+            if kind == "reject":
+                reason = decision.get("reason") or "Please revise and re-propose."
+                feedback = f"Brief rejected by the human: {reason}"
+                history.append({"role": "system", "content": feedback})
+                if memory_manager is not None:
+                    memory_manager.add_message("system", feedback)
+                _emit(
+                    "system_message",
+                    {"content": feedback, "category": "Brief"},
+                    turn=0,
+                )
+                continue
+            if kind == "edit":
+                try:
+                    edited = parse_brief_block(
+                        json.dumps(decision.get("brief") or {}), created_by="human"
+                    )
+                except BriefParseError as exc:
+                    feedback = f"Human edit was invalid: {exc.feedback}"
+                    history.append({"role": "system", "content": feedback})
+                    if memory_manager is not None:
+                        memory_manager.add_message("system", feedback)
+                    _emit(
+                        "system_message",
+                        {"content": feedback, "category": "Brief"},
+                        turn=0,
+                    )
+                    continue
+                return edited.model_dump(mode="json"), False
+            # Unknown decision kind: treat as a no-op, keep waiting.
+            decision = None
+
     try:
+        if phase == "briefing" and resume_state is None:
+            frozen_brief_dict, ended_during_briefing = _run_briefing_phase()
+            if ended_during_briefing:
+                return
+            if frozen_brief_dict is not None:
+                from caribou.execution.session_brief import SessionBrief
+                from caribou.execution.work_item_runtime import freeze_brief
+
+                # frozen_brief_dict came from model_dump(mode="json"), so
+                # created_at is an ISO string; SessionBrief's strict=True
+                # config rejects a str where it expects a real datetime
+                # unless validation is told explicitly not to be strict.
+                accepted = SessionBrief.model_validate(
+                    frozen_brief_dict, strict=False
+                )
+                seed_item = freeze_brief(
+                    accepted,
+                    brief_path=output_dir.parent / "brief.json",
+                    store=work_items,
+                    brief_mode=(
+                        brief_policy.mode if brief_policy is not None else "context"
+                    ),
+                    owner=driver_agent.name,
+                    turn=0,
+                )
+                pin = render_brief_pin(accepted)
+                history.append({"role": "system", "content": pin})
+                if memory_manager is not None:
+                    memory_manager.add_message("system", pin)
+                _emit("system_message", {"content": pin, "category": "Brief"}, turn=0)
+                _emit("brief_accepted", {"brief": frozen_brief_dict}, turn=0)
+                if seed_item is not None:
+                    _emit("work_item_changed", {"item": seed_item}, turn=0)
+                _emit("phase_change", {"phase": "execution"}, turn=0)
+
         if start_waiting and not is_auto:
             if not _wait_for_user(turns_completed, "recovered_ready"):
                 return
@@ -1024,6 +1202,9 @@ async def run_session_async(
     resume_state: Optional[Dict[str, Any]] = None,
     start_waiting: bool = False,
     work_item_store: Optional["WorkItemStore"] = None,
+    phase: str = "execution",
+    brief_policy: Optional["BriefPolicy"] = None,
+    brief_decision_queue: Optional[queue.Queue] = None,
 ) -> None:
     """
     Runs run_session_sync in a thread so it doesn't block the event loop.
@@ -1060,4 +1241,7 @@ async def run_session_async(
         resume_state=resume_state,
         start_waiting=start_waiting,
         work_item_store=work_item_store,
+        phase=phase,
+        brief_policy=brief_policy,
+        brief_decision_queue=brief_decision_queue,
     )

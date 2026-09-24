@@ -140,6 +140,13 @@ class SessionCreateRequest(BaseModel):
     # value overrides the blueprint for this session only — e.g. turning
     # briefing on for a blueprint that doesn't declare brief_policy at all.
     brief_mode: Optional[Literal["off", "context", "seed_item"]] = None
+    # A pre-authored, already-frozen brief (raw fields, not a SessionBrief
+    # instance — created_at/created_by are harness-set regardless of what's
+    # supplied here). Mirrors the CLI's `--brief <path>`: skips the briefing
+    # conversation entirely and pins this brief immediately. Auto sessions
+    # never run a briefing conversation, so this is their only way to have
+    # a brief at all.
+    brief: Optional[Dict[str, Any]] = None
 
 
 class ResolvedModelInfo(BaseModel):
@@ -248,6 +255,21 @@ class WorkItemReviewResult(BaseModel):
     verdict: str
     assessment: str
     provider_receipt: Dict[str, Any] = Field(default_factory=dict)
+
+
+class BriefDecisionRequest(BaseModel):
+    decision: Literal["accept", "reject", "edit"]
+    reason: Optional[str] = None
+    # Required when decision == "edit": the corrected brief fields, in the
+    # same shape as the agent's ```brief block (deliverable, in_scope,
+    # out_of_scope, done_when, and the optional fields).
+    brief: Optional[Dict[str, Any]] = None
+
+    @model_validator(mode="after")
+    def _edit_requires_brief(self) -> "BriefDecisionRequest":
+        if self.decision == "edit" and self.brief is None:
+            raise ValueError("decision 'edit' requires a 'brief' payload")
+        return self
 
 
 class SessionResponse(BaseModel):

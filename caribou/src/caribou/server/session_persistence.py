@@ -61,7 +61,9 @@ def save_session(
         path = session_file(session.id, sessions_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {
-            "schema_version": "caribou.web_session.v3",
+            "schema_version": "caribou.web_session.v4",
+            "phase": session.phase,
+            "brief": session.brief,
             "id": session.id,
             "name": session.name,
             "config": session.config.model_dump(mode="json"),
@@ -217,6 +219,15 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
                 checkpoint_turn=data.get("checkpoint_turn"),
                 checkpoint_healthy=bool(data.get("checkpoint_healthy", False)),
                 attempts=list(data.get("attempts", [])),
+                # v3 files have neither key — a session saved before WS-5
+                # loads as phase="execution", brief=None, which is correct:
+                # it never had a briefing phase to begin with.
+                # brief_policy is intentionally not persisted/restored here:
+                # like work_item_policy, it's re-resolved from the
+                # blueprint on the next resume (session.agent_system is
+                # also None until then).
+                phase=data.get("phase", "execution"),
+                brief=data.get("brief"),
             )
             # If the session was interrupted, record that in the event log
             if raw_status != data.get("status"):

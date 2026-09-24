@@ -124,3 +124,21 @@ def test_parse_brief_block_surfaces_schema_validation_errors() -> None:
     raw = '{"deliverable": "", "in_scope": [], "out_of_scope": [], "done_when": []}'
     with pytest.raises(BriefParseError, match="failed validation"):
         parse_brief_block(raw, created_by="master_agent")
+
+
+def test_model_validate_strict_false_accepts_a_json_string_created_at() -> None:
+    # Every site that reconstructs a SessionBrief from a JSON dict — a
+    # pre-authored --brief file (CLI), a pre-authored brief payload (web
+    # SessionCreateRequest), and a briefing draft round-tripped through
+    # model_dump(mode="json") — gets created_at back as an ISO *string*,
+    # since JSON has no datetime type. SessionBrief.model_config sets
+    # strict=True, which SessionBrief(**raw) respects and rejects a string
+    # where it wants a real datetime object; model_validate(raw,
+    # strict=False) is the one construction path that accepts it. A caller
+    # using the plain constructor here would raise ValidationError.
+    raw = _kwargs()
+    raw["created_at"] = raw["created_at"].isoformat()
+    brief = SessionBrief.model_validate(raw, strict=False)
+    assert brief.deliverable == "Ship the parser"
+    with pytest.raises(ValidationError):
+        SessionBrief(**raw)

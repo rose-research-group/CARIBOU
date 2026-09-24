@@ -11,6 +11,7 @@ from caribou.execution.evaluation import EvaluationContextTooLarge
 from caribou.execution.work_items import WorkItemNotFound
 from caribou.server.models import (
     ArtifactRecord,
+    BriefDecisionRequest,
     CodeEventRecord,
     EvaluationResult,
     EvaluatorModelState,
@@ -172,6 +173,35 @@ async def get_code_events(session_id: str) -> List[CodeEventRecord]:
     if not s:
         raise HTTPException(404, "Session not found")
     return s.code_events
+
+
+@router.get("/{session_id}/brief")
+async def get_brief_state(session_id: str) -> dict:
+    """The session's current phase and frozen brief (null until accepted)."""
+    try:
+        return session_manager.get_brief_state(session_id)
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+
+
+@router.post("/{session_id}/brief/decision", status_code=204)
+async def submit_brief_decision(
+    session_id: str, request: BriefDecisionRequest
+) -> None:
+    """Accept, reject, or edit the agent's current brief draft during the
+    briefing phase (WS-5). The running session's briefing loop is blocked
+    waiting on this decision — see `_Session.brief_decision_queue`."""
+    try:
+        session_manager.submit_brief_decision(
+            session_id,
+            decision=request.decision,
+            reason=request.reason,
+            brief=request.brief,
+        )
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.get("/{session_id}/work-items", response_model=List[WorkItemSummary])
