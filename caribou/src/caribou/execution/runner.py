@@ -53,10 +53,15 @@ try:
         WorkItemError,
         WorkItemPolicy,
         WorkItemStore,
-        execute_work_item_command,
-        parse_delegation_item_id,
         parse_work_item_command,
         render_work_item_prompt,
+    )
+    from caribou.execution.work_item_runtime import (
+        apply_command as apply_work_item_command,
+        end_session_block,
+        render_work_item_state,
+        stall_report,
+        transfer_on_delegation,
     )
 except ImportError as e:
     print(f"Failed to import a required CARIBOU module: {e}", file=sys.stderr)
@@ -570,10 +575,19 @@ def run_agent_session(
     )
     artifacts = SessionArtifacts(run_id=run_id, base_dir=artifacts_dir)
     work_item_policy = getattr(agent_system, "work_item_policy", WorkItemPolicy())
-    work_items = (
-        WorkItemStore(artifacts_dir, run_id, work_item_policy) if not is_auto else None
+    evaluator_agent_name = getattr(agent_system, "evaluator_agent_name", None)
+    # Work items are constructed in both interactive and auto runs; `is_auto`
+    # only gates human-confirmation points elsewhere (end_session prompts),
+    # not whether work-item state exists. Auto runs need ambient state (WS-2)
+    # and stall detection (WS-4) at least as much as interactive ones, since
+    # there's no human watching to notice an abandoned item.
+    work_items = WorkItemStore(
+        artifacts_dir / "work-items",
+        session_id=run_id,
+        policy=work_item_policy,
+        origin_run_id=run_id,
     )
-    if work_items is not None and len(history) > 1:
+    if len(history) > 1:
         prompt_appendix = render_work_item_prompt(work_item_policy)
         if prompt_appendix not in history[1].get("content", ""):
             history[1]["content"] = history[1].get("content", "") + prompt_appendix
@@ -675,6 +689,9 @@ def run_agent_session(
 
     session_end_reason = "completed"
     last_code_snippet: str | None = None
+    # At most one automatic "continue" per user message, consumed after the agent
+    # opens a work item so it can proceed with the work instead of stopping.
+    auto_continue_budget = 1
 
     def checkpoint_at_completed_turn() -> bool:
         if should_checkpoint is None or not should_checkpoint():
@@ -753,6 +770,40 @@ def run_agent_session(
                 cleaned_msg["content"] = cleaned_msg["content"].rstrip()
             cleaned_context.append(cleaned_msg)
 
+        # Ambient work-item state (WS-2): a view recomputed from the store
+        # each turn, appended after context assembly so every memory
+        # strategy sees current state without memory-subsystem changes.
+        state_block = render_work_item_state(work_items, current_agent.name)
+        if state_block:
+            cleaned_context.append({"role": "system", "content": state_block})
+
+        # Item-level stall detection (WS-4): surface a stuck item by id
+        # rather than only tripping the turn-count breakers, which halt the
+        # run without saying which item stalled it.
+        stalled = stall_report(
+            work_items,
+            current_agent.name,
+            turn=turn,
+            stall_turns=work_item_policy.stall_turns,
+        )
+        if stalled is not None:
+            if stalled["idle_turns"] >= work_item_policy.stall_halt_turns:
+                halt_note = (
+                    f"Halted: work item {stalled['item_id']} "
+                    f"('{stalled['title']}') stalled for {stalled['idle_turns']} turns."
+                )
+                work_items.note(stalled["item_id"], "runner", turn, halt_note)
+                console.print(f"[bold red]{halt_note}[/bold red]")
+                session_end_reason = "work_item_stalled"
+                break
+            nudge = (
+                f"[SYSTEM] Work item {stalled['item_id']} "
+                f"('{stalled['title']}') has had no status change for "
+                f"{stalled['idle_turns']} turns. Close it, transfer it, or "
+                "explain why it is still open."
+            )
+            cleaned_context.append({"role": "system", "content": nudge})
+
         try:
             request_timeout_seconds = (
                 max(0.001, session_deadline - time.monotonic())
@@ -815,17 +866,21 @@ def run_agent_session(
         # Track whether any substantive action fires this turn.
         _action_fired = False
         _delegated = False
+        _opened_work_item = False
 
-        # --- Enforced work-item commands (interactive runs only) ---
-        work_command = parse_work_item_command(msg) if work_items is not None else None
-        if work_command is not None:
+        # --- Enforced work-item commands ---
+        work_command = parse_work_item_command(msg)
+        work_result = apply_work_item_command(
+            work_items, msg, owner=current_agent.name, turn=turn
+        )
+        if work_result is not None:
             _action_fired = True
-            work_result = execute_work_item_command(
-                work_items,
-                work_command,
-                owner=current_agent.name,
-                turn=turn,
-            )
+            if (
+                work_command is not None
+                and work_command.name == "open_work_item"
+                and work_result.success
+            ):
+                _opened_work_item = True
             work_feedback = "[SYSTEM] " + work_result.feedback
             history.append({"role": "system", "content": work_feedback})
             if memory_manager:
@@ -850,8 +905,8 @@ def run_agent_session(
         # (prevents premature exit when LLM outputs both delegation and end_session)
         has_delegation = detect_delegation(msg) is not None
         end_session_refused = False
-        if work_items is not None and detect_end_session(msg):
-            blocking = work_items.blocking_for_owner(current_agent.name)
+        if detect_end_session(msg):
+            blocking = end_session_block(work_items, current_agent.name)
             if blocking:
                 end_session_refused = True
                 blocked_feedback = (
@@ -1040,16 +1095,14 @@ def run_agent_session(
             target_agent_name = current_agent.commands[cmd].target_agent
             new_agent = agent_system.get_agent(target_agent_name)
             previous_agent_name = current_agent.name
-            delegation_item_id = (
-                parse_delegation_item_id(msg, cmd) if work_items is not None else None
-            )
-            if new_agent is not None and delegation_item_id is not None:
+            if new_agent is not None:
                 try:
-                    transferred_item = work_items.transfer(
-                        delegation_item_id,
+                    transferred_items = transfer_on_delegation(
+                        work_items,
                         previous_agent_name,
                         target_agent_name,
-                        turn,
+                        turn=turn,
+                        evaluator_agent_name=evaluator_agent_name,
                     )
                 except WorkItemError as exc:
                     transfer_feedback = (
@@ -1064,14 +1117,15 @@ def run_agent_session(
                     )
                     new_agent = None
                 else:
-                    _emit_runner_event(
-                        event_callback,
-                        event_type="work_item_changed",
-                        run_id=run_id,
-                        turn=turn,
-                        agent_name=previous_agent_name,
-                        payload={"item": transferred_item},
-                    )
+                    for transferred_item in transferred_items:
+                        _emit_runner_event(
+                            event_callback,
+                            event_type="work_item_changed",
+                            run_id=run_id,
+                            turn=turn,
+                            agent_name=previous_agent_name,
+                            payload={"item": transferred_item},
+                        )
             if new_agent:
                 _action_fired = True
                 if report_memory:
@@ -1095,9 +1149,7 @@ def run_agent_session(
                 routing_message = f"🔄 Routing to '{target_agent_name}' via {cmd}"
                 current_agent = new_agent
                 # Global policy lives in the pinned first system message; skip re-embedding here.
-                system_prompt = current_agent.get_full_prompt(
-                    None, work_item_policy if work_items is not None else None
-                )
+                system_prompt = current_agent.get_full_prompt(None, work_item_policy)
                 prompt_with_context = system_prompt + "\n\n" + analysis_context
                 console.print(f"[yellow]{routing_message}[/yellow]")
                 history.append(
@@ -1472,6 +1524,19 @@ def run_agent_session(
             )
             continue
 
+        # Interactive mode: after opening a work item, let the agent keep going
+        # for one extra turn instead of stopping to wait for the user.
+        if not is_auto and _opened_work_item and auto_continue_budget > 0:
+            auto_continue_budget -= 1
+            history.append(
+                {"role": "user", "content": "Please continue with the next step."}
+            )
+            if memory_manager:
+                memory_manager.add_message(
+                    "user", "Please continue with the next step."
+                )
+            continue
+
         # Interactive mode: prompt user for next action
         while True:
             stop_reason = session_stop_reason()
@@ -1519,6 +1584,7 @@ def run_agent_session(
                     memory_manager.add_message("user", user_input)
                 history.append({"role": "user", "content": user_input})
                 display(console, "user", user_input)
+                auto_continue_budget = 1
             break
 
         # if we broke out of the inner prompt loop due to exit, stop the session

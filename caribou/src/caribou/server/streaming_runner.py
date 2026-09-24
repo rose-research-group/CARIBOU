@@ -20,6 +20,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
+from uuid import uuid4
 
 # Consecutive no-action / code-exec failures we tolerate before ending the run.
 MAX_CONSECUTIVE_NO_ACTION = 3
@@ -85,10 +86,16 @@ def run_session_sync(
     checkpoint_callback: Optional[Callable[[List[Dict], Dict[str, Any]], None]] = None,
     resume_state: Optional[Dict[str, Any]] = None,
     start_waiting: bool = False,
+    work_item_store: Optional["WorkItemStore"] = None,
 ) -> None:
     """
     Main agent session loop. Replaces Console output with emit() calls.
     Designed to be run in a thread via asyncio.to_thread or ThreadPoolExecutor.
+
+    `work_item_store`: pass the session's cached singleton instance so the
+    turn loop and REST work-item routes see the same in-memory index cache
+    (see WS-0). Constructed locally only when not supplied, e.g. by direct
+    unit tests of this function.
     """
     from caribou.execution.ActionSpace import AgentActionSpace
     from caribou.execution.agent_management import (
@@ -107,10 +114,15 @@ def run_session_sync(
         WorkItemError,
         WorkItemPolicy,
         WorkItemStore,
-        execute_work_item_command,
-        parse_delegation_item_id,
         parse_work_item_command,
         render_work_item_prompt,
+    )
+    from caribou.execution.work_item_runtime import (
+        apply_command as apply_work_item_command,
+        end_session_block,
+        render_work_item_state,
+        stall_report,
+        transfer_on_delegation,
     )
     from caribou.core.io_helpers import (
         extract_python_code_blocks,
@@ -123,17 +135,34 @@ def run_session_sync(
     output_dir.mkdir(parents=True, exist_ok=True)
     emitted_artifacts: Set[str] = set()
     work_item_policy = getattr(agent_system, "work_item_policy", WorkItemPolicy())
-    work_items = (
-        WorkItemStore(output_dir, session_id, work_item_policy) if not is_auto else None
+    evaluator_agent_name = getattr(agent_system, "evaluator_agent_name", None)
+    # `output_dir` is the sandbox mount: agent code executing in it can edit
+    # or delete files there, and checkpoint restore can roll it back. Work
+    # items live in a sibling directory outside the sandbox so neither can
+    # silently revert work-item state. Constructed unconditionally — see the
+    # matching comment in runner.py for why auto mode also gets a store.
+    work_items = work_item_store or WorkItemStore(
+        output_dir.parent / "work-items",
+        session_id=session_id,
+        policy=work_item_policy,
+        origin_run_id=session_id,
     )
 
     def _agent_prompt(agent: Any) -> str:
-        prompt = agent.get_full_prompt(None)
-        if work_items is not None:
-            prompt += render_work_item_prompt(work_item_policy)
-        return prompt
+        return agent.get_full_prompt(None) + render_work_item_prompt(work_item_policy)
 
     def _emit(event_type: str, data: Dict, turn: int = 0) -> None:
+        if event_type == "system_message" and "id" not in data:
+            # Every one of this file's ~12 system_message call sites omits
+            # `id`, so the frontend's SessionResponse `id: undefined` was
+            # identical across all of them. `upsertMessage` on the frontend
+            # dedupes system messages by id — with every id equal to
+            # `undefined`, only the FIRST system message a session ever
+            # emits was ever shown; every later one (work-item feedback,
+            # delegation-transfer confirmations, RAG failures, ...) was
+            # silently dropped as an apparent duplicate. Assign a real id
+            # here, once, instead of touching every call site.
+            data = {**data, "id": str(uuid4())}
         emit(
             {
                 "type": event_type,
@@ -212,6 +241,9 @@ def run_session_sync(
     current_agent_history_start = int(
         (resume_state or {}).get("current_agent_history_start", len(history))
     )
+    # At most one automatic "continue" per user message, consumed after the agent
+    # opens a work item so it can proceed with the work instead of stopping.
+    auto_continue_budget = 1
 
     def _checkpoint_boundary() -> None:
         if checkpoint_callback is None:
@@ -252,6 +284,7 @@ def run_session_sync(
 
     def _wait_for_user(turn: int, reason: Optional[str] = None) -> bool:
         """Wait for one interactive message; return false if the session stops."""
+        nonlocal auto_continue_budget
         _emit("status_change", {"status": "idle", "reason": reason}, turn=turn)
         if logger:
             logger.info("Waiting for user input | turn: %s", turn)
@@ -278,6 +311,7 @@ def run_session_sync(
                 history.append({"role": "user", "content": user_msg})
                 if memory_manager is not None:
                     memory_manager.add_message("user", user_msg)
+                auto_continue_budget = 1
                 next_turn = turns_completed + 1
                 _emit(
                     "message_complete",
@@ -357,6 +391,46 @@ def run_session_sync(
                     if isinstance(m.get("content"), str):
                         m["content"] = m["content"].rstrip()
                     cleaned_context.append(m)
+
+            # Ambient work-item state (WS-2): recomputed from the store each
+            # turn and appended after context assembly, same as runner.py.
+            state_block = render_work_item_state(work_items, current_agent.name)
+            if state_block:
+                cleaned_context.append({"role": "system", "content": state_block})
+
+            # Item-level stall detection (WS-4).
+            stalled = stall_report(
+                work_items,
+                current_agent.name,
+                turn=turn,
+                stall_turns=work_item_policy.stall_turns,
+            )
+            if stalled is not None:
+                if stalled["idle_turns"] >= work_item_policy.stall_halt_turns:
+                    halt_note = (
+                        f"Halted: work item {stalled['item_id']} "
+                        f"('{stalled['title']}') stalled for "
+                        f"{stalled['idle_turns']} turns."
+                    )
+                    work_items.note(stalled["item_id"], "runner", turn, halt_note)
+                    _checkpoint_boundary()
+                    _emit(
+                        "status_change",
+                        {"status": "stopped", "reason": "work_item_stalled"},
+                        turn=turn,
+                    )
+                    return
+                cleaned_context.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            f"[SYSTEM] Work item {stalled['item_id']} "
+                            f"('{stalled['title']}') has had no status change "
+                            f"for {stalled['idle_turns']} turns. Close it, "
+                            "transfer it, or explain why it is still open."
+                        ),
+                    }
+                )
 
             if logger and (memory_manager is None and report_memory is None):
                 logger.info(
@@ -446,19 +520,21 @@ def run_session_sync(
 
             _action_fired = False
             _delegated = False
+            _opened_work_item = False
 
-            # --- Enforced work-item commands (interactive only) ---
-            work_command = (
-                parse_work_item_command(msg) if work_items is not None else None
+            # --- Enforced work-item commands ---
+            work_command = parse_work_item_command(msg)
+            work_result = apply_work_item_command(
+                work_items, msg, owner=current_agent.name, turn=turn
             )
-            if work_command is not None:
+            if work_result is not None:
                 _action_fired = True
-                work_result = execute_work_item_command(
-                    work_items,
-                    work_command,
-                    owner=current_agent.name,
-                    turn=turn,
-                )
+                if (
+                    work_command is not None
+                    and work_command.name == "open_work_item"
+                    and work_result.success
+                ):
+                    _opened_work_item = True
                 feedback = work_result.feedback
                 history.append({"role": "system", "content": feedback})
                 if memory_manager is not None:
@@ -478,8 +554,8 @@ def run_session_sync(
             # --- End session detection ---
             has_delegation = detect_delegation(msg) is not None
             end_session_refused = False
-            if work_items is not None and detect_end_session(msg):
-                blocking = work_items.blocking_for_owner(current_agent.name)
+            if detect_end_session(msg):
+                blocking = end_session_block(work_items, current_agent.name)
                 if blocking:
                     end_session_refused = True
                     feedback = (
@@ -569,18 +645,14 @@ def run_session_sync(
             if cmd and cmd in current_agent.commands:
                 target_name = current_agent.commands[cmd].target_agent
                 new_agent = agent_system.get_agent(target_name)
-                delegation_item_id = (
-                    parse_delegation_item_id(msg, cmd)
-                    if work_items is not None
-                    else None
-                )
-                if new_agent is not None and delegation_item_id is not None:
+                if new_agent is not None:
                     try:
-                        transferred_item = work_items.transfer(
-                            delegation_item_id,
+                        transferred_items = transfer_on_delegation(
+                            work_items,
                             current_agent.name,
                             target_name,
-                            turn,
+                            turn=turn,
+                            evaluator_agent_name=evaluator_agent_name,
                         )
                     except WorkItemError as exc:
                         feedback = (
@@ -596,11 +668,12 @@ def run_session_sync(
                         )
                         new_agent = None
                     else:
-                        _emit(
-                            "work_item_changed",
-                            {"item": transferred_item},
-                            turn=turn,
-                        )
+                        for transferred_item in transferred_items:
+                            _emit(
+                                "work_item_changed",
+                                {"item": transferred_item},
+                                turn=turn,
+                            )
                 if new_agent:
                     _action_fired = True
                     if logger:
@@ -876,6 +949,32 @@ def run_session_sync(
                     )
                 continue
 
+            # Interactive mode: after opening a work item, let the agent keep going
+            # for one extra turn instead of stopping to wait for the user.
+            # `not is_auto` is explicit here (rather than relying on the
+            # `if is_auto: ... continue` above always firing first in auto
+            # mode) because that ordering is incidental, not a contract —
+            # work_items is no longer `None` in auto mode, so nothing else
+            # here still depends on is_auto to disable this branch.
+            if not is_auto and _opened_work_item and auto_continue_budget > 0:
+                auto_continue_budget -= 1
+                history.append(
+                    {"role": "user", "content": "Please continue with the next step."}
+                )
+                if memory_manager is not None:
+                    memory_manager.add_message(
+                        "user", "Please continue with the next step."
+                    )
+                _emit(
+                    "system_message",
+                    {
+                        "content": "Continuing automatically after opening a work item.",
+                        "category": "Runner guidance",
+                    },
+                    turn=turn,
+                )
+                continue
+
             # --- Interactive: wait for next user message ---
             if not _wait_for_user(turn):
                 return
@@ -924,6 +1023,7 @@ async def run_session_async(
     checkpoint_callback: Optional[Callable[[List[Dict], Dict[str, Any]], None]] = None,
     resume_state: Optional[Dict[str, Any]] = None,
     start_waiting: bool = False,
+    work_item_store: Optional["WorkItemStore"] = None,
 ) -> None:
     """
     Runs run_session_sync in a thread so it doesn't block the event loop.
@@ -959,4 +1059,5 @@ async def run_session_async(
         checkpoint_callback=checkpoint_callback,
         resume_state=resume_state,
         start_waiting=start_waiting,
+        work_item_store=work_item_store,
     )

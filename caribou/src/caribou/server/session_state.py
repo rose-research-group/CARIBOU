@@ -125,6 +125,18 @@ class _Session:
     resume_history: Optional[List[Dict[str, str]]] = None
     resume_runner_state: Optional[Dict[str, Any]] = None
     resume_memory_state: Optional[Dict[str, Any]] = None
+    # Lazily built, then cached here for the life of the session so every
+    # call site (turn loop, REST review route) shares one instance and one
+    # coherent in-memory index cache. See WS-0 of
+    # notes/docs/session-work-items-and-brief-implementation.md.
+    work_item_store: Any = None
+    # The blueprint's brief_policy, resolved against this session's
+    # `config.brief_mode` override (see session_brief.resolve_brief_policy).
+    # Set once in _initialize_session/_recover_session, right after
+    # session.agent_system is set. Not yet consumed by the runner — the
+    # briefing conversation phase itself (WS-5.3-5.5) isn't implemented, so
+    # this currently only records the effective policy for display/future use.
+    brief_policy: Any = None
 
     def to_response(self) -> SessionResponse:
         memory = None
@@ -194,4 +206,9 @@ class _Session:
             recovery_substep_total=self.recovery_substep_total,
             checkpoint_turn=self.checkpoint_turn,
             checkpoint_healthy=self.checkpoint_healthy,
+            brief_mode=(
+                (self.brief_policy.mode if self.brief_policy.enabled else "off")
+                if self.brief_policy is not None
+                else None
+            ),
         )

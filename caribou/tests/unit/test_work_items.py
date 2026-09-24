@@ -12,7 +12,6 @@ from caribou.execution.work_items import (
     WorkItemConflict,
     WorkItemPolicy,
     WorkItemStore,
-    parse_delegation_item_id,
     parse_work_item_command,
 )
 
@@ -33,12 +32,10 @@ def test_agent_command_grammar_is_exact_and_quoted() -> None:
     assert parse_work_item_command("open_work_item title-only") is None
     assert parse_work_item_command("list_work_items\nextra prose") is None
     assert parse_work_item_command("```\nlist_work_items\n```") is None
-    assert parse_delegation_item_id("delegate_to_coder 7", "delegate_to_coder") == 7
-    assert parse_delegation_item_id("delegate_to_coder", "delegate_to_coder") is None
 
 
 def test_optional_qc_store_commits_each_transition_and_restarts(tmp_path) -> None:
-    store = WorkItemStore(tmp_path, "run-1", WorkItemPolicy(qc_mode="optional"))
+    store = WorkItemStore(tmp_path / "work-items", session_id="run-1", policy=WorkItemPolicy(qc_mode="optional"))
     opened = store.open("Implement", "Build the feature", "planner", 1)
     assert opened["id"] == 0
     assert opened["status"] == "In progress"
@@ -59,13 +56,30 @@ def test_optional_qc_store_commits_each_transition_and_restarts(tmp_path) -> Non
     ).stdout.strip()
     assert commits == "3"
 
-    restarted = WorkItemStore(tmp_path, "run-1", WorkItemPolicy(qc_mode="optional"))
+    restarted = WorkItemStore(tmp_path / "work-items", session_id="run-1", policy=WorkItemPolicy(qc_mode="optional"))
     assert restarted.read(0)["completion_summary"] == "Feature and tests added"
     assert restarted.open("Second", "Another item", "coder", 4)["id"] == 1
 
 
+def test_transfer_active_hands_off_all_in_progress_items(tmp_path) -> None:
+    store = WorkItemStore(tmp_path / "work-items", session_id="run-transfer-active", policy=WorkItemPolicy())
+    store.open("First", "Do the first thing", "planner", 1)
+    store.open("Second", "Do the second thing", "planner", 2)
+    store.open("Third", "Someone else's work", "other", 2)
+
+    transferred = store.transfer_active("planner", "coder", 3)
+    assert [item["id"] for item in transferred] == [0, 1]
+    assert [item["owner"] for item in transferred] == ["coder", "coder"]
+
+    # No in-progress items left for the delegator; the other agent's item is
+    # untouched and a second transfer is a no-op.
+    assert store.blocking_for_owner("planner") == []
+    assert store.blocking_for_owner("other")[0]["id"] == 2
+    assert store.transfer_active("planner", "coder", 4) == []
+
+
 def test_required_qc_rejection_returns_item_to_owner(tmp_path) -> None:
-    store = WorkItemStore(tmp_path, "run-2", WorkItemPolicy(qc_mode="required"))
+    store = WorkItemStore(tmp_path / "work-items", session_id="run-2", policy=WorkItemPolicy(qc_mode="required"))
     store.open("Validate", "Needs review", "analyst", 1)
     submitted = store.close(0, "Candidate result", "analyst", 2)
     assert submitted["status"] == "In review"
@@ -95,7 +109,7 @@ def test_required_qc_rejection_returns_item_to_owner(tmp_path) -> None:
 
 
 def test_invalid_owner_and_state_are_refused(tmp_path) -> None:
-    store = WorkItemStore(tmp_path, "run-3", WorkItemPolicy())
+    store = WorkItemStore(tmp_path / "work-items", session_id="run-3", policy=WorkItemPolicy())
     store.open("Owned", "Only the owner can close", "a", 1)
     with pytest.raises(WorkItemConflict, match="owned by a"):
         store.close(0, "Not mine", "b", 2)
@@ -104,9 +118,80 @@ def test_invalid_owner_and_state_are_refused(tmp_path) -> None:
         store.transfer(0, "a", "b", 3)
 
 
+def test_self_review_is_refused(tmp_path) -> None:
+    store = WorkItemStore(
+        tmp_path / "work-items", session_id="run-self", policy=WorkItemPolicy(qc_mode="required")
+    )
+    store.open("Check result", "Validate the output", "worker", 1)
+    store.close(0, "Done work", "worker", 2)
+    with pytest.raises(WorkItemConflict, match="own owner"):
+        store.record_review(
+            0, evaluator="worker", turn=2, verdict="approve", assessment="Looks fine"
+        )
+
+
+def test_index_cache_is_invalidated_by_mutations(tmp_path) -> None:
+    store = WorkItemStore(tmp_path / "work-items", session_id="run-cache", policy=WorkItemPolicy())
+    assert store.list() == []
+    store.open("First", "Body", "owner", 1)
+    # The cache populated by the empty list() call above must not mask the
+    # item just committed.
+    assert [item["id"] for item in store.list()] == [0]
+    store.close(0, "Done", "owner", 2)
+    assert store.list()[0]["status"] == "Done"
+
+
+def test_copy_to_preserves_items_and_diverges_independently(tmp_path) -> None:
+    parent = WorkItemStore(
+        tmp_path / "parent" / "work-items", session_id="parent-session", policy=WorkItemPolicy()
+    )
+    parent.open("Shared item", "Present in both", "coder", 1)
+
+    child = parent.copy_to(
+        tmp_path / "child" / "work-items",
+        child_session_id="child-session",
+        forked_from_session_id="parent-session",
+    )
+    assert [item["id"] for item in child.list()] == [0]
+    assert child.read(0)["session_id"] == "child-session"
+
+    child.open("Child-only item", "Not in the parent", "coder", 2)
+    assert [item["id"] for item in child.list()] == [0, 1]
+    assert [item["id"] for item in parent.list()] == [0]
+
+
+def test_index_reconciliation_preserves_stall_knobs(tmp_path) -> None:
+    store = WorkItemStore(
+        tmp_path / "work-items",
+        session_id="run-stall-knobs",
+        policy=WorkItemPolicy(qc_mode="optional", stall_turns=2, stall_halt_turns=6),
+    )
+    store.open("Item", "Body", "coder", 1)  # commits the index, populating it
+
+    # A fresh store instance reading the same committed index must not
+    # silently reset stall_turns/stall_halt_turns back to WorkItemPolicy()'s
+    # defaults (4/8) — only qc_mode's own reconciliation was checked before.
+    restarted = WorkItemStore(
+        tmp_path / "work-items", session_id="run-stall-knobs", policy=WorkItemPolicy()
+    )
+    restarted.list()  # forces _index() to reconcile self.policy
+    assert restarted.policy.stall_turns == 2
+    assert restarted.policy.stall_halt_turns == 6
+
+
+def test_last_transition_turn_and_note(tmp_path) -> None:
+    store = WorkItemStore(tmp_path / "work-items", session_id="run-stall", policy=WorkItemPolicy())
+    opened = store.open("Stuck item", "Body", "coder", 1)
+    assert WorkItemStore.last_transition_turn(opened) == 1
+    noted = store.note(0, "runner", 9, "Halted: stalled for 8 turns.")
+    assert noted["notes"][0]["text"] == "Halted: stalled for 8 turns."
+    # note() does not itself count as a status transition.
+    assert WorkItemStore.last_transition_turn(noted) == 1
+
+
 def test_separate_store_instances_serialize_id_allocation(tmp_path) -> None:
-    first = WorkItemStore(tmp_path, "run-shared", WorkItemPolicy())
-    second = WorkItemStore(tmp_path, "run-shared", WorkItemPolicy())
+    first = WorkItemStore(tmp_path / "work-items", session_id="run-shared", policy=WorkItemPolicy())
+    second = WorkItemStore(tmp_path / "work-items", session_id="run-shared", policy=WorkItemPolicy())
     opened = []
 
     def create(store, title):
@@ -137,7 +222,7 @@ def test_work_item_review_json_contract() -> None:
 
 
 def test_evaluator_review_is_bounded_and_updates_required_lifecycle(tmp_path) -> None:
-    store = WorkItemStore(tmp_path, "run-review", WorkItemPolicy(qc_mode="required"))
+    store = WorkItemStore(tmp_path / "work-items", session_id="run-review", policy=WorkItemPolicy(qc_mode="required"))
     store.open("Check result", "Validate the claimed output", "worker", 1)
     store.close(0, "Produced the expected table", "worker", 2)
     calls = []

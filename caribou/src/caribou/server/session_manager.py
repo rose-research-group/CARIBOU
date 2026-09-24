@@ -44,6 +44,8 @@ from caribou.execution.evaluation import (
     run_evaluation,
     evaluation_response_metadata,
 )
+from caribou.execution.session_brief import resolve_brief_policy
+from caribou.execution.work_item_runtime import copy_work_items
 from caribou.execution.work_items import WorkItemPolicy, WorkItemStore
 from caribou.execution.token_utils import estimate_tokens
 from caribou.server.models import (
@@ -606,6 +608,9 @@ class SessionManager:
             )
             if self._is_deleted(child.id):
                 return
+            await asyncio.to_thread(self._fork_work_items, source, child)
+            if self._is_deleted(child.id):
+                return
             source_checkpoint_dir = (
                 source.output_dir.parent / ".checkpoints" / checkpoint["checkpoint_id"]
             )
@@ -776,6 +781,9 @@ class SessionManager:
                 next(iter(agent_system.agents))
             )
             session.agent_system = agent_system
+            session.brief_policy = resolve_brief_policy(
+                agent_system.brief_policy, session.config.brief_mode
+            )
             session.driver_agent = driver
             session.current_agent = driver.name
             llm_client, model_name = build_llm_client(session.config)
@@ -1199,13 +1207,40 @@ class SessionManager:
 
         return result
 
-    def _work_item_store(self, session: _Session) -> WorkItemStore:
-        policy = (
-            session.agent_system.work_item_policy
-            if session.agent_system is not None
-            else WorkItemPolicy()
+    def _fork_work_items(self, source: _Session, child: _Session) -> None:
+        # Work items live in a sibling directory to `output_dir`, outside the
+        # sandbox `copy_output_tree` walks (see WS-1) — copy it separately
+        # and record lineage in the child's index. Synchronous: the caller
+        # runs this via `asyncio.to_thread` since it shells out to `git`.
+        copied_store = copy_work_items(
+            source.output_dir.parent / "work-items",
+            child.output_dir.parent / "work-items",
+            child_session_id=child.id,
+            forked_from_session_id=source.id,
         )
-        return WorkItemStore(session.output_dir, session.id, policy)
+        if copied_store is not None:
+            child.work_item_store = copied_store
+
+    def _work_item_store(self, session: _Session) -> WorkItemStore:
+        # Cached on the session so this method, the turn loop
+        # (streaming_runner receives the same instance via
+        # run_session_async's work_item_store param), and every REST route
+        # below all share one in-memory index cache (WS-0). Constructing a
+        # fresh WorkItemStore per call — the previous behavior — silently
+        # desynchronizes that cache the moment two call sites disagree.
+        if session.work_item_store is None:
+            policy = (
+                session.agent_system.work_item_policy
+                if session.agent_system is not None
+                else WorkItemPolicy()
+            )
+            session.work_item_store = WorkItemStore(
+                session.output_dir.parent / "work-items",
+                session_id=session.id,
+                policy=policy,
+                origin_run_id=session.id,
+            )
+        return session.work_item_store
 
     def list_work_items(self, session_id: str) -> List[Dict[str, Any]]:
         session = self._sessions.get(session_id)
@@ -1665,6 +1700,7 @@ class SessionManager:
                     checkpoint_callback=_checkpoint_callback,
                     resume_state=resume_state,
                     start_waiting=start_waiting,
+                    work_item_store=self._work_item_store(session),
                 )
             except asyncio.CancelledError:
                 # Propagate after cleanup so shutdown_all/delete_session can await it.
@@ -1879,6 +1915,9 @@ class SessionManager:
             if self._is_deleted(session.id):
                 return
             session.agent_system = agent_sys
+            session.brief_policy = resolve_brief_policy(
+                agent_sys.brief_policy, session.config.brief_mode
+            )
 
             # Pick driver agent: first agent in the system
             driver_name = next(iter(agent_sys.agents))
@@ -1932,13 +1971,10 @@ class SessionManager:
             session.analysis_context = analysis_context
 
             driver = session.driver_agent
+            # Work items are active in both interactive and auto sessions
+            # (WS-1) — the grammar appendix must not be suppressed for auto.
             system_prompt = (
-                driver.get_full_prompt(
-                    None,
-                    agent_sys.work_item_policy
-                    if session.config.mode == SessionMode.interactive
-                    else None,
-                )
+                driver.get_full_prompt(None, agent_sys.work_item_policy)
                 + "\n\n"
                 + analysis_context
             )

@@ -224,7 +224,12 @@ def test_resume_restores_turn_agent_history_actions_and_matches_clean_control(
     assert all(event["turn"] >= 3 for event in resumed_events)
 
     assert resumed_llm.calls == 1
-    assert resumed_llm.request_kwargs[0]["messages"] == history_at_checkpoint
+    # WS-2 appends the ambient work-item state block to every outgoing
+    # request after context assembly; it's derived, not part of the
+    # checkpointed history itself (see render_work_item_state).
+    assert resumed_llm.request_kwargs[0]["messages"] == history_at_checkpoint + [
+        {"role": "system", "content": "WORK ITEMS: none open."}
+    ]
     assert source_llm.calls + resumed_llm.calls == control_llm.calls == 3
     assert source_sandbox.calls + resumed_sandbox.calls == control_sandbox.calls
     assert resumed_sandbox.calls == []

@@ -146,6 +146,48 @@ def test_fork_records_lineage_and_preserves_model_when_not_overridden(
     asyncio.run(run())
 
 
+def test_fork_copies_work_items_and_records_lineage(tmp_path: Path) -> None:
+    from caribou.execution.work_items import WorkItemPolicy, WorkItemStore
+
+    source = _stopped_session(tmp_path)
+    source_store = WorkItemStore(
+        source.output_dir.parent / "work-items",
+        session_id=source.id,
+        policy=WorkItemPolicy(),
+    )
+    source_store.open("Shared item", "Present before the fork", "coder", 1)
+
+    child = _stopped_session(tmp_path)
+    child.id = "child-id"
+    child.output_dir = tmp_path / child.id / "outputs"
+    child.output_dir.mkdir(parents=True, exist_ok=True)
+
+    manager = _manager(source)
+    manager._fork_work_items(source, child)
+
+    assert child.work_item_store is not None
+    assert [item["id"] for item in child.work_item_store.list()] == [0]
+    assert child.work_item_store.read(0)["session_id"] == child.id
+    # The child's copy is independent: mutating it must not touch the source.
+    child.work_item_store.open("Child-only item", "Body", "coder", 2)
+    assert [item["id"] for item in source_store.list()] == [0]
+
+
+def test_fork_with_no_source_work_items_leaves_child_store_unset(
+    tmp_path: Path,
+) -> None:
+    source = _stopped_session(tmp_path)
+    child = _stopped_session(tmp_path)
+    child.id = "child-id"
+    child.output_dir = tmp_path / child.id / "outputs"
+    child.output_dir.mkdir(parents=True, exist_ok=True)
+
+    manager = _manager(source)
+    manager._fork_work_items(source, child)
+
+    assert child.work_item_store is None
+
+
 def test_fork_can_explicitly_switch_from_host_to_bundled_environment(
     tmp_path: Path, monkeypatch
 ) -> None:

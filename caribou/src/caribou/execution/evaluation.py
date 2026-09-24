@@ -155,24 +155,42 @@ def estimate_payload_tokens(system_prompt: str, payload: Dict[str, object]) -> i
 
 
 def build_work_item_review_payload(
-    *, run_id: str, item: Dict[str, Any], diff: str
+    *,
+    run_id: str,
+    item: Dict[str, Any],
+    diff: str,
+    done_when: Optional[List[str]] = None,
 ) -> Dict[str, object]:
-    """Build a bounded artifact review request without transcript history."""
-    return {
+    """Build a bounded artifact review request without transcript history.
+
+    `done_when` is the session brief's declared completion criteria (WS-3 of
+    the implementation brief), when a brief exists — `None` when it doesn't,
+    or when the caller hasn't wired brief lookup through yet.
+    """
+    instructions = (
+        "Review whether the completion summary satisfies the title and body. "
+        "Return only one JSON object with keys verdict and assessment. "
+        "verdict must be either approve or reject."
+    )
+    if done_when:
+        instructions += (
+            " Score against the session's declared done-when criteria, not "
+            "just the item's own title and body."
+        )
+    payload: Dict[str, object] = {
         "kind": "work_item_review",
         "run_id": run_id,
         "work_item": item,
         "git_diff": diff,
-        "instructions": (
-            "Review whether the completion summary satisfies the title and body. "
-            "Return only one JSON object with keys verdict and assessment. "
-            "verdict must be either approve or reject."
-        ),
+        "instructions": instructions,
         "response_schema": {
             "verdict": "approve | reject",
             "assessment": "non-empty string",
         },
     }
+    if done_when:
+        payload["done_when"] = done_when
+    return payload
 
 
 def parse_work_item_review(response_text: str) -> Tuple[str, str]:
@@ -236,6 +254,7 @@ def evaluate_work_item(
     evaluator_agent: Agent,
     llm_client: object,
     model_name: str,
+    done_when: Optional[List[str]] = None,
 ) -> Dict[str, object]:
     """Run and durably record one bounded work-item review."""
     item = store.read(item_id)
@@ -245,7 +264,7 @@ def evaluate_work_item(
             f"work item {item_id} must be {expected_status} before review"
         )
     payload = build_work_item_review_payload(
-        run_id=run_id, item=item, diff=store.review_diff(item_id)
+        run_id=run_id, item=item, diff=store.review_diff(item_id), done_when=done_when
     )
     provider_receipt: Dict[str, object] = {}
     raw_response = ""

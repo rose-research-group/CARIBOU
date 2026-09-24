@@ -591,6 +591,22 @@
             placeholder="Describe the analysis task…"
           ></textarea>
 
+          <label>Session brief</label>
+          <select [(ngModel)]="briefModeChoice" (ngModelChange)="onBriefModeChange($event)">
+            <option value="blueprint">Use blueprint default</option>
+            <option value="off">Off</option>
+            <option value="context">On — context only</option>
+            <option value="seed_item">On — seeds a top-level work item</option>
+          </select>
+          <span class="field-note">
+            @if (briefModeChoice === 'blueprint') {
+              This session follows whatever the selected blueprint declares (most
+              blueprints don't enable briefing).
+            } @else {
+              Overrides the blueprint's own brief setting for this session only.
+            }
+          </span>
+
           <label>Memory strategy</label>
           <select [(ngModel)]="form.memory_strategy">
             <option value="full">Full (keep all messages)</option>
@@ -647,6 +663,18 @@
               {{ form.evaluator_model?.llm_backend }} · {{ form.evaluator_model?.model_name }}
             } @else {
               Same as worker
+            }
+          </dd>
+          <dt>Session brief</dt>
+          <dd>
+            @if (briefModeChoice === 'blueprint') {
+              Blueprint default
+            } @else if (briefModeChoice === 'off') {
+              Off
+            } @else if (briefModeChoice === 'context') {
+              On — context only
+            } @else {
+              On — seeds a work item
             }
           </dd>
           <dt>Sandbox</dt>
