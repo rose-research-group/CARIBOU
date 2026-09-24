@@ -63,6 +63,11 @@ def _session(
             {"thinking": False},
         ),
         (
+            "deepseek-v4.1",
+            "deepseek-flash",
+            {"thinking": False},
+        ),
+        (
             "deepseek-thinking",
             "deepseek-v4-pro",
             {"thinking": True, "reasoning_effort": "high"},

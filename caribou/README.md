@@ -123,7 +123,8 @@ This will trigger a series of prompts:
 5.  **Choose a Python environment:** Keep the bundled default or select a
     discovered host Conda/Mamba/pyenv/virtualenv prefix.
 6.  **Choose an LLM backend:** Select `chatgpt`, `claude`, `deepseek`,
-    `deepseek-thinking`, or `ollama`. `deepseek` is the quick DeepSeek V4 Flash
+    `deepseek-v4.1`, `deepseek-thinking`, or `ollama`. `deepseek` is the quick
+    DeepSeek V4 Flash profile, `deepseek-v4.1` is the quick DeepSeek V4.1 Flash
     profile; `deepseek-thinking` is DeepSeek V4 Pro with thinking enabled.
 
 After configuration, the session will begin, and you can start giving instructions to your agent team\!

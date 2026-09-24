@@ -9,8 +9,10 @@ from typing import Any, Mapping
 
 DEEPSEEK_API_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_FAST_BACKEND = "deepseek"
+DEEPSEEK_FLASH_V41_BACKEND = "deepseek-v4.1"
 DEEPSEEK_THINKING_BACKEND = "deepseek-thinking"
 DEEPSEEK_FAST_MODEL = "deepseek-v4-flash"
+DEEPSEEK_FLASH_V41_MODEL = "deepseek-flash"
 DEEPSEEK_THINKING_MODEL = "deepseek-v4-pro"
 
 _THINKING_INCOMPATIBLE_OPTIONS = (
@@ -46,6 +48,12 @@ DEEPSEEK_FAST_PROFILE = DeepSeekProfile(
     display_name="DeepSeek V4 Flash (Quick)",
     thinking=False,
 )
+DEEPSEEK_FLASH_V41_PROFILE = DeepSeekProfile(
+    backend_id=DEEPSEEK_FLASH_V41_BACKEND,
+    model=DEEPSEEK_FLASH_V41_MODEL,
+    display_name="DeepSeek V4.1 Flash (Quick)",
+    thinking=False,
+)
 DEEPSEEK_THINKING_PROFILE = DeepSeekProfile(
     backend_id=DEEPSEEK_THINKING_BACKEND,
     model=DEEPSEEK_THINKING_MODEL,
@@ -55,6 +63,7 @@ DEEPSEEK_THINKING_PROFILE = DeepSeekProfile(
 )
 DEEPSEEK_PROFILES = (
     DEEPSEEK_FAST_PROFILE,
+    DEEPSEEK_FLASH_V41_PROFILE,
     DEEPSEEK_THINKING_PROFILE,
 )
 DEEPSEEK_BACKEND_IDS = tuple(profile.backend_id for profile in DEEPSEEK_PROFILES)

@@ -8,6 +8,8 @@ from caribou.core.deepseek import (
     DEEPSEEK_API_BASE_URL,
     DEEPSEEK_FAST_MODEL,
     DEEPSEEK_FAST_PROFILE,
+    DEEPSEEK_FLASH_V41_MODEL,
+    DEEPSEEK_FLASH_V41_PROFILE,
     DEEPSEEK_THINKING_MODEL,
     DEEPSEEK_THINKING_PROFILE,
     DeepSeekClient,
@@ -32,22 +34,31 @@ def _raw_client(completions: RecordingCompletions) -> object:
     return SimpleNamespace(chat=SimpleNamespace(completions=completions))
 
 
-def test_fast_profile_locks_v4_flash_and_disables_thinking() -> None:
+@pytest.mark.parametrize(
+    ("profile", "expected_model"),
+    [
+        (DEEPSEEK_FAST_PROFILE, DEEPSEEK_FAST_MODEL),
+        (DEEPSEEK_FLASH_V41_PROFILE, DEEPSEEK_FLASH_V41_MODEL),
+    ],
+)
+def test_quick_profiles_lock_flash_and_disable_thinking(
+    profile: object, expected_model: str
+) -> None:
     completions = RecordingCompletions()
     client = DeepSeekClient(
         _raw_client(completions),
-        thinking=DEEPSEEK_FAST_PROFILE.thinking,
+        thinking=profile.thinking,
     )
 
     client.chat.completions.create(
-        model=DEEPSEEK_FAST_MODEL,
+        model=expected_model,
         messages=[{"role": "user", "content": "quick"}],
         temperature=0.0,
         reasoning_effort="max",
     )
 
     request = completions.calls[0]
-    assert request["model"] == "deepseek-v4-flash"
+    assert request["model"] == expected_model
     assert request["temperature"] == 0.0
     assert "reasoning_effort" not in request
     assert request["extra_body"] == {"thinking": {"type": "disabled"}}
@@ -83,10 +94,18 @@ def test_thinking_profile_locks_v4_pro_and_high_effort() -> None:
 def test_profiles_resolve_from_stable_backend_and_exact_model_ids() -> None:
     assert deepseek_profile_for_backend("deepseek") is DEEPSEEK_FAST_PROFILE
     assert (
+        deepseek_profile_for_backend("deepseek-v4.1")
+        is DEEPSEEK_FLASH_V41_PROFILE
+    )
+    assert (
         deepseek_profile_for_backend("deepseek-thinking")
         is DEEPSEEK_THINKING_PROFILE
     )
     assert deepseek_profile_for_model(DEEPSEEK_FAST_MODEL) is DEEPSEEK_FAST_PROFILE
+    assert (
+        deepseek_profile_for_model(DEEPSEEK_FLASH_V41_MODEL)
+        is DEEPSEEK_FLASH_V41_PROFILE
+    )
     assert (
         deepseek_profile_for_model(DEEPSEEK_THINKING_MODEL)
         is DEEPSEEK_THINKING_PROFILE
@@ -100,6 +119,7 @@ def test_profiles_resolve_from_stable_backend_and_exact_model_ids() -> None:
     ("backend", "expected_model", "expected_thinking"),
     [
         ("deepseek", DEEPSEEK_FAST_MODEL, False),
+        ("deepseek-v4.1", DEEPSEEK_FLASH_V41_MODEL, False),
         ("deepseek-thinking", DEEPSEEK_THINKING_MODEL, True),
     ],
 )
@@ -132,19 +152,22 @@ def test_web_session_builder_uses_shared_profiles(
     ]
 
 
-def test_backend_discovery_exposes_both_exact_deepseek_profiles() -> None:
+def test_backend_discovery_exposes_exact_deepseek_profiles() -> None:
     deepseek_backends = [backend for backend in _BACKENDS if backend.provider == "deepseek"]
 
     assert [backend.id for backend in deepseek_backends] == [
         "deepseek",
+        "deepseek-v4.1",
         "deepseek-thinking",
     ]
     assert [backend.model_name for backend in deepseek_backends] == [
         DEEPSEEK_FAST_MODEL,
+        DEEPSEEK_FLASH_V41_MODEL,
         DEEPSEEK_THINKING_MODEL,
     ]
-    assert [backend.thinking for backend in deepseek_backends] == [False, True]
+    assert [backend.thinking for backend in deepseek_backends] == [False, False, True]
     assert _KEY_MAP["deepseek"] == "DEEPSEEK_API_KEY"
+    assert _KEY_MAP["deepseek-v4.1"] == "DEEPSEEK_API_KEY"
     assert _KEY_MAP["deepseek-thinking"] == "DEEPSEEK_API_KEY"
 
 
@@ -152,6 +175,11 @@ def test_backend_discovery_exposes_both_exact_deepseek_profiles() -> None:
     ("backend", "expected_model", "expected_parameters"),
     [
         ("deepseek", DEEPSEEK_FAST_MODEL, {"thinking": False}),
+        (
+            "deepseek-v4.1",
+            DEEPSEEK_FLASH_V41_MODEL,
+            {"thinking": False},
+        ),
         (
             "deepseek-thinking",
             DEEPSEEK_THINKING_MODEL,

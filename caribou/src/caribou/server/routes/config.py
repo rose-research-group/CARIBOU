@@ -85,6 +85,7 @@ _KEY_MAP = {
     "claude": "ANTHROPIC_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    "deepseek-v4.1": "DEEPSEEK_API_KEY",
     "deepseek-thinking": "DEEPSEEK_API_KEY",
     "ollama": None,
 }
