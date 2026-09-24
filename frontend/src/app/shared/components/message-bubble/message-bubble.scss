@@ -82,6 +82,41 @@
   50%       { opacity: 0; }
 }
 
+/* ── Tool call chip ── */
+.tool-call {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.tool-call-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--cividis-blue);
+  background: var(--surface);
+  border: 1px solid var(--cividis-blue);
+}
+
+.tool-call-command {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 0.78rem;
+  color: var(--cividis-navy);
+  background: var(--surface-2);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  padding: 0.15rem 0.5rem;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
 /* ── Markdown body ── */
 .md-body {
   font-size: 0.875rem;
