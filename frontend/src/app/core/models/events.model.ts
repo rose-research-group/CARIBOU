@@ -1,4 +1,4 @@
-import { Artifact, Message, WorkItemDetail } from './session.model';
+import { Artifact, Message, WorkItemDetail, SessionBriefFields } from './session.model';
 
 export interface AgentEventEnvelope<T = unknown> {
   type: AgentEventType;
@@ -21,6 +21,9 @@ export type AgentEventType =
   | 'recovery_completed'
   | 'system_message'
   | 'work_item_changed'
+  | 'brief_draft'
+  | 'brief_accepted'
+  | 'phase_change'
   | 'error'
   | 'pong';
 
@@ -102,6 +105,18 @@ export interface WorkItemChangedData {
   item: WorkItemDetail;
 }
 
+export interface BriefDraftData {
+  brief: SessionBriefFields;
+}
+
+export interface BriefAcceptedData {
+  brief: SessionBriefFields;
+}
+
+export interface PhaseChangeData {
+  phase: 'briefing' | 'execution';
+}
+
 export type AgentEvent =
   | AgentEventEnvelope<TokenEventData>
   | AgentEventEnvelope<MessageCompleteData>
@@ -114,5 +129,8 @@ export type AgentEvent =
   | AgentEventEnvelope<RecoveryCompletedData>
   | AgentEventEnvelope<SystemMessageData>
   | AgentEventEnvelope<WorkItemChangedData>
+  | AgentEventEnvelope<BriefDraftData>
+  | AgentEventEnvelope<BriefAcceptedData>
+  | AgentEventEnvelope<PhaseChangeData>
   | AgentEventEnvelope<ErrorData>
   | AgentEventEnvelope<{}>;

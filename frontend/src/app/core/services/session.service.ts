@@ -5,7 +5,7 @@ import {
   Artifact, CodeEvent, EvaluationResult, Message, MemoryState, Session, SessionCreateRequest,
   SessionForkRequest, SessionResumeRequest,
   EvaluatorModelState, EvaluatorModelUpdateRequest,
-  WorkItemDetail, WorkItemReviewResult, WorkItemSummary,
+  WorkItemDetail, WorkItemReviewResult, WorkItemSummary, SessionBriefFields,
 } from '../models/session.model';
 
 @Injectable({ providedIn: 'root' })
@@ -101,6 +101,18 @@ export class SessionService {
       `api/sessions/${id}/work-items/${itemId}/review`,
       {},
     );
+  }
+
+  submitBriefDecision(
+    id: string,
+    decision: 'accept' | 'reject' | 'edit',
+    options?: { reason?: string; brief?: Partial<SessionBriefFields> },
+  ): Observable<void> {
+    return this.http.post<void>(`api/sessions/${id}/brief/decision`, {
+      decision,
+      reason: options?.reason ?? null,
+      brief: options?.brief ?? null,
+    });
   }
 
   artifactDownloadUrl(sessionId: string, artifactId: string): string {

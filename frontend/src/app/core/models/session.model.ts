@@ -69,6 +69,23 @@ export interface Session {
   // The effective brief mode — session override if one was set, else the
   // blueprint's own default. Null until the agent system has loaded.
   brief_mode: 'off' | 'context' | 'seed_item' | null;
+  phase: 'briefing' | 'execution';
+  brief: SessionBriefFields | null;
+}
+
+export interface SessionBriefFields {
+  schema_version: string;
+  deliverable: string;
+  in_scope: string[];
+  out_of_scope: string[];
+  done_when: string[];
+  precedent: string[];
+  interface_delta: string;
+  risks: string[];
+  review_class: 'routine' | 'shared' | 'scientific' | 'docs';
+  source: string | null;
+  created_at: string;
+  created_by: string;
 }
 
 export type RecoveryMode = 'smart' | 'literal_replay';

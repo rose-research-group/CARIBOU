@@ -316,6 +316,12 @@ class SessionResponse(BaseModel):
     # else the blueprint's own brief_policy) — "off" if briefing is
     # disabled. None until the agent system has loaded (still initializing).
     brief_mode: Optional[Literal["off", "context", "seed_item"]] = None
+    # "briefing" while the interview conversation is active, "execution"
+    # once a frozen brief is pinned (or briefing never applied/ran).
+    phase: Literal["briefing", "execution"] = "execution"
+    # The frozen brief, once accepted — None until then. Draft proposals
+    # arrive only via the brief_draft WS event, not this field.
+    brief: Optional[Dict[str, Any]] = None
 
 
 class SessionResumeRequest(BaseModel):

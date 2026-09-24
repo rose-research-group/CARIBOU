@@ -16,12 +16,12 @@ import { SessionCacheService } from '../../core/services/session-cache.service';
 import {
   Message, Artifact, MemoryState, EvaluationResult, EvaluatorModelConfig,
   RecoveryMode, SessionForkRequest, SessionResumeRequest,
-  WorkItemDetail, WorkItemSummary,
+  WorkItemDetail, WorkItemSummary, SessionBriefFields,
 } from '../../core/models/session.model';
 import {
   MessageCompleteData, AgentSwitchData, CodeSubmittedData,
   CodeResultData, ErrorData, StatusChangeData, RecoveryCompletedData,
-  SystemMessageData, WorkItemChangedData,
+  SystemMessageData, WorkItemChangedData, BriefDraftData,
 } from '../../core/models/events.model';
 import { MessageBubbleComponent } from '../../shared/components/message-bubble/message-bubble';
 import { ArtifactCardComponent } from '../../shared/components/artifact-card/artifact-card';
@@ -149,6 +149,15 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   private cacheHydrated = false;
 
   session = this.sessionSvc.currentSession;
+  // WS-5: the briefing conversation is a distinct phase, not a normal chat
+  // turn — `briefPhase` gates the interview view, `briefDraft` is the
+  // agent's current proposal (cleared once a decision is submitted).
+  briefPhase = computed(() => this.session()?.phase === 'briefing');
+  briefDraft = signal<SessionBriefFields | null>(null);
+  frozenBrief = computed(() => this.session()?.brief ?? null);
+  submittingBriefDecision = signal(false);
+  briefEditDraft = signal<string>('');
+  briefEditing = signal(false);
   status = computed(() => this.session()?.status ?? 'stopped');
   currentAgent = computed(() => this.session()?.current_agent ?? '');
   isIdle = computed(() => this.status() === 'idle');
@@ -534,6 +543,25 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
       }
     }));
 
+    this.subs.add(this.stream.briefDraft$.subscribe(ev => {
+      const d = ev.data as BriefDraftData;
+      this.briefDraft.set(d.brief);
+      this.briefEditDraft.set(JSON.stringify(d.brief, null, 2));
+      this.briefEditing.set(false);
+    }));
+
+    this.subs.add(this.stream.briefAccepted$.subscribe(() => {
+      this.briefDraft.set(null);
+      this.briefEditing.set(false);
+      this.submittingBriefDecision.set(false);
+    }));
+
+    this.subs.add(this.stream.phaseChange$.subscribe(() => {
+      // Phase lives on the Session record itself, not just the event
+      // stream — refetch so `briefPhase`/`frozenBrief` pick up the change.
+      this.sessionSvc.getSession(id).subscribe();
+    }));
+
     this.subs.add(this.stream.errors$.subscribe(ev => {
       this.waitingForAgent.set(false);
       const d = ev.data as ErrorData;
@@ -911,6 +939,68 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
       error: err => {
         this.workItemReviewing.set(false);
         this.workItemError.set(err?.error?.detail ?? 'Work-item review failed.');
+      },
+    });
+  }
+
+  acceptBrief(): void {
+    const id = this.session()?.id;
+    if (!id || this.submittingBriefDecision()) return;
+    this.submittingBriefDecision.set(true);
+    this.sessionSvc.submitBriefDecision(id, 'accept').subscribe({
+      error: err => {
+        this.submittingBriefDecision.set(false);
+        this.toasts.show({
+          kind: 'error',
+          title: 'Failed to accept the brief',
+          detail: err?.error?.detail,
+          ttlMs: 4000,
+        });
+      },
+    });
+  }
+
+  rejectBrief(reason: string): void {
+    const id = this.session()?.id;
+    if (!id || this.submittingBriefDecision()) return;
+    this.submittingBriefDecision.set(true);
+    this.sessionSvc.submitBriefDecision(id, 'reject', { reason }).subscribe({
+      next: () => {
+        this.submittingBriefDecision.set(false);
+        this.briefDraft.set(null);
+      },
+      error: err => {
+        this.submittingBriefDecision.set(false);
+        this.toasts.show({
+          kind: 'error',
+          title: 'Failed to reject the brief',
+          detail: err?.error?.detail,
+          ttlMs: 4000,
+        });
+      },
+    });
+  }
+
+  submitEditedBrief(): void {
+    const id = this.session()?.id;
+    if (!id || this.submittingBriefDecision()) return;
+    let parsed: Partial<SessionBriefFields>;
+    try {
+      parsed = JSON.parse(this.briefEditDraft());
+    } catch {
+      this.toasts.show({ kind: 'error', title: 'Edited brief is not valid JSON', ttlMs: 4000 });
+      return;
+    }
+    this.submittingBriefDecision.set(true);
+    this.sessionSvc.submitBriefDecision(id, 'edit', { brief: parsed }).subscribe({
+      error: err => {
+        this.submittingBriefDecision.set(false);
+        this.toasts.show({
+          kind: 'error',
+          title: 'Failed to submit the edited brief',
+          detail: err?.error?.detail,
+          ttlMs: 4000,
+        });
       },
     });
   }

@@ -219,4 +219,6 @@ class _Session:
                 if self.brief_policy is not None
                 else None
             ),
+            phase=self.phase,
+            brief=self.brief,
         )

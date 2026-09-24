@@ -375,6 +375,112 @@
   position: relative;
 }
 
+/* ── Session brief (WS-5) ── */
+.brief-panel {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: -1.25rem -1.5rem 1rem;
+  padding: 1rem 1.5rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.brief-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.brief-draft-card {
+  margin-top: 0.75rem;
+  padding: 1rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+
+  h3 {
+    margin: 0 0 0.75rem;
+    font-size: 0.95rem;
+  }
+
+  dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.35rem 1rem;
+    margin: 0;
+  }
+
+  dt {
+    font-weight: 600;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+  }
+
+  dd {
+    margin: 0;
+
+    ul {
+      margin: 0;
+      padding-left: 1.1rem;
+    }
+  }
+}
+
+.brief-edit-textarea {
+  width: 100%;
+  margin-top: 0.5rem;
+  font-family: monospace;
+  font-size: 0.8rem;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem;
+}
+
+.brief-draft-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.brief-panel-frozen {
+  margin-bottom: 1rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+
+  summary {
+    cursor: pointer;
+    color: var(--text-muted);
+  }
+
+  dl {
+    margin: 0.5rem 0 0;
+  }
+
+  dt {
+    font-weight: 600;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+  }
+
+  dd {
+    margin: 0 0 0.5rem;
+
+    ul {
+      margin: 0;
+      padding-left: 1.1rem;
+    }
+  }
+}
+
 .jump-to-latest {
   position: sticky;
   bottom: 0.75rem;

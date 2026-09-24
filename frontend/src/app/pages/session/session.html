@@ -203,6 +203,112 @@
 
     <!-- Chat panel -->
     <main class="chat-panel" #chatPanel (scroll)="onScroll($event)">
+      <!-- Briefing phase (WS-5): a distinct pre-execution interview. The
+           conversation itself renders in the normal chat below; this
+           banner + draft card are the confirmation gate on top of it. -->
+      @if (briefPhase()) {
+        <div class="brief-panel">
+          <div class="brief-banner">
+            <app-icon name="info" [size]="16" />
+            <span>Briefing in progress — describe what you want. The agent will propose a
+              brief for you to accept, reject, or edit before any work starts.</span>
+          </div>
+          @if (briefDraft(); as draft) {
+            <div class="brief-draft-card">
+              <h3>Proposed brief</h3>
+              <dl>
+                <dt>Deliverable</dt>
+                <dd>{{ draft.deliverable }}</dd>
+                <dt>In scope</dt>
+                <dd>
+                  <ul><li *ngFor="let item of draft.in_scope">{{ item }}</li></ul>
+                </dd>
+                @if (draft.out_of_scope.length > 0) {
+                  <dt>Out of scope</dt>
+                  <dd>
+                    <ul><li *ngFor="let item of draft.out_of_scope">{{ item }}</li></ul>
+                  </dd>
+                }
+                <dt>Done when</dt>
+                <dd>
+                  <ul><li *ngFor="let item of draft.done_when">{{ item }}</li></ul>
+                </dd>
+                @if (draft.risks.length > 0) {
+                  <dt>Risks</dt>
+                  <dd>
+                    <ul><li *ngFor="let item of draft.risks">{{ item }}</li></ul>
+                  </dd>
+                }
+              </dl>
+
+              @if (briefEditing()) {
+                <label>Edit the brief JSON, then submit</label>
+                <textarea
+                  class="brief-edit-textarea"
+                  rows="10"
+                  [ngModel]="briefEditDraft()"
+                  (ngModelChange)="briefEditDraft.set($event)"
+                ></textarea>
+                <div class="brief-draft-actions">
+                  <button class="btn btn-ghost btn-sm" type="button" (click)="briefEditing.set(false)">
+                    Cancel
+                  </button>
+                  <button
+                    class="btn btn-primary btn-sm"
+                    type="button"
+                    [disabled]="submittingBriefDecision()"
+                    (click)="submitEditedBrief()"
+                  >
+                    Submit edited brief
+                  </button>
+                </div>
+              } @else {
+                <div class="brief-draft-actions">
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    type="button"
+                    [disabled]="submittingBriefDecision()"
+                    (click)="rejectBrief('Please revise and re-propose.')"
+                  >
+                    Reject
+                  </button>
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    type="button"
+                    [disabled]="submittingBriefDecision()"
+                    (click)="briefEditing.set(true)"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    class="btn btn-primary btn-sm"
+                    type="button"
+                    [disabled]="submittingBriefDecision()"
+                    (click)="acceptBrief()"
+                  >
+                    Accept
+                  </button>
+                </div>
+              }
+            </div>
+          }
+        </div>
+      } @else if (frozenBrief(); as brief) {
+        <details class="brief-panel-frozen">
+          <summary>Session brief: {{ brief.deliverable }}</summary>
+          <dl>
+            <dt>In scope</dt>
+            <dd>
+              <ul><li *ngFor="let item of brief.in_scope">{{ item }}</li></ul>
+            </dd>
+            <dt>Done when</dt>
+            <dd>
+              <ul><li *ngFor="let item of brief.done_when">{{ item }}</li></ul>
+            </dd>
+          </dl>
+        </details>
+      }
+
       <div class="chat-content">
 
         @if (hiddenChatItemCount() > 0) {
