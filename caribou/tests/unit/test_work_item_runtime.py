@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+from caribou.execution.session_brief import SessionBrief
 from caribou.execution.work_item_runtime import (
     apply_command,
     end_session_block,
+    freeze_brief,
+    render_brief_pin,
     render_work_item_state,
+    seed_brief_item,
     stall_report,
     transfer_on_delegation,
 )
@@ -14,6 +20,19 @@ def _store(tmp_path, name="run", **policy_kwargs) -> WorkItemStore:
     return WorkItemStore(
         tmp_path / "work-items", session_id=name, policy=WorkItemPolicy(**policy_kwargs)
     )
+
+
+def _brief(**overrides) -> SessionBrief:
+    base = dict(
+        deliverable="Ship the parser",
+        in_scope=["parser module"],
+        out_of_scope=["the UI"],
+        done_when=["tests pass"],
+        risks=["schema drift"],
+        created_at=datetime.now(timezone.utc),
+    )
+    base.update(overrides)
+    return SessionBrief(**base)
 
 
 def test_apply_command_returns_none_for_non_command_messages(tmp_path) -> None:
@@ -127,3 +146,67 @@ def test_stall_report_ignores_done_items(tmp_path) -> None:
     store.open("Item", "Body", "coder", 1)
     store.close(0, "Done", "coder", 1)
     assert stall_report(store, "coder", turn=20, stall_turns=4) is None
+
+
+def test_seed_brief_item_opens_a_top_level_item_naming_the_deliverable(tmp_path) -> None:
+    store = _store(tmp_path)
+    brief = _brief()
+    item = seed_brief_item(store, brief, owner="driver", turn=1)
+    assert item["title"] == "Ship the parser"
+    assert "tests pass" in item["body"]
+    assert item["owner"] == "driver"
+    assert store.blocking_for_owner("driver")[0]["id"] == item["id"]
+
+
+def test_freeze_brief_context_mode_writes_provenance_without_seeding_an_item(
+    tmp_path,
+) -> None:
+    store = _store(tmp_path)
+    brief = _brief()
+    brief_path = tmp_path / "brief.json"
+
+    result = freeze_brief(
+        brief,
+        brief_path=brief_path,
+        store=store,
+        brief_mode="context",
+        owner="driver",
+        turn=1,
+    )
+
+    assert result is None
+    assert store.list() == []
+    assert brief_path.exists()
+    assert "Ship the parser" in brief_path.read_text()
+    # The brief is committed into the store's own git history, not just a
+    # side file — record_review/list/etc. all keep working afterward.
+    assert (store.root / "brief.json").exists()
+
+
+def test_freeze_brief_seed_item_mode_opens_the_deliverable_item(tmp_path) -> None:
+    store = _store(tmp_path)
+    brief = _brief()
+    brief_path = tmp_path / "brief.json"
+
+    result = freeze_brief(
+        brief,
+        brief_path=brief_path,
+        store=store,
+        brief_mode="seed_item",
+        owner="driver",
+        turn=1,
+    )
+
+    assert result is not None
+    assert result["title"] == "Ship the parser"
+    assert [item["id"] for item in store.list()] == [0]
+
+
+def test_render_brief_pin_includes_deliverable_scope_and_done_when() -> None:
+    brief = _brief()
+    rendered = render_brief_pin(brief)
+    assert "Ship the parser" in rendered
+    assert "parser module" in rendered
+    assert "the UI" in rendered
+    assert "tests pass" in rendered
+    assert "schema drift" in rendered

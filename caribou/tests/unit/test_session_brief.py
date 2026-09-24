@@ -7,8 +7,10 @@ from pydantic import ValidationError
 
 from caribou.execution.session_brief import (
     SESSION_BRIEF_SCHEMA,
+    BriefParseError,
     BriefPolicy,
     SessionBrief,
+    parse_brief_block,
     resolve_brief_policy,
 )
 
@@ -94,3 +96,31 @@ def test_resolve_brief_policy_override_enables_a_blueprint_with_no_brief_policy(
     resolved_context = resolve_brief_policy(blueprint, "context")
     assert resolved_context.enabled is True
     assert resolved_context.mode == "context"
+
+
+def test_parse_brief_block_valid_json_sets_provenance_not_the_agent() -> None:
+    raw = (
+        '{"deliverable": "Ship it", "in_scope": ["a"], "out_of_scope": [], '
+        '"done_when": ["tests pass"], "created_by": "spoofed", '
+        '"created_at": "2020-01-01T00:00:00Z"}'
+    )
+    brief = parse_brief_block(raw, created_by="master_agent")
+    assert brief.deliverable == "Ship it"
+    assert brief.created_by == "master_agent"
+    assert brief.created_at.year >= 2026
+
+
+def test_parse_brief_block_rejects_malformed_json() -> None:
+    with pytest.raises(BriefParseError, match="not valid JSON"):
+        parse_brief_block("{not json", created_by="master_agent")
+
+
+def test_parse_brief_block_rejects_a_non_object_payload() -> None:
+    with pytest.raises(BriefParseError, match="JSON object"):
+        parse_brief_block("[1, 2, 3]", created_by="master_agent")
+
+
+def test_parse_brief_block_surfaces_schema_validation_errors() -> None:
+    raw = '{"deliverable": "", "in_scope": [], "out_of_scope": [], "done_when": []}'
+    with pytest.raises(BriefParseError, match="failed validation"):
+        parse_brief_block(raw, created_by="master_agent")

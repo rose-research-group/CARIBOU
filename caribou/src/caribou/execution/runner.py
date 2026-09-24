@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TypedDict, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, cast
 
 from rich.console import Console
 from rich.prompt import Prompt
@@ -34,6 +34,7 @@ try:
         detect_delegation,
         detect_end_session,
         detect_rag,
+        extract_labeled_block,
         _count_code_blocks,
         _code_preview,
     )
@@ -59,9 +60,18 @@ try:
     from caribou.execution.work_item_runtime import (
         apply_command as apply_work_item_command,
         end_session_block,
+        freeze_brief,
+        render_brief_pin,
         render_work_item_state,
         stall_report,
         transfer_on_delegation,
+    )
+    from caribou.execution.session_brief import (
+        BriefParseError,
+        BriefPolicy,
+        SessionBrief,
+        parse_brief_block,
+        render_briefing_prompt,
     )
 except ImportError as e:
     print(f"Failed to import a required CARIBOU module: {e}", file=sys.stderr)
@@ -200,6 +210,8 @@ _UNSUCCESSFUL_END_REASONS = frozenset(
         "stuck_no_action",
         "stuck_code_failures",
         "timeout",
+        "briefing_declined",
+        "work_item_stalled",
     }
 )
 
@@ -497,6 +509,123 @@ class SandboxManager:
         raise NotImplementedError
 
 
+def _run_briefing_phase(
+    *,
+    console: Console,
+    llm_client: object,
+    model_name: str,
+    history: List[Dict[str, str]],
+    driver_agent: Agent,
+    llm_attempt_callback: Optional[LlmAttemptCallback] = None,
+    llm_retry_attempts: int = _LLM_RETRY_ATTEMPTS,
+    llm_retry_base_delay: float = _LLM_RETRY_BASE_DELAY,
+    llm_retry_max_delay: float = _LLM_RETRY_MAX_DELAY,
+    max_output_tokens: Optional[int] = None,
+) -> Tuple[Optional[SessionBrief], bool]:
+    """Run the interactive briefing conversation (WS-5.3) until the human
+    accepts a brief or ends the session. Interactive/CLI only — auto mode
+    never calls this (see the docstring on `run_agent_session`'s
+    `brief_policy` parameter).
+
+    Mutates `history` in place, appending every turn exactly like the main
+    turn loop does. Not resumable: a crash mid-briefing loses the
+    conversation and the session must be started over — briefing runs
+    entirely before any checkpoint boundary exists, so
+    `AgentSessionCheckpointState` is untouched by this function.
+
+    Returns `(brief, ended)`: `brief` is the accepted `SessionBrief`, or
+    `None` if the session was ended during briefing instead (`ended=True` in
+    that case — the caller must stop, not fall through to execution).
+    """
+    console.print(
+        "[bold cyan]Briefing phase — describe what you want before any work "
+        "starts. The agent will propose a brief for you to accept, reject, "
+        "or edit.[/bold cyan]"
+    )
+    while True:
+        user_input = Prompt.ask("\n[bold]You[/bold]", default="").strip()
+        if user_input.lower() in {"exit", "quit"}:
+            console.print("[bold yellow]Ending session during briefing.[/bold yellow]")
+            return None, True
+        if user_input:
+            history.append({"role": "user", "content": user_input})
+            display(console, "user", user_input)
+
+        msg = _call_llm_with_retry(
+            console=console,
+            llm_client=llm_client,
+            model_name=model_name,
+            messages=history,
+            turn=0,
+            agent_name=driver_agent.name,
+            llm_attempt_callback=llm_attempt_callback,
+            retry_attempts=llm_retry_attempts,
+            retry_base_delay=llm_retry_base_delay,
+            retry_max_delay=llm_retry_max_delay,
+            max_output_tokens=max_output_tokens,
+        )
+        if msg is None:
+            console.print(
+                "[red]Briefing LLM call failed after retries. Ending session.[/red]"
+            )
+            return None, True
+        history.append({"role": "assistant", "content": msg})
+        display(console, f"assistant ({driver_agent.name})", msg)
+
+        if detect_end_session(msg):
+            console.print(
+                "[yellow]Agent requested end_session during briefing.[/yellow]"
+            )
+            return None, True
+
+        block = extract_labeled_block(msg, "brief")
+        if block is None:
+            continue
+
+        try:
+            draft = parse_brief_block(block, created_by=driver_agent.name)
+        except BriefParseError as exc:
+            feedback = f"[SYSTEM] {exc.feedback}"
+            history.append({"role": "system", "content": feedback})
+            display(console, "system", feedback)
+            continue
+
+        console.print("\n[bold]Proposed brief:[/bold]")
+        console.print(render_brief_pin(draft))
+        choice = Prompt.ask(
+            "Accept this brief?",
+            choices=["accept", "reject", "edit"],
+            default="accept",
+        )
+        if choice == "accept":
+            return draft, False
+        if choice == "reject":
+            reason = Prompt.ask(
+                "Why? (sent back to the agent to revise)",
+                default="Please revise and re-propose.",
+            )
+            feedback = f"[SYSTEM] Brief rejected by the human: {reason}"
+            history.append({"role": "system", "content": feedback})
+            display(console, "system", feedback)
+            continue
+        # edit: the human supplies corrected JSON directly, bypassing the
+        # agent for this round — the harness still validates it the same way.
+        console.print("Paste corrected JSON for the brief block:")
+        edited_raw = Prompt.ask("JSON")
+        try:
+            edited = parse_brief_block(edited_raw, created_by="human")
+        except BriefParseError as exc:
+            console.print(f"[red]{exc.feedback}[/red]")
+            history.append(
+                {
+                    "role": "system",
+                    "content": f"[SYSTEM] Human edit was invalid: {exc.feedback}",
+                }
+            )
+            continue
+        return edited, False
+
+
 # --- Core Runner Functions ---
 def run_agent_session(
     *,
@@ -531,9 +660,21 @@ def run_agent_session(
     llm_retry_max_delay: float = _LLM_RETRY_MAX_DELAY,
     max_output_tokens: int | None = None,
     evaluator_runtime: Optional[EvaluatorRuntime] = None,
+    brief_policy: Optional["BriefPolicy"] = None,
+    brief: Optional["SessionBrief"] = None,
 ) -> AgentSessionResult:
     """
     Main driver for agent execution sessions, passing output_dir for benchmark saving.
+
+    `brief_policy`/`brief` (WS-5): if `brief` is already supplied (a
+    pre-authored, frozen brief — the auto-mode `--brief <path>` case), it is
+    frozen immediately and no briefing conversation runs, regardless of
+    `brief_policy`. Otherwise, if `brief_policy.enabled` and this is an
+    interactive run resuming from nothing (`resume_state is None`), a
+    briefing conversation runs before the first execution turn (WS-5.3); see
+    `_run_briefing_phase`. In every other case (auto with no `--brief`,
+    `brief_policy` disabled, or resuming a session already past briefing),
+    execution starts immediately with no brief, exactly as before WS-5.
     """
     if durable_run_id is not None and not durable_run_id.strip():
         raise ValueError("durable_run_id must be non-empty when provided")
@@ -587,10 +728,58 @@ def run_agent_session(
         policy=work_item_policy,
         origin_run_id=run_id,
     )
+    frozen_brief: Optional["SessionBrief"] = brief
+    ended_during_briefing = False
+    should_run_briefing = (
+        frozen_brief is None
+        and brief_policy is not None
+        and brief_policy.enabled
+        and not is_auto
+        and resume_state is None
+        and len(history) > 1
+    )
     if len(history) > 1:
-        prompt_appendix = render_work_item_prompt(work_item_policy)
-        if prompt_appendix not in history[1].get("content", ""):
-            history[1]["content"] = history[1].get("content", "") + prompt_appendix
+        if should_run_briefing:
+            briefing_appendix = render_briefing_prompt()
+            if briefing_appendix not in history[1].get("content", ""):
+                history[1]["content"] = (
+                    history[1].get("content", "") + briefing_appendix
+                )
+            frozen_brief, ended_during_briefing = _run_briefing_phase(
+                console=console,
+                llm_client=llm_client,
+                model_name=model_name,
+                history=history,
+                driver_agent=driver_agent,
+                llm_attempt_callback=llm_attempt_callback,
+                llm_retry_attempts=llm_retry_attempts,
+                llm_retry_base_delay=llm_retry_base_delay,
+                llm_retry_max_delay=llm_retry_max_delay,
+                max_output_tokens=max_output_tokens,
+            )
+        if not ended_during_briefing:
+            prompt_appendix = render_work_item_prompt(work_item_policy)
+            if prompt_appendix not in history[1].get("content", ""):
+                history[1]["content"] = (
+                    history[1].get("content", "") + prompt_appendix
+                )
+    if frozen_brief is not None and not ended_during_briefing:
+        seed_item = freeze_brief(
+            frozen_brief,
+            brief_path=artifacts_dir / "brief.json",
+            store=work_items,
+            brief_mode=(brief_policy.mode if brief_policy is not None else "context"),
+            owner=driver_agent.name,
+            turn=0,
+        )
+        history.append(
+            {"role": "system", "content": render_brief_pin(frozen_brief)}
+        )
+        if seed_item is not None:
+            console.print(
+                f"[green]Seeded work item {seed_item['id']}: "
+                f"{seed_item['title']}[/green]"
+            )
 
     if agent_report_memory and compress_memory:
         console.print(
@@ -733,6 +922,9 @@ def run_agent_session(
             pass  # readline isn't available on this platform; no tab-completion.
 
     while True:
+        if ended_during_briefing:
+            session_end_reason = "briefing_declined"
+            break
         stop_reason = session_stop_reason()
         if stop_reason is not None:
             session_end_reason = stop_reason

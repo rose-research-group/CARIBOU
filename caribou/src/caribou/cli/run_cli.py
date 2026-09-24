@@ -1,6 +1,7 @@
 # caribou/cli/run_cli.py
 from __future__ import annotations
 
+import json
 import os
 import textwrap
 from pathlib import Path
@@ -101,6 +102,8 @@ class AppContext:
         self.parent_params: Dict[str, Any] = {}
         self.make_report: bool = False
         self.agent_report_memory: bool = False
+        self.brief_policy: object | None = None
+        self.brief: object | None = None
 
 
 # --------------------------------------------------------------------------------------
@@ -234,6 +237,8 @@ def _setup_and_run_session(
             make_report=context.make_report,
             agent_report_memory=context.agent_report_memory,
             evaluator_runtime=context.evaluator_runtime,
+            brief_policy=context.brief_policy,
+            brief=context.brief,
         )
     finally:
         auto_save_mode = context.output_dir is not None
@@ -391,6 +396,8 @@ def initialize_context(
     output_dir: Optional[Path],  # <-- ADDED
     make_report: bool,
     agent_report_memory: bool,
+    brief_path: Optional[Path] = None,
+    brief_mode: Optional[str] = None,
 ) -> None:
     """
     Build out the AppContext with all shared resources and configuration.
@@ -421,6 +428,28 @@ def initialize_context(
             default_name=DEFAULT_BLUEPRINT_NAME,
         )
     context.agent_system = AgentSystem.load_from_json(str(blueprint))
+
+    # ---- Session brief (WS-5) ----
+    from caribou.execution.session_brief import SessionBrief, resolve_brief_policy
+
+    if brief_mode is not None and brief_mode not in {"off", "context", "seed_item"}:
+        raise typer.BadParameter(
+            "--brief-mode must be 'off', 'context', or 'seed_item'"
+        )
+    context.brief_policy = resolve_brief_policy(
+        context.agent_system.brief_policy, brief_mode
+    )
+    if brief_path is not None:
+        try:
+            raw = json.loads(Path(brief_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise typer.BadParameter(f"--brief could not be read/parsed: {exc}") from exc
+        raw.setdefault("created_at", datetime.utcnow().isoformat() + "Z")
+        raw.setdefault("created_by", "human")
+        try:
+            context.brief = SessionBrief(**raw)
+        except Exception as exc:  # pydantic ValidationError
+            raise typer.BadParameter(f"--brief failed validation: {exc}") from exc
 
     # ---- Driver Agent ----
     if driver_agent is None:
@@ -721,6 +750,8 @@ def _extract_common_kwargs(params: Dict[str, Any]) -> Dict[str, Any]:
         "output_dir",
         "make_report",
         "agent_report_memory",
+        "brief_path",
+        "brief_mode",
     ]
     out = {k: params.get(k, None) for k in keys}
     out["force_refresh"] = bool(out.get("force_refresh", False))
@@ -822,6 +853,21 @@ def main_run_callback(
         False,
         "--agent-report-memory",
         help="Use agent handoff reports as memory between agents instead of full transcripts.",
+    ),
+    brief_path: Optional[Path] = typer.Option(
+        None,
+        "--brief",
+        help="Path to a pre-authored, already-frozen brief (JSON). Skips the "
+        "briefing conversation and pins this brief immediately.",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    brief_mode: Optional[str] = typer.Option(
+        None,
+        "--brief-mode",
+        help="Override the blueprint's brief_policy for this run: 'off', "
+        "'context', or 'seed_item'.",
     ),
 ) -> None:
     """
@@ -952,6 +998,21 @@ def run_interactive(
         False,
         "--agent-report-memory",
         help="Use agent handoff reports as memory between agents instead of full transcripts.",
+    ),
+    brief_path: Optional[Path] = typer.Option(
+        None,
+        "--brief",
+        help="Path to a pre-authored, already-frozen brief (JSON). Skips the "
+        "briefing conversation and pins this brief immediately.",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    brief_mode: Optional[str] = typer.Option(
+        None,
+        "--brief-mode",
+        help="Override the blueprint's brief_policy for this run: 'off', "
+        "'context', or 'seed_item'.",
     ),
 ) -> None:
     """
@@ -1089,6 +1150,22 @@ def run_auto(
         False,
         "--agent-report-memory",
         help="Use agent handoff reports as memory between agents instead of full transcripts.",
+    ),
+    brief_path: Optional[Path] = typer.Option(
+        None,
+        "--brief",
+        help="Path to a pre-authored, already-frozen brief (JSON). Auto mode "
+        "never runs a briefing conversation; without this, an auto run has "
+        "no brief regardless of the blueprint's brief_policy.",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    brief_mode: Optional[str] = typer.Option(
+        None,
+        "--brief-mode",
+        help="Overrides the blueprint's brief_policy.mode for provenance when "
+        "--brief is given (e.g. 'seed_item'); has no other effect in auto mode.",
     ),
 ) -> None:
     """

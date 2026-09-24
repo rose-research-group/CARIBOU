@@ -2,7 +2,7 @@ import json
 from typing import Dict, Optional
 from pathlib import Path
 
-from caribou.execution.session_brief import BriefPolicy
+from caribou.execution.session_brief import BriefPolicy, render_briefing_prompt
 from caribou.execution.work_items import WorkItemPolicy, render_work_item_prompt
 
 # Import the central CARIBOU_HOME path from our config module
@@ -51,7 +51,7 @@ class Agent:
         sample_keys = list(self.code_samples.keys())
         return f"Agent(name='{self.name}', commands={list(self.commands.keys())}, samples={sample_keys}, rag_enabled={self.is_rag_enabled})"
 
-    def get_full_prompt(self, global_policy=None, work_item_policy=None) -> str:
+    def get_full_prompt(self, global_policy=None, work_item_policy=None, briefing=False) -> str:
         """Constructs the full prompt including the global policy and command descriptions."""
         full_prompt = ""
         if global_policy:
@@ -83,7 +83,9 @@ class Agent:
                 "Never wrap delegation or RAG calls in backticks as if they are code.**"
             )
 
-        if work_item_policy is not None:
+        if briefing:
+            full_prompt += render_briefing_prompt()
+        elif work_item_policy is not None:
             full_prompt += render_work_item_prompt(work_item_policy)
 
         if self.code_samples:

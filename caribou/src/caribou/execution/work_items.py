@@ -467,6 +467,20 @@ class WorkItemStore:
             self._commit(f"work-item {item_id}: note", index, item)
             return self.read(item_id)
 
+    def record_brief_provenance(self, brief_json: str) -> None:
+        """Commit a frozen session brief's JSON into this store's history
+        (WS-5.3 step 2: "seed the work-item store's first commit with the
+        brief"), so the brief that governed this session's work is part of
+        its durable git history, not just a side file. A plain commit, not
+        an item mutation — no `_index()`/`_item()` round trip needed.
+        """
+        with self._lock:
+            self._restore_committed_tree()
+            (self.root / "brief.json").write_text(brief_json, encoding="utf-8")
+            self._git("add", "brief.json")
+            self._git("commit", "--quiet", "-m", "brief: frozen")
+            self._index_cache = None
+
     def blocking_for_owner(self, owner: str) -> List[Dict[str, Any]]:
         return [
             item
