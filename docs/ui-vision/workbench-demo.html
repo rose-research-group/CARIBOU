@@ -1,0 +1,742 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CARIBOU workbench demo</title>
+<style>
+/* Tokens copied from repo/frontend/src/styles.scss (cividis palette) */
+:root{
+  --cividis-navy:#00204D; --cividis-blue:#31446B; --cividis-mid:#666870; --cividis-olive:#958F78;
+  --cividis-warm:#BBAE6A; --cividis-yellow:#F0D060; --cividis-pale:#FDF6D0;
+  --bg:#FFFFFF; --surface:#F7F4EB; --surface-2:#EEE9D8; --border:#D4CEB8; --border-light:#E8E3D2;
+  --text:#1A1710; --text-muted:#6B6555; --text-on-dark:#F7F4EB;
+  --primary:var(--cividis-blue); --primary-dark:var(--cividis-navy); --primary-bg:var(--cividis-pale); --accent:var(--cividis-warm);
+  --error:#A03828; --error-bg:#FDF0ED; --error-border:#E8C4BC; --success:#2A5C3A; --success-bg:#EEF6F0;
+  /* aliases used by the charts */
+  --ink2:var(--text-muted); --line:var(--border-light); --line2:var(--border); --mute:#D4CEB8; --warn:var(--error);
+  --c1:#00204D; --c2:#958F78; --c3:#D4AE1E;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+button{font:inherit;color:inherit;cursor:pointer;border:1px solid var(--border);background:var(--bg);border-radius:6px;padding:5px 11px}
+button:hover{border-color:var(--cividis-olive)}
+button.primary{background:var(--primary);color:var(--text-on-dark);border-color:var(--primary)}
+button.primary:hover{background:var(--primary-dark)}
+button.ghost{border-color:transparent;background:transparent}
+button.danger{color:var(--error);border-color:var(--error-border);background:var(--bg)}
+button.sm{padding:2px 9px;font-size:12.5px}
+input,textarea,select{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;width:100%}
+select.inline{width:auto;padding:2px 6px;font-size:13px}
+a{color:var(--primary)}
+h1,h2,h3,h4,p{margin:0} h2,h3,h4{font-weight:600}
+.lbl{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted);font-weight:600}
+.mono{font-family:var(--mono);font-size:12px}
+.dim{color:var(--text-muted)}
+
+/* top bar */
+.top{display:flex;align-items:center;gap:8px;padding:8px 20px;background:var(--primary-dark);color:var(--text-on-dark);position:sticky;top:0;z-index:10}
+.brand{font-weight:700;letter-spacing:.1em;margin-right:8px}
+.top button{background:transparent;color:var(--text-on-dark);border-color:rgba(247,244,235,.3)}
+.top button.primary{background:var(--cividis-yellow);color:var(--primary-dark);border-color:var(--cividis-yellow);font-weight:600}
+.top button.ghost{border-color:transparent}
+.spacer{flex:1}
+.dd{position:relative}
+.menu{display:none;position:absolute;top:calc(100% + 6px);left:0;min-width:250px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px;box-shadow:0 8px 24px rgba(0,32,77,.14);z-index:20}
+.menu.right{left:auto;right:0;min-width:190px}
+.menu.on{display:block}
+.menu .kv{display:grid;grid-template-columns:80px 1fr;gap:4px 8px;font-size:13px;padding:4px 6px}
+.menu .kv span:nth-child(odd){color:var(--text-muted)}
+.menu button.item{display:block;width:100%;text-align:left;border:0;color:var(--text);padding:6px 8px;background:transparent}
+.menu button.item:hover{background:var(--surface)}
+.menu label{display:flex;gap:8px;align-items:center;padding:5px 8px;font-size:13px;cursor:pointer}
+.menu label input{width:auto}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.seg button{border:0;border-radius:0;padding:3px 10px;background:var(--bg);color:var(--text-muted);font-size:13px}
+.seg button.on{background:var(--primary);color:var(--text-on-dark)}
+
+/* layout */
+.shell{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start}
+.center{padding:26px 28px 60px;max-width:1110px;width:100%;margin:0 auto}
+.insp{width:410px;border-left:1px solid var(--border);background:var(--surface);position:sticky;top:45px;height:calc(100vh - 45px);overflow:auto}
+.insp[hidden]{display:none}
+@media (max-width:1000px){.shell{grid-template-columns:1fr}.insp{width:auto;position:static;height:auto;border-left:0;border-top:1px solid var(--border)}}
+
+/* question */
+.q p.ask{font-size:21px;line-height:1.35;font-weight:600;color:var(--primary-dark);margin-top:4px;outline:none;border-radius:4px}
+.q p.ask:focus{background:var(--primary-bg)}
+.disc{margin-top:8px}
+.dh{border:0;background:transparent;padding:3px 0;color:var(--text-muted);font-size:13px;display:inline-flex;gap:6px;align-items:center}
+.dh:hover{color:var(--text)}
+.ch{display:inline-block;transition:transform .12s;font-size:10px}
+.disc.on>.dh .ch{transform:rotate(90deg)}
+.disc.on>.dh{color:var(--text);font-weight:600}
+.db{padding:6px 0 4px 16px}
+.san{background:var(--surface);border:1px solid var(--border-light);border-radius:8px;padding:10px 12px;font-size:13.5px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chips span{font-size:12px;border:1px solid var(--border);border-radius:5px;padding:1px 7px;background:var(--bg);color:var(--text-muted)}
+
+/* answer */
+.answer{margin-top:22px;border:1px solid var(--border);border-left:4px solid var(--primary);border-radius:8px;padding:14px 16px;background:var(--surface)}
+.answer .hd{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.answer .hd .lbl{flex:1}
+.arc{font-size:16px;line-height:1.45}
+.issue{margin-top:10px;font-size:13.5px;color:var(--error);background:var(--error-bg);border:1px solid var(--error-border);border-radius:6px;padding:6px 10px;display:inline-block}
+.issue.ok{color:var(--success);background:var(--success-bg);border-color:#cfe3d5}
+.issue.noted{color:var(--text-muted);background:var(--bg);border-color:var(--border)}
+.vigs{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:6px}
+.vig{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;cursor:pointer}
+.vig:hover{border-color:var(--primary)}
+.vig h4{font-size:13.5px;margin-bottom:3px}
+.vig p{font-size:13px;color:var(--text-muted)}
+.vig .src{margin-top:6px;font-size:12px;color:var(--primary)}
+
+/* pipeline */
+.pipe{margin-top:28px}
+.pipeHead{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.pipeHead h2{font-size:15px;flex:1}
+.pipeHead .dd button{font-size:13px;padding:3px 10px}
+.flow{display:grid;gap:8px 0;overflow-x:auto;padding:4px 3px 8px;align-items:stretch}
+.blk{position:relative;text-align:left;background:var(--primary-bg);border:1px solid var(--cividis-warm);border-radius:8px;padding:9px 11px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.blk:hover{border-color:var(--primary)}
+.blk.sel{background:var(--primary);border-color:var(--primary);color:var(--text-on-dark)}
+.blk .n{font-weight:600;display:flex;align-items:center;gap:6px}
+.blk .m{font-family:var(--mono);font-size:10.5px;opacity:.8;line-height:1.35}
+.blk .tag{font-size:11px;font-weight:600}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--success);flex:none;display:inline-block}
+.blk.sel .dot{box-shadow:0 0 0 2px var(--text-on-dark)}
+.s-warn{border-color:var(--error)} .s-warn .dot{background:var(--error)}
+.s-running .dot{background:var(--cividis-yellow);animation:pulse 1s infinite}
+.s-stale .dot,.s-edited .dot{background:var(--cividis-warm)}
+.s-idle{background:var(--bg);border-style:dashed} .s-idle .dot{background:var(--mute)}
+.ring{position:absolute;top:4px;right:4px;width:7px;height:7px;border-radius:50%;border:2px solid var(--error)}
+@keyframes pulse{50%{opacity:.25}}
+.adw{display:flex;align-items:center;justify-content:center;position:relative}
+.adw:before{content:"";position:absolute;left:0;right:0;top:50%;border-top:1.5px solid var(--border)}
+.ad{position:relative;width:16px;height:16px;border-radius:50%;padding:0;background:var(--surface-2);border:1.5px solid var(--cividis-olive);font-size:10px;line-height:1;color:var(--error);font-weight:700}
+.ad:hover,.ad.sel{background:var(--primary);border-color:var(--primary)}
+.ad.bad{border-color:var(--error);background:var(--error-bg)}
+.addb{border:1px dashed var(--border);background:transparent;color:var(--text-muted);border-radius:8px;font-size:13px}
+.trace{border-top:2px dotted var(--error);color:var(--error);font-size:11.5px;padding-top:2px}
+.rd{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:7px 8px;text-align:left}
+.rd.sel{border-color:var(--primary);box-shadow:0 0 0 1px var(--primary)}
+.rd .t{font-size:11.5px;font-weight:600;color:var(--text-muted)}
+.rd svg{display:block;width:100%;height:64px;margin-top:3px}
+.st{background:var(--surface);border:1px solid var(--border-light);border-left:3px solid var(--primary);border-radius:6px;padding:7px 9px;font-size:12.5px;text-align:left;color:var(--text)}
+.hint{font-size:12.5px;color:var(--text-muted);margin-top:6px}
+
+/* panel */
+.ihead{padding:14px 16px 10px;position:sticky;top:0;background:var(--surface);border-bottom:1px solid var(--border-light);z-index:2;display:flex;gap:8px;align-items:flex-start}
+.ihead>div{flex:1}
+.ihead h3{font-size:17px;color:var(--primary-dark)}
+.ibody{padding:12px 16px 30px}
+.lead{font-size:14.5px}
+.acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.warnbox{background:var(--error-bg);border:1px solid var(--error-border);color:var(--error);border-radius:8px;padding:9px 11px;margin-top:12px;font-size:13px}
+.thumb{margin-top:12px;display:block;width:100%;padding:8px;text-align:left;background:var(--bg)}
+.thumb svg{display:block;width:100%;height:84px}
+.thumb .t{font-size:12px;color:var(--text-muted);display:flex;justify-content:space-between}
+.insp .disc{border-top:1px solid var(--border-light);margin-top:10px;padding-top:6px}
+.insp .dh{width:100%;justify-content:flex-start;font-size:13.5px;color:var(--text)}
+.insp .db{padding-left:0}
+.step{border:1px solid var(--border-light);background:var(--bg);border-radius:7px;padding:7px 10px;margin-bottom:6px;cursor:default;user-select:none}
+.step .sn{font-weight:600;font-size:13px;display:flex;justify-content:space-between;gap:8px}
+.step .sn a{font-weight:400;font-size:12px;cursor:pointer;text-decoration:underline}
+.step .sd{font-size:12.5px;color:var(--text-muted)}
+pre{margin:6px 0 0;background:var(--primary-dark);color:var(--text-on-dark);border-radius:6px;padding:9px 10px;overflow:auto;font:12px/1.5 var(--mono);white-space:pre;user-select:text}
+pre .c{color:var(--cividis-warm)}
+.dec{border:1px solid var(--border-light);border-left:3px solid var(--cividis-warm);border-radius:7px;padding:8px 10px;margin-bottom:8px;background:var(--bg)}
+.dec.rec{border-left-color:var(--error)}
+.dec h4{font-size:13px}
+.dec dl{margin:5px 0 0;display:grid;grid-template-columns:74px 1fr;gap:2px 8px;font-size:12.5px}
+.dec dt{color:var(--text-muted)} .dec dd{margin:0}
+.ev{display:grid;grid-template-columns:34px 112px 1fr;gap:6px;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border-light)}
+.ev .ty{font-family:var(--mono);color:var(--text-muted)}
+.chk{display:flex;gap:7px;font-size:13px;padding:2px 0}
+.ok{color:var(--success)} .bad{color:var(--error)}
+.big svg{width:100%;height:230px;background:var(--bg);border:1px solid var(--border);border-radius:8px}
+.legend{display:flex;gap:12px;font-size:12px;color:var(--text-muted);margin-top:6px;flex-wrap:wrap}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--border);margin:0 0 10px;flex-wrap:wrap}
+.tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;padding:5px 9px;color:var(--text-muted);font-size:13px}
+.tabs button.on{color:var(--primary-dark);border-bottom-color:var(--primary);font-weight:600}
+.lego{border:1px solid var(--cividis-warm);background:var(--primary-bg);border-radius:7px;padding:7px 10px;margin-bottom:7px;display:flex;gap:8px;align-items:center}
+.lego>div{flex:1} .lego .n{font-weight:600;font-size:13px} .lego .d{font-size:12px;color:var(--text-muted)}
+.lego.draft{border-style:dashed;background:var(--bg)}
+.ticket{border:1px solid var(--border-light);border-radius:7px;padding:8px 10px;margin-bottom:7px;background:var(--bg);font-size:12.5px}
+.foot{padding:8px 28px;font-size:11.5px;color:var(--text-muted);border-top:1px solid var(--border-light)}
+.modal{position:fixed;inset:0;background:rgba(0,32,77,.4);display:none;align-items:center;justify-content:center;z-index:40;padding:16px}
+.modal.on{display:flex}
+.mbox{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:16px;width:min(520px,100%)}
+.mbox label{display:block;margin:10px 0 3px;font-size:12px;color:var(--text-muted)}
+.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--primary-dark);color:var(--text-on-dark);padding:8px 14px;border-radius:8px;font-size:13px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:50}
+.toast.on{opacity:1}
+
+/* branching */
+.blk.alt{background:var(--bg)}
+.blk.alt.sel{background:var(--primary)}
+.lname{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--primary)}
+.blk.sel .lname{color:var(--cividis-yellow)}
+.fork{position:absolute;bottom:-10px;left:10px;background:var(--primary);color:var(--text-on-dark);font-size:10.5px;font-weight:600;border-radius:999px;padding:0 8px;line-height:17px;z-index:1}
+.blk.sel .fork{background:var(--cividis-yellow);color:var(--primary-dark)}
+.adw.forked:after{content:"";position:absolute;left:50%;top:50%;bottom:-8px;border-left:1.5px solid var(--border)}
+.riser,.elbow{position:relative}
+.riser:before{content:"";position:absolute;left:50%;top:-8px;bottom:-8px;border-left:1.5px solid var(--border)}
+.elbow:before{content:"";position:absolute;left:50%;right:0;top:-8px;bottom:50%;border-left:1.5px solid var(--border);border-bottom:1.5px solid var(--border);border-bottom-left-radius:9px}
+.also{margin-top:8px;font-size:13px;color:var(--text-muted)}
+table.cmp{border-collapse:collapse;width:100%;font-size:12.5px;background:var(--bg);border:1px solid var(--border-light)}
+table.cmp th,table.cmp td{padding:5px 8px;border-bottom:1px solid var(--border-light);text-align:left;vertical-align:top}
+table.cmp th{font-size:12px;color:var(--primary-dark)}
+table.cmp td:first-child{color:var(--text-muted)}
+table.cmp tr.diff td:not(:first-child){font-weight:600}
+.mainTag{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;background:var(--cividis-yellow);color:var(--primary-dark);border-radius:4px;padding:0 5px;margin-left:6px}
+.pathCard{border:1px solid var(--border-light);background:var(--bg);border-radius:8px;padding:9px 11px;margin-top:10px}
+/* layer rail: each row of the canvas folds from its label */
+.rail{border:0;background:transparent;padding:3px 12px 3px 0;font-size:12.5px;color:var(--text-muted);text-align:left;white-space:nowrap;align-self:center;display:inline-flex;gap:6px;align-items:center;border-radius:0}
+button.rail:hover{color:var(--primary)}
+.rail.on{color:var(--primary-dark);font-weight:600}
+.rail.on .ch{transform:rotate(90deg)}
+.rail.fixed{padding-left:16px;color:var(--primary-dark);font-weight:600}
+.rail.new{color:var(--primary);font-weight:600}
+.blk.pk{outline:2px dashed var(--primary);outline-offset:2px}
+.blk.pk:hover{background:var(--primary);color:var(--text-on-dark)}
+.pick{font-size:10.5px;font-weight:700;color:var(--primary)}
+.blk.pk:hover .pick{color:var(--cividis-yellow)}
+.hint.act{color:var(--primary-dark);font-weight:600;background:var(--primary-bg);border:1px solid var(--cividis-warm);border-radius:6px;padding:5px 10px;display:inline-block}
+
+/* branch from a selected node */
+.bh{position:absolute;bottom:-11px;right:8px;background:var(--cividis-yellow);color:var(--primary-dark);font-size:11px;font-weight:700;border-radius:999px;padding:0 9px;line-height:19px;z-index:2;box-shadow:0 1px 3px rgba(0,32,77,.25)}
+.bh:hover{background:var(--bg)}
+.composer{background:var(--bg);border:1.5px dashed var(--primary);border-radius:8px;padding:9px 11px;min-width:0}
+.crow{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:5px 0}
+.crow input{flex:1;min-width:170px;padding:3px 8px}
+.chip{border-color:var(--cividis-warm);background:var(--primary-bg);font-size:12.5px;padding:2px 10px}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">CARIBOU</div>
+  <div class="dd">
+    <button class="ghost" data-dd="sess">ABA hippocampus integration ▾</button>
+    <div class="menu" id="dd-sess">
+      <div class="kv"><span>Dataset</span><span>ABA-HIP · 85,955 cells · 3 batches</span>
+        <span>Blueprint</span><span class="mono">caribou_fully_connected_v2</span>
+        <span>Sandbox</span><span>Singularity kernel, running</span>
+        <span>Run mode</span><span><span class="seg" id="mode"><button data-m="auto" class="on">Auto</button><button data-m="step">Step</button></span></span></div>
+    </div>
+  </div>
+  <span class="spacer"></span>
+  <button id="btnRun" class="primary">Run all</button>
+  <div class="dd">
+    <button data-dd="more">More ▾</button>
+    <div class="menu right" id="dd-more">
+      <button class="item" data-act="tickets">Tickets (<span id="tcount">0</span>)</button>
+      <button class="item" data-act="log">Session log</button>
+      <button class="item" data-act="ckpt">Save checkpoint</button>
+      <button class="item" data-act="fork">Fork session</button>
+      <button class="item" data-act="report">Draft report</button>
+    </div>
+  </div>
+</header>
+
+<div class="shell">
+  <main class="center">
+    <section class="q">
+      <div class="lbl">Your question</div>
+      <p class="ask" contenteditable="true" spellcheck="false">Do the three hippocampus batches contain the same major cell populations, and can we compare them once technical differences are removed?</p>
+      <div id="san"></div>
+    </section>
+
+    <section class="answer" id="answer"></section>
+
+    <section class="pipe">
+      <div class="pipeHead">
+        <h2>Analysis</h2>
+        <span id="cmpBtn"></span>
+      </div>
+      <div class="flow" id="flow"></div>
+      <div class="hint" id="hint"></div>
+    </section>
+  </main>
+  <aside class="insp" id="insp" hidden></aside>
+</div>
+<div class="foot">Demo with illustrative numbers. Dataset size, agents, code samples, events and metrics follow current CARIBOU; results and plots are mocked.</div>
+
+<div class="modal" id="modal"><div class="mbox">
+  <h3>Open a ticket</h3>
+  <label>Title</label><input id="tTitle">
+  <label>Attached to</label><input id="tSrc" readonly>
+  <label>What looks wrong, or what should change?</label><textarea id="tBody" rows="4"></textarea>
+  <label>Assign to</label>
+  <select id="tWho"><option>CARIBOU agent (try to fix)</option><option>Me (review later)</option><option>Collaborator</option></select>
+  <div class="acts" style="justify-content:flex-end"><button id="tCancel">Cancel</button><button class="primary" id="tSave">Open ticket</button></div>
+</div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ---------- data ---------- */
+const BLOCKS = [
+ {id:'load', name:'Load & validate', agent:'Orchestrator', sample:'load_adata',
+  sum:'Read the h5ad, check counts are raw, find the batch column.',
+  metric:f=>'85,955 cells · 3 batches',
+  substeps:[
+   {n:'Read file', d:'Loads the AnnData object into the sandbox kernel.', code:"import scanpy as sc\nadata = sc.read_h5ad('/data/aba_hip.h5ad')"},
+   {n:'Check raw counts', d:'Confirms X holds integer counts before any normalization.', code:"import numpy as np\nassert np.allclose(adata.X[:100].data % 1, 0)"},
+   {n:'Find batch column', d:'Looks for a column that separates the three donors.', code:"batch_key = 'batch_id'\nprint(adata.obs[batch_key].value_counts())"}],
+  decisions:[{q:'Which column is the batch?', chose:'batch_id', alts:'donor, library_prep', ev:'batch_id has 3 levels and matches the file names; donor has 3 levels too but is identical to it.', src:'obs inspection, turn 2', turn:2}],
+  events:[[1,'agent_switch','User → Orchestrator'],[2,'code_submitted','load_adata, 6 lines'],[2,'code_result','success, 14.2 s']],
+  story:{plain:'We opened the dataset and checked it is the untouched, raw version.',
+         bio:'85,955 hippocampal cells from 3 batches were loaded. Counts are raw, so nothing has been filtered or normalized yet.',
+         comp:'AnnData 85,955 × 31,053, integer X, batch key = batch_id (3 levels). No layers present.'},
+  readout:null},
+
+ {id:'qc', name:'QC', agent:'QC agent', sample:'QC_Inspection',
+  sum:'Score each cell, then drop low-quality cells with MAD thresholds.',
+  metric:f=>f?'kept 81,650 (95%)':'kept 74,210 (86%)',
+  substeps:[
+   {n:'Compute QC metrics', d:'Genes per cell, counts per cell, mitochondrial fraction.', code:"adata.var['mt'] = adata.var_names.str.startswith('mt-')\nsc.pp.calculate_qc_metrics(adata, qc_vars=['mt'], inplace=True)"},
+   {n:'Set MAD thresholds', d:f=>f?'5 MADs from the median, computed separately for each batch.':'5 MADs from the median, computed once across all cells.', code:f=>f?"def mad_out(df, col, n=5):\n    m = df[col].median(); mad = (df[col]-m).abs().median()\n    return (df[col]-m).abs() > n*mad\n# per batch\nout = adata.obs.groupby('batch_id', group_keys=False).apply(\n    lambda d: mad_out(d,'log1p_total_counts') | mad_out(d,'pct_counts_mt'))":"def mad_out(df, col, n=5):\n    m = df[col].median(); mad = (df[col]-m).abs().median()\n    return (df[col]-m).abs() > n*mad\n# global\nout = mad_out(adata.obs,'log1p_total_counts') | mad_out(adata.obs,'pct_counts_mt')"},
+   {n:'Filter cells and genes', d:'Removes flagged cells and genes seen in fewer than 3 cells.', code:"adata = adata[~out].copy()\nsc.pp.filter_genes(adata, min_cells=3)"},
+   {n:'Write QC report', d:'Before and after distributions saved as a PDF artifact.', code:"fig.savefig('outputs/qc_report.pdf')"}],
+  decisions:[
+   {q:'How to set thresholds?', chose:f=>f?'5 MADs, per batch':'5 MADs, global', alts:f=>f?'global MADs (previous run)':'fixed cutoffs; per-batch MADs', ev:f=>f?'You asked for per-batch thresholds after batch 3 lost 34% of its cells.':'The code sample uses global MADs. The agent did not compare batches before filtering.', src:'code sample QC_Inspection', turn:4},
+   {q:'Recovery: pct_counts_mt missing', rec:true, chose:'Compute it, then continue', alts:'stop and ask', ev:'First attempt failed with KeyError. The agent saw no mt flag in var, found the mt- prefix, and recomputed metrics.', src:'stderr → detect, diagnose, generate, execute', turn:3}],
+  events:[[3,'agent_switch','Orchestrator → QC agent · delegate_to_QC'],[3,'code_submitted','QC metrics, 9 lines'],[3,'code_result','failed · KeyError: pct_counts_mt'],[3,'recovery','retry 1 of 3'],[4,'code_result','success, 31.0 s'],[4,'artifact','qc_report.pdf · plot']],
+  story:{plain:f=>f?'We removed broken or empty cells, judging each batch by its own standards.':'We removed broken or empty cells. One batch lost far more cells than the others.',
+         bio:f=>f?'Low-quality cells were removed batch by batch. All three batches keep 94 to 96% of their cells.':'Low-quality cells were removed with one threshold for all batches. Batch 3 has lower depth overall, so it lost 34% of its cells while the others lost about 5%.',
+         comp:f=>f?'MAD(5) on log1p_total_counts and pct_counts_mt within batch_id. 81,650 cells retained.':'MAD(5) on log1p_total_counts and pct_counts_mt, global. 74,210 retained; batch 3 retention 66%.'},
+  readout:{title:'Cells kept per batch', kind:'qc', file:'qc_report.pdf'}},
+
+ {id:'dbl', name:'Doublets', agent:'Doublet agent', sample:'Doublets',
+  sum:'Find droplets that captured two cells and remove them.',
+  metric:f=>f?'removed 3,266 (4.0%)':'removed 2,968 (4.0%)',
+  substeps:[
+   {n:'Score doublets per batch', d:'Scrublet run inside each batch.', code:"sc.pp.scrublet(adata, batch_key='batch_id')"},
+   {n:'Remove predicted doublets', d:'Drops cells called as doublets.', code:"adata = adata[~adata.obs['predicted_doublet']].copy()"}],
+  decisions:[{q:'Which doublet method?', chose:'Scrublet, per batch', alts:'scDblFinder (needs R)', ev:'Sandbox has no R kernel. Scrublet is in the code sample.', src:'code sample Doublets', turn:6}],
+  events:[[5,'agent_switch','QC agent → Doublet agent · delegate_to_Doublets'],[6,'code_submitted','scrublet, 4 lines'],[6,'code_result','success, 88.4 s'],[6,'artifact','doublet_scores.png · plot']],
+  story:{plain:'Sometimes two cells get read as one. We found those and took them out.',
+         bio:'About 4% of cells were flagged as doublets and removed, which is typical for this chemistry.',
+         comp:'Scrublet per batch; predicted_doublet removed.'},
+  readout:{title:'Doublet score', kind:'dbl', file:'doublet_scores.png'}},
+
+ {id:'prep', name:'Preprocess', agent:'Preprocess agent', sample:'(generated)',
+  sum:'Normalize, pick variable genes, reduce to principal components.',
+  metric:f=>'2,000 HVGs · 30 PCs',
+  substeps:[
+   {n:'Normalize and log', d:'Keeps raw counts in a layer first.', code:"adata.layers['counts'] = adata.X.copy()\nsc.pp.normalize_total(adata, target_sum=1e4)\nsc.pp.log1p(adata)"},
+   {n:'Highly variable genes', d:'Chosen within batch so one batch cannot dominate.', code:"sc.pp.highly_variable_genes(adata, n_top_genes=2000, batch_key='batch_id')"},
+   {n:'PCA', d:'30 components.', code:"sc.pp.pca(adata, n_comps=30)"}],
+  decisions:[
+   {q:'How many PCs?', chose:'30', alts:'50 (default), 20', ev:'Variance explained flattens after about 25 components.', src:'elbow plot, turn 8', turn:8},
+   {q:'Recovery: wrong keyword', rec:true, chose:'Looked up the function signature', alts:'guess again', ev:'TypeError: unexpected keyword n_top. The signature for sc.pp.highly_variable_genes was retrieved and the call corrected.', src:'RAG signature lookup', turn:7}],
+  events:[[7,'agent_switch','Doublet agent → Preprocess agent'],[7,'code_result','failed · TypeError'],[7,'rag','query_rag_highly_variable_genes'],[8,'code_result','success, 52.7 s'],[8,'artifact','pca_variance.png · plot']],
+  story:{plain:'We put every cell on the same scale and kept the genes that differ most between cells.',
+         bio:'Counts were normalized and 2,000 informative genes selected within each batch, then summarized as 30 components.',
+         comp:'normalize_total(1e4) → log1p → HVG(2000, batch-aware) → PCA(30). Raw counts kept in layers.counts.'},
+  readout:{title:'PCA variance explained', kind:'pca', file:'pca_variance.png'}},
+
+ {id:'int', name:'Integration', agent:'Integration agent', sample:'Integrate_Harmony',
+  sum:'Line the batches up so the same cell types overlap.',
+  metric:f=>f?'iLISI 0.71 · ASW batch 0.91':'iLISI 0.74 · ASW batch 0.92',
+  substeps:[
+   {n:'Run Harmony', d:'Corrects the principal components for batch.', code:"import scanpy.external as sce\nsce.pp.harmony_integrate(adata, key='batch_id')"},
+   {n:'Neighbors and UMAP', d:'Built on the corrected components.', code:"sc.pp.neighbors(adata, use_rep='X_pca_harmony')\nsc.tl.umap(adata)"},
+   {n:'Score batch mixing', d:'SCIB metrics, as in the benchmark.', code:"from scib_metrics import ilisi_knn, silhouette_batch, graph_connectivity"}],
+  decisions:[{q:'Harmony or scVI?', chose:'Harmony', alts:'scVI (Integrate_scvi)', ev:'3 batches with mild separation on PCA. Harmony finishes in minutes on CPU; scVI would need a GPU allocation.', src:'handoff report from Preprocess + code samples', turn:10}],
+  events:[[9,'agent_switch','Preprocess agent → Integration agent · delegate_to_Integration'],[10,'code_submitted','harmony, 7 lines'],[10,'code_result','success, 143.9 s'],[11,'metrics_result','iLISI, ASW batch, graph connectivity'],[11,'artifact','umap_batch.png · plot']],
+  story:{plain:'We lined the three batches up so that the same kinds of cells sit together.',
+         bio:f=>f?'After integration the three batches overlap within each population. All batches contribute similar numbers of cells, so the mixing score reflects real overlap.':'After integration the batches overlap. Batch 3 is under-represented after QC, so the mixing score may look better than it is.',
+         comp:f=>f?'Harmony on 30 PCs. iLISI 0.71, ASW batch 0.91, graph connectivity 0.96.':'Harmony on 30 PCs. iLISI 0.74, ASW batch 0.92, graph connectivity 0.96. Batch 3 is 23% of cells (expected 31%).'},
+  readout:{title:'UMAP by batch, before and after', kind:'umap', file:'umap_batch.png'}},
+
+ {id:'ct', name:'Cell typing', agent:'Celltyping agent', sample:'Celltyping',
+  sum:'Cluster the cells and name each population.',
+  metric:f=>f?'9 populations':'8 populations',
+  substeps:[
+   {n:'Cluster', d:'Leiden on the integrated graph.', code:"sc.tl.leiden(adata, resolution=0.8)"},
+   {n:'Annotate', d:'CellTypist with majority voting per cluster.', code:"import celltypist\npred = celltypist.annotate(adata, model='Mouse_Whole_Brain.pkl', majority_voting=True)"},
+   {n:'Compare proportions', d:'Population share per batch.', code:"adata.obs.groupby('batch_id')['cell_type'].value_counts(normalize=True)"}],
+  decisions:[{q:'Which reference model?', chose:'Mouse_Whole_Brain', alts:'Developing_Mouse_Brain', ev:'Sanitized question states adult mouse. Model list checked in the sandbox.', src:'goal + CellTypist model list', turn:13}],
+  events:[[12,'agent_switch','Integration agent → Celltyping agent · delegate_to_Celltyping'],[13,'code_submitted','celltypist, 8 lines'],[13,'code_result','success, 201.3 s'],[14,'artifact','celltype_counts.png · plot'],[14,'status_change','end_session']],
+  story:{plain:f=>f?'We grouped similar cells and named each group. All three batches contain the same nine kinds.':'We grouped similar cells and named each group. One small group is missing from batch 3.',
+         bio:f=>f?'Nine populations were found in every batch, including a small microglia population that the earlier run lost.':'Eight populations were found. Microglia are absent from batch 3, most likely because QC removed them and not because they are biologically missing.',
+         comp:f=>f?'Leiden 0.8 → CellTypist majority vote. 9 labels, all present in all batches.':'Leiden 0.8 → CellTypist majority vote. 8 labels; microglia n=0 in batch 3.'},
+  readout:{title:'Cells per population', kind:'ct', file:'celltype_counts.png'}}
+];
+
+const ADAPTORS = [
+ {from:'load',to:'qc', passed:'AnnData, raw counts', reshaped:['none'], checks:[['X is integer counts',1],['batch_id present',1]], report:'Raw object loaded. Batch column is batch_id. No mitochondrial flag in var.'},
+ {from:'qc',to:'dbl', passed:f=>f?'AnnData, 81,650 cells':'AnnData, 74,210 cells', reshaped:['dropped temporary column mad_outlier'], checks:[['QC columns present in obs',1],['Retention similar across batches',f=>f?1:0]], report:f=>f?'QC complete with per-batch thresholds. Retention 94 to 96% in every batch.':'QC complete. 86% of cells retained. Ready for doublet detection.', note:f=>f?null:'The handoff did not mention that batch 3 kept only 66% of its cells. The adaptor check caught it.'},
+ {from:'dbl',to:'prep', passed:'AnnData, singlets only', reshaped:['kept doublet_score in obs'], checks:[['predicted_doublet removed',1],['X still raw counts',1]], report:'Doublets removed per batch. X is still raw.'},
+ {from:'prep',to:'int', passed:'AnnData with X_pca', reshaped:["copied raw counts to layers['counts']",'renamed nothing; Harmony reads batch_id directly'], checks:[['X_pca has ≥ 10 components',1],['HVGs flagged',1],['raw counts layer present',1]], report:'Normalized, 2,000 HVGs, 30 PCs. Batches separate mildly on PC2.'},
+ {from:'int',to:'ct', passed:'AnnData with X_pca_harmony, neighbors, UMAP', reshaped:['set default representation to X_pca_harmony'], checks:[['Neighbors graph built on corrected PCs',1],['Batch sizes balanced',f=>f?1:0]], report:'Integrated with Harmony. Mixing metrics computed.'}
+];
+
+const LIB = {
+ Core:[['load_adata','Read and validate an h5ad'],['QC_Inspection','QC metrics and MAD filtering'],['Doublets','Scrublet per batch'],['Integrate_Harmony','Fast batch correction on PCs'],['Integrate_scvi','Deep generative integration (GPU)'],['Celltyping','CellTypist annotation'],['DGE','Differential expression between groups']],
+ Community:[['Ambient RNA removal','placeholder · shared by another lab'],['Trajectory (PAGA)','placeholder · shared by another lab'],['Spatial neighbors','placeholder · shared by another lab']],
+ Personal:[['QC, per-batch MADs','your saved variant of QC_Inspection'],['Lab UMAP style','your plotting defaults']],
+ Generative:[]
+};
+
+const VIGS = [
+ {t:'Why batch 3 looked different', src:'QC → Cell typing', sel:['block','qc'],
+  txt:f=>f?'Batch 3 was sequenced less deeply. Judged against its own distribution it keeps 94% of cells, and its microglia are back.':'Batch 3 was sequenced less deeply. A single global cutoff removed 34% of its cells, including nearly all microglia.'},
+ {t:'What integration changed', src:'Integration readout', sel:['readout','int'],
+  txt:f=>'Before correction the batches form separate islands. After Harmony they overlap inside each population while the populations stay apart.'},
+ {t:'Which populations are there', src:'Cell typing readout', sel:['readout','ct'],
+  txt:f=>f?'Nine populations in all three batches, with similar proportions. This answers the question: yes, the batches are comparable.':'Eight populations, seven shared across all batches. The answer is "mostly yes", with one gap that traces back to QC.'}
+];
+const ARC = {
+ plain:f=>f?'Three batches, one picture: after cleaning each batch fairly and lining them up, they contain the same nine kinds of cells.':'Three batches mostly agree, but one batch lost too many cells during cleaning, so one cell type appears to be missing.',
+ bio:f=>f?'With per-batch QC, the three hippocampus batches integrate cleanly and share all nine major populations in similar proportions.':'The three batches integrate well and share most populations, but a QC choice removed a third of batch 3 and its microglia, so the comparison is not yet trustworthy.',
+ comp:f=>f?'Per-batch MAD QC → Scrublet → HVG/PCA → Harmony → Leiden/CellTypist. Mixing metrics hold with balanced batches; 9 labels in all batches.':'Global MAD QC → Scrublet → HVG/PCA → Harmony → Leiden/CellTypist. Batch 3 retention 66% biases iLISI upward and drops microglia.'
+};
+
+/* ---------- state ---------- */
+let F = false;   // "QC fixed" flag of the path currently being rendered
+const LANES = [{id:'main', name:'Original', fixed:false, from:null, parent:null, method:'Harmony', over:{}}];
+const S = {sel:null, open:{}, stepCode:{}, aud:'bio', accepted:false, libTab:'Core', tickets:[], storyOpen:false, sanOpen:false, main:'main', showPaths:true,
+           layers:{readout:false,story:false}, status:{'main:load':'done','main:qc':'warn','main:dbl':'done','main:prep':'done','main:int':'done','main:ct':'done'}, extra:[], editing:false, edited:{}};
+const $ = id => document.getElementById(id);
+const v = x => typeof x==='function' ? x(F) : x;
+const esc = s => String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const base = () => BLOCKS.concat(S.extra);
+const idx = id => base().findIndex(b=>b.id===id);
+const lane = id => LANES.find(l=>l.id===id);
+const mainL = () => lane(S.main);
+/* which path "owns" step i of path L: its own, or an ancestor's if L forked later */
+function owner(L,i){ while(L.from && i<idx(L.from)) L=lane(L.parent); return L }
+function blk(id,L){ const b=base().find(x=>x.id===id); let o=null, p=L; while(p&&!o){o=p.over[id]; p=p.parent?lane(p.parent):null} return o?{...b,...o}:b }
+function diverge(L,M){ const n=base().length; for(let i=0;i<n;i++) if(owner(L,i).id!==owner(M,i).id) return i; return -1 }
+const st = (L,id) => S.status[owner(L,idx(id)).id+':'+id] || 'idle';
+const setSt = (L,id,s) => S.status[owner(L,idx(id)).id+':'+id] = s;
+const inherits = (id,L) => !L.fixed && idx(id) > idx('qc') && idx(id) <= idx('ct');
+const metric = (b,L) => (L.blank && idx(b.id)>=idx(L.from)) ? '— not mocked in demo' : v(b.metric);
+const AUD = {plain:'a newcomer', bio:'a biologist', comp:'an analyst'};
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('on');clearTimeout(toast.h);toast.h=setTimeout(()=>t.classList.remove('on'),2400)}
+const disc = (k,label,inner) => `<div class="disc ${S.open[k]?'on':''}"><button class="dh" data-open="${k}"><span class="ch">▶</span>${label}</button>${S.open[k]?`<div class="db">${inner()}</div>`:''}</div>`;
+
+/* ---------- branching ---------- */
+const BR = {
+  pb:{name:'Per-batch QC', from:'qc', fixed:true, over:{}},
+  scvi:{name:'scVI', from:'int', method:'scVI', over:{int:{
+    sample:'Integrate_scvi', sum:'Line the batches up with a deep generative model.',
+    metric:f=>f?'iLISI 0.76 · ASW batch 0.93':'iLISI 0.78 · ASW batch 0.94',
+    substeps:[
+      {n:'Train scVI', d:'Learns a batch-corrected latent space from the raw counts layer.', code:"import scvi\nscvi.model.SCVI.setup_anndata(adata, layer='counts', batch_key='batch_id')\nmodel = scvi.model.SCVI(adata, n_latent=30)\nmodel.train()\nadata.obsm['X_scVI'] = model.get_latent_representation()"},
+      {n:'Neighbors and UMAP', d:'Built on the scVI latent space.', code:"sc.pp.neighbors(adata, use_rep='X_scVI')\nsc.tl.umap(adata)"},
+      {n:'Score batch mixing', d:'Same SCIB metrics as the other path, so they can be compared.', code:"from scib_metrics import ilisi_knn, silhouette_batch, graph_connectivity"}],
+    decisions:[{q:'Harmony or scVI?', chose:'scVI', alts:'Harmony (the original path)', ev:'You asked to try the alternative. It needs the raw counts layer, which Preprocess kept, and a GPU node.', src:'your branch request', turn:15}],
+    events:[[15,'status_change','forked from checkpoint after Preprocess'],[16,'code_submitted','scvi, 9 lines'],[16,'code_result','success, 412.6 s'],[17,'metrics_result','iLISI, ASW batch, graph connectivity'],[17,'artifact','umap_batch.png · plot']],
+    story:{plain:'We lined the batches up again with a different, slower method to see if the answer holds.',
+           bio:f=>'With scVI the batches mix slightly better than with Harmony and the same populations appear.'+(f?'':' Batch 3 is still under-represented, so the same caveat applies.'),
+           comp:f=>f?'scVI (30 latent dims) on layers.counts. iLISI 0.76, ASW batch 0.93.':'scVI (30 latent dims) on layers.counts. iLISI 0.78, ASW batch 0.94. Batch 3 imbalance unchanged.'}}}}
+};
+function branch(kind,parentId,custom,instant){
+  const P=lane(parentId), t=custom||BR[kind], id=kind+'@'+parentId+(custom?LANES.length:'');
+  let L=lane(id);
+  if(!L){ L={id, name:t.name+(P.parent?' + '+P.name:''), from:t.from, parent:P.id, fixed:t.fixed??P.fixed, method:t.method??P.method, over:t.over||{}, blank:!!t.blank}; LANES.push(L) }
+  S.showPaths=true;
+  if(instant){ base().forEach((b,i)=>{if(i>=idx(L.from))setSt(L,b.id,'done')}); return L }
+  S.sel=['block',L.from,L.id]; S.open={}; S.stepCode={};
+  toast('New path "'+L.name+'". Earlier steps are shared, not re-run.');
+  runFrom(L.from,L,false);
+  return L;
+}
+function discard(id){
+  const kill=[id]; let grew=true;
+  while(grew){grew=false; LANES.forEach(l=>{if(kill.includes(l.parent)&&!kill.includes(l.id)){kill.push(l.id);grew=true}})}
+  if(kill.includes(S.main)) return toast('Make another path the main one first');
+  kill.forEach(k=>LANES.splice(LANES.findIndex(l=>l.id===k),1));
+  if(S.sel&&kill.includes(S.sel[2])) S.sel=['compare','0',S.main];
+}
+function facts(L){
+  const f=L.fixed, s=L.method==='scVI', d='—', after=i=>L.blank&&idx(L.from)<=idx(i);
+  return [['QC thresholds',after('qc')?d:f?'per batch':'global'],['Cells kept',after('qc')?d:f?'81,650':'74,210'],['Batch 3 kept',after('qc')?d:f?'94%':'66%'],
+    ['Integration',after('int')?d:L.method],['iLISI',after('int')?d:s?(f?'0.76':'0.78'):(f?'0.71':'0.74')],['ASW batch',after('int')?d:s?(f?'0.93':'0.94'):(f?'0.91':'0.92')],
+    ['Populations',after('ct')?d:f?'9':'8'],['Microglia, batch 3',after('ct')?d:f?'present':'missing']];
+}
+
+/* ---------- charts ---------- */
+function rng(seed){return()=>{seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function chart(kind,big){
+  const W=320,H=big?230:64,p=big?{l:38,r:10,t:12,b:26}:{l:6,r:6,t:6,b:6};
+  const iw=W-p.l-p.r, ih=H-p.t-p.b; let g='';
+  const ax = big?`<line x1="${p.l}" y1="${p.t+ih}" x2="${W-p.r}" y2="${p.t+ih}" stroke="var(--line2)"/><line x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${p.t+ih}" stroke="var(--line2)"/>`:'';
+  const txt=(x,y,s,a='middle')=>big?`<text x="${x}" y="${y}" font-size="10" fill="var(--ink2)" text-anchor="${a}">${s}</text>`:'';
+  if(kind==='qc'){
+    const before=[30112,29480,26363], after=F?[28950,27890,24810]:[28950,27890,17370], max=32000, bw=iw/3;
+    before.forEach((b,i)=>{const x=p.l+i*bw+bw*.16,w=bw*.3,h1=ih*b/max,h2=ih*after[i]/max;
+      g+=`<rect x="${x}" y="${p.t+ih-h1}" width="${w}" height="${h1}" fill="var(--mute)"/>`;
+      g+=`<rect x="${x+w+2}" y="${p.t+ih-h2}" width="${w}" height="${h2}" fill="${(!F&&i===2)?'var(--warn)':'var(--c1)'}"/>`;
+      g+=txt(x+w,H-10,'batch '+(i+1)); g+=txt(x+w*1.5+2,p.t+ih-h2-3,Math.round(after[i]/b*100)+'%');});
+    g+=txt(p.l-4,p.t+6,'32k','end')+txt(p.l-4,p.t+ih,'0','end');
+  } else if(kind==='dbl'){
+    const n=24,r=rng(7),bw=iw/n;
+    for(let i=0;i<n;i++){const x=i/n,h=(Math.exp(-Math.pow((x-.14)/.09,2))+.16*Math.exp(-Math.pow((x-.62)/.13,2))+r()*.02)*ih*.95;
+      g+=`<rect x="${p.l+i*bw+.5}" y="${p.t+ih-h}" width="${bw-1}" height="${h}" fill="${x>.42?'var(--c2)':'var(--mute)'}"/>`;}
+    const tx=p.l+iw*.42; g+=`<line x1="${tx}" y1="${p.t}" x2="${tx}" y2="${p.t+ih}" stroke="var(--ink2)" stroke-dasharray="3 3"/>`;
+    g+=txt(tx+4,p.t+10,'threshold','start')+txt(p.l+iw/2,H-8,'doublet score');
+  } else if(kind==='pca'){
+    let d='';for(let i=0;i<30;i++){const x=p.l+iw*i/29,y=p.t+ih-ih*(.9*Math.exp(-i/5)+.05);d+=(i?'L':'M')+x.toFixed(1)+' '+y.toFixed(1)}
+    g+=`<path d="${d}" fill="none" stroke="var(--c1)" stroke-width="2"/>`;const cx=p.l+iw*24/29;
+    g+=`<line x1="${cx}" y1="${p.t}" x2="${cx}" y2="${p.t+ih}" stroke="var(--ink2)" stroke-dasharray="3 3"/>`+txt(cx-4,p.t+10,'flattens ~25','end')+txt(p.l+iw/2,H-8,'principal component');
+  } else if(kind==='umap'){
+    const cols=['var(--c1)','var(--c2)','var(--c3)'], r=rng(11), cl=[[.25,.3],[.7,.28],[.3,.75],[.72,.72],[.5,.5]], half=iw/2-6;
+    [0,1].forEach(side=>{const ox=p.l+side*(half+12);
+      g+=`<rect x="${ox}" y="${p.t}" width="${half}" height="${ih}" fill="none" stroke="var(--line)"/>`;
+      for(let i=0;i<(big?330:150);i++){const b=i%3; if(!F&&b===2&&r()<.34){r();r();r();continue}
+        const c=cl[Math.floor(r()*5)], sh=side?0:(b-1)*.11, x=c[0]+(r()-.5)*.2+sh, y=c[1]+(r()-.5)*.2+sh*.6;
+        g+=`<circle cx="${(ox+Math.min(.97,Math.max(.03,x))*half).toFixed(1)}" cy="${(p.t+Math.min(.97,Math.max(.03,y))*ih).toFixed(1)}" r="${big?1.8:1.2}" fill="${cols[b]}" opacity=".75"/>`;}
+      g+=txt(ox+half/2,H-8,side?'after Harmony':'before');});
+    return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${g}</svg>`;
+  } else if(kind==='ct'){
+    const names=['Excitatory CA1','Excitatory CA3','DG granule','Inhibitory','Astrocytes','Oligodendrocytes','OPCs','Endothelial','Microglia'];
+    const vals=[19,13,17,9,11,10,4,3,F?2.4:1.1], rh=ih/names.length, lx=big?p.l+62:p.l;
+    names.forEach((n,i)=>{const w=(W-p.r-lx)*vals[i]/20;
+      g+=`<rect x="${lx}" y="${p.t+i*rh+1}" width="${w}" height="${rh-2}" fill="${(!F&&i===8)?'var(--warn)':'var(--c3)'}"/>`;
+      g+=txt(lx-4,p.t+i*rh+rh*.7,n,'end');});
+    g+=txt(lx+(W-p.r-lx)/2,H-8,'thousands of cells');
+    return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${g}</svg>`;
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${ax}${g}</svg>`;
+}
+const LEG = {qc:[['var(--mute)','before QC'],['var(--c1)','after QC']], dbl:[['var(--mute)','singlets'],['var(--c2)','called doublets']], pca:[['var(--c1)','variance explained']],
+  umap:[['var(--c1)','batch 1'],['var(--c2)','batch 2'],['var(--c3)','batch 3']], ct:[['var(--c3)','cells per population']]};
+
+
+/* ---------- page: question, answer, pipeline ---------- */
+function renderSan(){
+  $('san').innerHTML = `<div class="disc ${S.sanOpen?'on':''}"><button class="dh" data-toggle="sanOpen"><span class="ch">▶</span>How CARIBOU read this</button>${S.sanOpen?`<div class="db"><div class="san">
+    <div class="lbl">Sanitized question</div>Integrate the 3 batches so that batch mixing improves (ASW batch, graph connectivity, iLISI) without merging distinct cell types, then annotate major populations and compare their proportions per batch.
+    <div class="chips"><span>assumes batches are technical, not biological</span><span>assumes mouse, whole-cell RNA</span><span>out of scope: differential expression</span></div>
+    <div class="acts"><button class="sm" data-act="resan">Re-read my question</button></div></div></div>`:''}</div>`;
+}
+function renderAnswer(){
+  const M=mainL(); F=M.fixed;
+  const others=LANES.filter(l=>l.id!==M.id), fix=others.find(l=>l.fixed), cmp=`<a href="#" data-sel="compare:0:${M.id}">Compare paths</a>`;
+  const issue = M.fixed ? `<div class="issue ok">✓ No open issues</div>`
+    : fix ? `<div class="issue">⚠ Batch 3 lost 34% of its cells in QC. A fix is ready on the path “${fix.name}”. ${cmp}</div>`
+    : S.accepted ? `<div class="issue noted">Noted: batch 3 lost 34% of its cells in QC. <a href="#" data-sel="block:qc:${M.id}">Review</a></div>`
+    : `<div class="issue">⚠ One thing needs your attention: batch 3 lost 34% of its cells in QC. <a href="#" data-sel="block:qc:${M.id}">Show me</a></div>`;
+  $('answer').innerHTML = `<div class="hd"><span class="lbl">Where things stand${LANES.length>1?' · main path: '+M.name:''}</span><span class="dim" style="font-size:12.5px">Explain it to</span>
+      <select class="inline" id="aud">${Object.keys(AUD).map(k=>`<option value="${k}" ${S.aud===k?'selected':''}>${AUD[k]}</option>`).join('')}</select></div>
+    <p class="arc">${ARC[S.aud](F)}</p>${issue}
+    ${others.length?`<div class="also">Also tried: ${others.map(l=>`<a href="#" data-sel="block:${l.from}:${l.id}">${esc(l.name)}</a>`).join(', ')} · ${cmp}</div>`:''}
+    <div class="disc ${S.storyOpen?'on':''}"><button class="dh" data-toggle="storyOpen"><span class="ch">▶</span>Read the full story (${VIGS.length} parts)</button>
+    ${S.storyOpen?`<div class="db" style="padding-left:0"><div class="vigs">${VIGS.map(g=>`<div class="vig" data-sel="${g.sel.join(':')}:${M.id}"><h4>${g.t}</h4><p>${g.txt(F)}</p><div class="src">See the evidence: ${g.src} →</div></div>`).join('')}</div></div>`:''}</div>`;
+  $('cmpBtn').innerHTML = others.length?`<button data-sel="compare:0:${M.id}" style="font-size:13px;padding:3px 10px">Compare ${LANES.length} paths</button>`:'';
+}
+const SLAB = {running:'running…', stale:'out of date', edited:'edited, not run', idle:'not run'};
+function laneRow(L,row,start,forks){
+  F=L.fixed; const bs=base(), n=bs.length, isMain=L.id===S.main; let h='';
+  bs.forEach((b0,i)=>{ if(i<start) return;
+    const b=blk(b0.id,L), c=2+i*2, s=st(L,b.id), comp=S.compose&&S.sel&&S.sel[0]==='block'&&S.sel[2]===L.id, on=S.sel&&S.sel[2]===L.id&&S.sel[1]==b.id;
+    h+=`<button class="blk s-${s} ${isMain?'':'alt'} ${on&&S.sel[0]==='block'?'sel':''}" style="grid-row:${row};grid-column:${c}" data-sel="block:${b.id}:${L.id}" title="${s==='warn'?'Needs attention. ':''}Double-click for substeps">
+      ${!isMain&&i===start?`<span class="lname">${esc(L.name)}</span>`:''}<span class="n"><i class="dot"></i>${b.name}</span><span class="m">${metric(b,L)}</span>${SLAB[s]?`<span class="tag">${SLAB[s]}</span>`:''}${on&&S.sel[0]==='block'&&i>0?`<span class="bh" data-act="compose" title="Start a new path from this step">${S.compose?'✕ Cancel':'⑂ Branch'}</span>`:''}
+      ${inherits(b.id,L)&&s==='done'?'<i class="ring" title="Depends on the flagged QC step"></i>':''}
+      ${forks&&forks[i]?`<span class="fork" data-toggle="showPaths" title="${S.showPaths?'Hide':'Show'} the other paths">${forks[i]+1} paths ${S.showPaths?'▴':'▾'}</span>`:''}</button>`;
+    const a=ADAPTORS[i], bad=a&&i<n-1&&a.checks.some(k=>!v(k[1])), sl=S.sel&&S.sel[0]==='adaptor'&&S.sel[1]==i&&S.sel[2]===L.id;
+    h+=`<div class="adw ${(forks&&forks[i+1]&&S.showPaths)||(comp&&idx(S.sel[1])===i+1)?'forked':''}" style="grid-row:${row};grid-column:${c+1}">${a&&i<n-1?`<button class="ad ${bad?'bad':''} ${sl?'sel':''}" data-sel="adaptor:${i}:${L.id}" title="Adaptor: ${bad?'a check failed':'handoff checked'}">${bad?'!':''}</button>`:''}</div>`;
+  });
+  return h;
+}
+function composer(row,L){
+  const id=S.sel[1], i=idx(id), b=blk(id,L), n=base().length, c0=Math.min(2+i*2, 2+Math.max(0,n-3)*2);
+  const chips=(id==='qc'&&!L.fixed?'<button class="chip" data-branch="pb">Per-batch thresholds</button>':'')+(id==='int'&&L.method!=='scVI'?'<button class="chip" data-branch="scvi">Use scVI instead</button>':'');
+  return `${c0===2+i*2?`<div class="elbow" style="grid-row:${row};grid-column:${i*2+1}"></div>`:''}<div class="composer" style="grid-row:${row};grid-column:${c0} / -1">
+    <div class="lbl">New path from ${b.name}</div>
+    <div class="crow">${chips}<input id="altText" placeholder="${chips?'or describe':'Describe'} what ${b.name} should do differently"><button class="primary sm" data-act="alt">Create path</button></div>
+    <div class="dim" style="font-size:12px">Steps before ${b.name} are shared and not re-run. The current path stays as it is.</div></div>`;
+}
+function renderFlow(){
+  const M=mainL(), bs=base(), n=bs.length, wide=S.layers.readout||S.layers.story, cols=['max-content'];
+  bs.forEach(()=>cols.push(wide?'172px':'116px','30px')); cols.push('84px');
+  const comp=S.compose&&S.sel&&S.sel[0]==='block'&&idx(S.sel[1])>0 ? S.sel[2] : null;
+  let r=1; const rRead=r++, rAct=r++, rTrace=!M.fixed?r++:0, rComp=comp===M.id?r++:0, rStory=r++;
+  const f=$('flow'); f.style.gridTemplateColumns=cols.join(' '); let h='';
+  const others=LANES.filter(l=>l.id!==M.id), forks={}; others.forEach(l=>{const d=diverge(l,M); forks[d]=(forks[d]||0)+1});
+  const rail=(row,key,label,on)=>`<button class="rail ${on?'on':''}" style="grid-row:${row};grid-column:1" data-rail="${key}" title="${on?'Fold':'Unfold'} this row"><span class="ch">▶</span>${label}</button>`;
+  h+=rail(rRead,'readout','Plots',S.layers.readout)+`<span class="rail fixed" style="grid-row:${rAct};grid-column:1">Steps</span>`+rail(rStory,'story','Story',S.layers.story);
+  F=M.fixed;
+  bs.forEach((b0,i)=>{ const b=blk(b0.id,M), c=2+i*2;
+    if(S.layers.readout&&b.readout) h+=`<button class="rd" style="grid-row:${rRead};grid-column:${c}" data-sel="readout:${b.id}:${M.id}"><div class="t">${b.readout.title}</div>${chart(b.readout.kind)}</button>`;
+    if(S.layers.story) h+=`<button class="st" style="grid-row:${rStory};grid-column:${c}" data-sel="block:${b.id}:${M.id}">${v(b.story[S.aud])}</button>`; });
+  h+=laneRow(M,rAct,0,forks);
+  h+=`<button class="addb" style="grid-row:${rAct};grid-column:${2+n*2}" data-sel="library:0:${M.id}">+ Add step</button>`;
+  if(rTrace) h+=`<div class="trace" style="grid-row:${rTrace};grid-column:${2+idx('qc')*2} / ${3+idx('ct')*2}">QC warning carries forward to every step after it</div>`;
+  if(rComp){ if(rTrace) h+=`<div class="riser" style="grid-row:${rTrace};grid-column:${idx(S.sel[1])*2+1}"></div>`; F=M.fixed; h+=composer(rComp,M) }
+  if(others.length){ h+=rail(r,'paths',`Paths (${others.length})`,S.showPaths);
+    if(S.showPaths) others.forEach(L=>{ const d=diverge(L,M), row=r++;
+      for(let rr=rAct+1; rr<row; rr++) h+=`<div class="riser" style="grid-row:${rr};grid-column:${d*2+1}"></div>`;
+      h+=`<div class="elbow" style="grid-row:${row};grid-column:${d*2+1}"></div>`+laneRow(L,row,d,null);
+      if(comp===L.id){F=L.fixed; h+=composer(r++,L)} });
+    else r++; }
+  f.innerHTML=h;
+  $('hint').textContent='Click a step for a summary, or to branch from it. Double-click to open its substeps. Fold rows from their labels on the left.';
+}
+
+/* ---------- side panel ---------- */
+function code(b){return b.substeps.map(s=>'# '+s.n+'\n'+v(s.code)).join('\n\n')}
+function hl(s){return esc(s).split('\n').map(l=>l.trim().startsWith('#')?`<span class="c">${l}</span>`:l).join('\n')}
+const ALT = {'qc:0':'pb','int:0':'scvi'};   // decisions whose "instead of" can become a path
+function panelBlock(id,L){
+  const b=blk(id,L), s=st(L,id), ek=L.id+':'+id, mine=owner(L,idx(id)).id===L.id;
+  let body=`<p class="lead">${v(b.story[S.aud])}</p><div class="mono dim" style="margin-top:4px">${metric(b,L)}</div>`;
+  if(id==='qc'&&!L.fixed) body+=`<div class="warnbox"><b>Batch 3 lost 34% of its cells.</b> The other two lost about 5%. One cutoff was used for all batches, and batch 3 was sequenced less deeply.
+    <div class="acts"><button class="danger sm" data-branch="pb">Try the fix on a new path</button><button class="sm" data-act="ticket-qc">Open ticket</button>${S.accepted?'':'<button class="sm" data-act="accept">Accept and note it</button>'}</div></div>`;
+  else if(inherits(id,L)&&s==='done') body+=`<div class="warnbox">${id==='int'?'Batch 3 is under-represented here, so the mixing score may look better than it is.':id==='ct'?'Microglia are missing from batch 3. That is probably a QC effect, not biology.':'This step ran on input that the QC step left unbalanced.'}
+    <div class="acts"><button class="sm" data-sel="block:qc:${L.id}">Go to QC</button></div></div>`;
+  if(idx(id)>0) body+=`<div class="acts"><button class="sm" data-act="compose">${S.compose?'✕ Cancel new path':'⑂ Branch from here'}</button></div>`;
+  if(b.readout&&!(L.blank&&mine)) body+=`<button class="thumb" data-sel="readout:${id}:${L.id}"><div class="t"><span>${b.readout.title}</span><span>enlarge →</span></div>${chart(b.readout.kind)}</button>`;
+  body+=disc('steps',`Substeps (${b.substeps.length})`,()=>b.substeps.map((x,j)=>`<div class="step" data-step="${j}"><div class="sn"><span>${j+1}. ${x.n}</span><a data-stepcode="${j}">${S.stepCode[j]?'hide code':'code'}</a></div>
+      <div class="sd">${v(x.d)}</div>${S.stepCode[j]?`<pre>${hl(v(x.code))}</pre>`:''}</div>`).join('')+`<div class="hint">Double-click a substep to see its code.</div>`);
+  body+=disc('why',`Why it did this (${b.decisions.length} ${b.decisions.length===1?'decision':'decisions'})`,()=>b.decisions.length?b.decisions.map((d,j)=>{
+      const k=ALT[id+':'+j], made=k&&(k==='pb'?L.fixed:L.method==='scVI'), ex=k&&lane(k+'@'+L.id);
+      return `<div class="dec ${d.rec?'rec':''}"><h4>${d.q}</h4><dl><dt>Chose</dt><dd><b>${v(d.chose)}</b></dd><dt>Instead of</dt><dd>${v(d.alts)}</dd><dt>Because</dt><dd>${v(d.ev)}</dd><dt>Source</dt><dd>${d.src} · turn ${d.turn}</dd></dl>
+        ${k&&!made?`<div class="acts">${ex?`<button class="sm" data-sel="block:${id}:${ex.id}">View the path that tried it</button>`:`<button class="sm" data-branch="${k}">Try the alternative on a new path</button>`}</div>`:''}</div>`}).join(''):'<p class="dim">Nothing recorded yet.</p>');
+  body+=disc('code','Code',()=>{const src=S.edited[ek]??code(b);
+    return (S.editing?`<textarea id="codeEd" class="mono" rows="16" spellcheck="false">${esc(src)}</textarea>`:`<pre>${hl(src)}</pre>`)+
+      `<div class="acts"><button class="sm" data-act="edit">${S.editing?'Save edit':'Edit code'}</button><button class="sm" data-act="ticket-code">Open ticket</button></div>
+       <div style="margin-top:10px;font-size:12.5px" class="dim">Or ask the agent to change it</div><div style="display:flex;gap:6px;margin-top:4px"><input id="custom" placeholder="e.g. use 4 MADs"><button data-act="custom">Apply</button></div>`});
+  body+=disc('run','Run controls',()=>`<div class="acts" style="margin-top:0"><button class="sm" data-act="run-one">Run this step</button><button class="sm" data-act="run-down">Run from here onward</button></div>`);
+  body+=disc('events',`Activity (${b.events.length})`,()=>b.events.map(e=>`<div class="ev"><span class="dim">t${e[0]}</span><span class="ty">${e[1]}</span><span>${e[2]}</span></div>`).join('')||'<p class="dim">No activity yet.</p>');
+  const where = LANES.length>1 ? ` · path: ${esc(L.name)}${mine?'':' (shared step)'}` : '';
+  return [`<div class="lbl">Step ${idx(id)+1} of ${base().length} · ${b.agent}${where}</div><h3>${b.name}</h3>`, body];
+}
+function panelAdaptor(i,L){
+  const a=ADAPTORS[i], A=blk(a.from,L), B=blk(a.to,L), bad=a.checks.filter(k=>!v(k[1]));
+  let body=`<p class="lead">Hands <b>${v(a.passed)}</b> to the next step and checks it is what that step expects.</p>`;
+  body+= bad.length?`<div class="warnbox"><b>Check failed: ${bad[0][0].toLowerCase()}.</b> ${a.note?v(a.note)||'':''}<div class="acts"><button class="sm" data-sel="block:qc:${L.id}">Go to QC</button></div></div>`
+                   :`<div class="issue ok" style="margin-top:12px">✓ All ${a.checks.length} checks passed</div>`;
+  body+=`<p class="dim" style="font-size:12.5px;margin-top:10px">New paths fork from here: the data at this handoff is checkpointed, so a branch from “${B.name}” reuses it.</p>`;
+  body+=disc('checks',`Checks (${a.checks.length})`,()=>a.checks.map(k=>`<div class="chk"><b class="${v(k[1])?'ok':'bad'}">${v(k[1])?'✓':'✕'}</b><span>${k[0]}</span></div>`).join(''));
+  body+=disc('reshaped','What the LLM changed in between',()=>`<ul style="margin:0;padding-left:18px;font-size:13px">${a.reshaped.map(x=>`<li>${x}</li>`).join('')}</ul>`);
+  body+=disc('report',`Handoff note from ${A.agent}`,()=>`<div class="dec">${v(a.report)}</div>`);
+  return [`<div class="lbl">Adaptor</div><h3>${A.name} → ${B.name}</h3>`, body];
+}
+function panelReadout(id,L){
+  const b=blk(id,L), r=b.readout;
+  return [`<div class="lbl">Readout · from ${b.name}${LANES.length>1?' · path: '+esc(L.name):''}</div><h3>${r.title}</h3>`,
+    `<div class="big">${chart(r.kind,true)}</div><div class="legend">${LEG[r.kind].map(l=>`<span><i style="background:${l[0]}"></i>${l[1]}</span>`).join('')}</div>
+     <p class="lead" style="margin-top:12px">${v(b.story[S.aud])}</p>
+     <div class="acts"><button class="sm" data-act="ticket-read">Open ticket off this result</button><button class="sm" data-sel="block:${id}:${L.id}">Go to step</button></div>`+
+     disc('file','File',()=>`<div class="mono">${r.file}</div><div class="acts"><button class="sm" data-act="dl">Download</button></div>`)];
+}
+function panelCompare(){
+  const rows=LANES.map(facts), n=rows[0].length; let t=`<div style="overflow-x:auto"><table class="cmp"><tr><th></th>${LANES.map(l=>`<th>${esc(l.name)}${l.id===S.main?'<span class="mainTag">main</span>':''}</th>`).join('')}</tr>`;
+  for(let i=0;i<n;i++){const vals=rows.map(r=>r[i][1]), diff=new Set(vals).size>1;
+    t+=`<tr class="${diff?'diff':''}"><td>${rows[0][i][0]}</td>${vals.map(x=>`<td>${x}</td>`).join('')}</tr>`}
+  t+=`</table></div><p class="dim" style="font-size:12.5px;margin-top:6px">Rows that differ are in bold. Mixing scores on paths with global QC are flattered by batch 3 being under-represented, so a higher iLISI there is not better.</p>`;
+  t+=LANES.map(l=>{F=l.fixed; const d=l.from||'load';
+    return `<div class="pathCard"><b>${esc(l.name)}</b>${l.id===S.main?'<span class="mainTag">main</span>':''}<div class="dim" style="font-size:12.5px">${l.parent?`forks from ${esc(lane(l.parent).name)} at ${blk(l.from,l).name}`:'the first run'}</div>
+      <p style="font-size:13px;margin-top:4px">${l.blank?'Custom path. Results are not mocked in this demo.':ARC[S.aud](F)+(l.method==='scVI'?' Integrated with scVI.':'')}</p>
+      <div class="acts"><button class="sm" data-sel="block:${d}:${l.id}">Open</button>${l.id!==S.main?`<button class="sm" data-promote="${l.id}">Make this the main path</button><button class="sm" data-discard="${l.id}">Discard</button>`:''}</div></div>`}).join('');
+  return [`<div class="lbl">Compare</div><h3>${LANES.length} paths</h3>`, t];
+}
+function panelLibrary(){
+  let h=`<div class="tabs">${Object.keys(LIB).map(t=>`<button class="${S.libTab===t?'on':''}" data-lib="${t}">${t}</button>`).join('')}</div>`;
+  if(S.libTab==='Generative') h+=`<textarea id="gen" rows="3" placeholder="Describe a step, e.g. regress out cell cycle before PCA"></textarea><button class="sm" style="margin:6px 0 10px" data-act="gen">Generate step</button>`;
+  h+=LIB[S.libTab].map((l,i)=>`<div class="lego ${S.libTab==='Generative'?'draft':''}"><div><div class="n">${esc(l[0])}</div><div class="d">${esc(l[1])}</div></div><button class="sm" data-add="${i}">Add</button></div>`).join('');
+  if(S.libTab==='Community') h+=`<p class="dim" style="font-size:12.5px">Sharing does not exist yet. These are placeholders.</p>`;
+  if(S.libTab==='Generative'&&!LIB.Generative.length) h+=`<p class="dim" style="font-size:12.5px">Generated steps arrive as drafts for you to review.</p>`;
+  return [`<div class="lbl">Add a step</div><h3>Block library</h3>`, h];
+}
+function renderInsp(){
+  const el=$('insp'); if(!S.sel){el.hidden=true;return} el.hidden=false;
+  const [k,id,lid]=S.sel, L=lane(lid)||mainL(); F=L.fixed; let p;
+  if(k==='block') p=panelBlock(id,L); else if(k==='adaptor') p=panelAdaptor(+id,L); else if(k==='readout') p=panelReadout(id,L); else if(k==='library') p=panelLibrary(); else if(k==='compare') p=panelCompare();
+  else if(k==='tickets') p=[`<div class="lbl">Tickets</div><h3>${S.tickets.length} open</h3>`, S.tickets.map(t=>`<div class="ticket"><b>#${t.n} ${esc(t.title)}</b><div class="dim">${esc(t.src)} · ${esc(t.who)}</div><div>${esc(t.body)}</div></div>`).join('')||'<p class="dim">No tickets yet. Open one from any code window or readout.</p>'];
+  else p=[`<div class="lbl">Session log</div><h3>Raw agent activity</h3>`, `<p class="dim" style="font-size:12.5px;margin-bottom:8px">This is what the chat view used to show. Everything on the page is built from it.</p>`+base().flatMap(b=>(blk(b.id,L).events||[]).map(e=>`<div class="ev"><span class="dim">t${e[0]}</span><span class="ty">${e[1]}</span><span>${e[2]}</span></div>`)).join('')];
+  el.innerHTML=`<div class="ihead"><div>${p[0]}</div><button class="ghost sm" data-act="close" title="Close">✕</button></div><div class="ibody">${p[1]}</div>`;
+}
+function render(){renderSan();renderAnswer();renderFlow();renderInsp();$('tcount').textContent=S.tickets.length}
+
+/* ---------- actions ---------- */
+let last={k:'',t:0};
+function isDouble(k){const n=Date.now(), d=k===last.k&&n-last.t<420; last={k,t:d?0:n}; return d}
+function select(s,dbl){
+  const p=s.split(':'), n=[p[0],p[1],p[2]||S.main];
+  if(!S.sel||S.sel.join(':')!==n.join(':')){S.open={};S.stepCode={};S.editing=false;S.compose=false}
+  S.sel=n; if(dbl&&n[0]==='block')S.open.steps=true; if(dbl&&n[0]==='adaptor')S.open.checks=true; render();
+}
+function runFrom(id,L,single){
+  const ids=base().map(b=>b.id), list=single?[id]:ids.slice(ids.indexOf(id)); list.forEach(i=>setSt(L,i,'stale')); let k=0;
+  (function step(){ if(k>0)setSt(L,list[k-1],'done');
+    if(k>=list.length){ if(!L.fixed&&!S.accepted)setSt(L,'qc','warn'); render(); return toast(single?'Step finished':'Finished: '+L.name)}
+    setSt(L,list[k],'running'); render(); k++; setTimeout(step,650)})();
+}
+function ticket(title,src){$('tTitle').value=title;$('tSrc').value=src;$('tBody').value='';$('modal').classList.add('on');$('tBody').focus()}
+function markStale(id,L){const ids=base().map(b=>b.id);ids.slice(ids.indexOf(id)+1).forEach(i=>{if(st(L,i)!=='idle')setSt(L,i,'stale')})}
+const closeMenus=()=>document.querySelectorAll('.menu.on').forEach(m=>m.classList.remove('on'));
+
+document.addEventListener('click',e=>{
+  if(!e.target.closest('.dd')) closeMenus();
+  const t=e.target.closest('[data-toggle],[data-sel],[data-open],[data-act],[data-lib],[data-add],[data-m],[data-dd],[data-stepcode],[data-step],[data-branch],[data-promote],[data-discard],[data-rail]'); if(!t) return;
+  if(t.tagName==='A') e.preventDefault();
+  const d=t.dataset, id=S.sel&&S.sel[1], L=S.sel?(lane(S.sel[2])||mainL()):mainL();
+  if(d.dd){const m=$('dd-'+d.dd), on=m.classList.contains('on'); closeMenus(); return m.classList.toggle('on',!on)}
+  if(d.toggle){S[d.toggle]=!S[d.toggle];return render()}
+  if(d.rail){ if(d.rail==='paths')S.showPaths=!S.showPaths; else S.layers[d.rail]=!S.layers[d.rail]; return renderFlow()}
+  if(d.sel) return select(d.sel,isDouble(d.sel));
+  if(d.open){S.open[d.open]=!S.open[d.open];S.editing=false;return renderInsp()}
+  if(d.stepcode!==undefined){S.stepCode[d.stepcode]=!S.stepCode[d.stepcode];return renderInsp()}
+  if(d.step!==undefined){ if(isDouble('step'+d.step)){S.stepCode[d.step]=!S.stepCode[d.step];renderInsp()} return}
+  if(d.branch){S.compose=false; return branch(d.branch,L.id)}
+  if(d.promote){S.main=d.promote;toast('“'+lane(d.promote).name+'” is now the main path. The story follows it.');return render()}
+  if(d.discard){discard(d.discard);return render()}
+  if(d.lib){S.libTab=d.lib;return renderInsp()}
+  if(d.m){document.querySelectorAll('#mode button').forEach(b=>b.classList.toggle('on',b===t));return toast(d.m==='auto'?'Auto: runs the whole chain':'Step: pauses after each step')}
+  if(d.add!==undefined){const l=LIB[S.libTab][d.add], nid='x'+Date.now();
+    S.extra.push({id:nid,name:l[0],agent:'Unassigned agent',sample:S.libTab.toLowerCase()+' block',sum:l[1],metric:()=>'no results yet',
+      substeps:[{n:'Not generated yet',d:'The agent writes the code for this step when it first runs.',code:'# code appears here after the first run'}],decisions:[],events:[],
+      story:{plain:'Not run yet.',bio:'Not run yet. '+l[1]+'.',comp:'Not run yet.'},readout:null});
+    toast('Added "'+l[0]+'" to the end'); return select('block:'+nid+':'+S.main)}
+  const a=d.act, b=S.sel&&S.sel[0]==='block'?blk(id,L):null, ek=L.id+':'+id; closeMenus();
+  if(a==='close'){S.sel=null;S.compose=false;return render()}
+  if(a==='compose'){S.compose=!S.compose; render(); const x=$('altText'); if(x)x.focus(); return}
+  if(a==='tickets') return select('tickets:0');
+  if(a==='log') return select('log:0');
+  if(a==='ckpt') return toast('Checkpoint saved');
+  if(a==='fork') return toast('Forked the whole session into a new one');
+  if(a==='report') return toast('Would draft a report from the story and readouts');
+  if(a==='resan') return toast('Would re-derive the sanitized question from your edit');
+  if(a==='alt'){const q=$('altText').value.trim(); if(!q) return toast('Describe the approach first'); S.compose=false;
+    return branch('c',L.id,{name:q.slice(0,26),from:id,blank:true,over:{[id]:{sum:q}}})}
+  if(a==='accept'){S.accepted=true;setSt(L,'qc','done');toast('Accepted. The note stays visible downstream.');return render()}
+  if(a==='run-one') return runFrom(id,L,true);
+  if(a==='run-down') return runFrom(id,L,false);
+  if(a==='edit'){ if(S.editing){S.edited[ek]=$('codeEd').value;setSt(L,id,'edited');markStale(id,L);toast('Saved. Later steps are out of date.')} S.editing=!S.editing;return render()}
+  if(a==='custom'){const q=$('custom').value.trim(); if(!q) return toast('Describe the change first');
+    S.edited[ek]=(S.edited[ek]??code(b))+'\n\n# LLM change requested: '+q+'\n# (the agent would rewrite the lines above here)'; setSt(L,id,'edited'); markStale(id,L); toast(b.agent+' updated the step'); return render()}
+  if(a==='ticket-qc') return ticket('Batch 3 lost 34% of cells in QC','QC step · readout "Cells kept per batch"');
+  if(a==='ticket-code') return ticket('Code issue in '+b.name,b.name+' · code window');
+  if(a==='ticket-read'){const r=blk(id,L);return ticket('Question about "'+r.readout.title+'"',r.name+' · readout '+r.readout.file)}
+  if(a==='dl') return toast('Would download '+blk(id,L).readout.file);
+  if(a==='gen'){const q=$('gen').value.trim(); if(!q) return toast('Describe the step first'); LIB.Generative.unshift([q.slice(0,40),'draft · generated from your description']); return renderInsp()}
+});
+document.addEventListener('change',e=>{
+  if(e.target.id==='aud'){S.aud=e.target.value;render()}
+});
+$('btnRun').onclick=()=>runFrom('load',mainL(),false);
+$('tCancel').onclick=()=>$('modal').classList.remove('on');
+$('tSave').onclick=()=>{S.tickets.push({n:S.tickets.length+1,title:$('tTitle').value,src:$('tSrc').value,body:$('tBody').value||'(no description)',who:$('tWho').value});$('modal').classList.remove('on');toast('Ticket opened');render()};
+/* deep links for demos: #block:qc:main:open, #all, #branches */
+if(location.hash){const h=decodeURIComponent(location.hash.slice(1)).split(':');
+  if(h[0]==='all'){S.layers={readout:true,story:true};S.storyOpen=true;S.sanOpen=true}
+  else if(h[0]==='compose'){S.sel=['block',h[1]||'int','main'];S.compose=true}
+  else if(h[0]==='branches'){branch('pb','main',null,true);branch('scvi','main',null,true);S.sel=['compare','0','main']}
+  else if(h[1]!==undefined){S.sel=[h[0],h[1],h[2]||'main']; if(h[3]==='open'){S.open={steps:true,why:true};S.stepCode={1:true}}}}
+render();
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'&&S.compose){S.compose=false;render()}
+  if(e.key==='Enter'&&e.target.id==='altText'){const b=document.querySelector('[data-act="alt"]'); if(b)b.click()}
+});
+</script>
+</body>
+</html>
