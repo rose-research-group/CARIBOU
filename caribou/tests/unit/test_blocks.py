@@ -11,10 +11,13 @@ import pytest
 
 from caribou.execution.blocks import (
     BLOCK_INDEX_SCHEMA,
+    BLOCK_SCHEMA,
     BlockError,
     BlockTracker,
     blocks_path_for,
     fork_blocks,
+    inherit_blocks,
+    init_blocks,
     load_blocks,
 )
 from caribou.execution.work_items import WorkItemPolicy, WorkItemStore
@@ -647,3 +650,318 @@ def test_note_delegation_rejects_malformed_commands(tmp_path, command):
     tracker, _ = _tracker(_store(tmp_path))
     with pytest.raises(ValueError):
         tracker.note_delegation("a", "b", command)
+
+
+# -- block record v2: entry, inherited_from ---------------------------------
+
+
+def _entry(turn=1, checkpoint_id="checkpoint_x"):
+    return {
+        "turn": turn,
+        "checkpoint_id": checkpoint_id,
+        "checkpoint_complete": True,
+        "fingerprint": None,
+        "work_items_commit": None,
+    }
+
+
+def test_new_blocks_are_v2_with_null_entry_and_inherited_from(tmp_path):
+    store = _store(tmp_path)
+    tracker, _ = _tracker(store)
+    tracker.begin_action("coder", 1, "a1")
+
+    block = load_blocks(blocks_path_for(store))["blocks"][0]
+    assert BLOCK_SCHEMA == "caribou.block.v2"
+    assert block["schema_version"] == BLOCK_SCHEMA
+    assert block["entry"] is None
+    assert block["inherited_from"] is None
+
+
+def test_on_new_block_runs_once_per_new_block_before_begin_action_returns(tmp_path):
+    store = _store(tmp_path)
+    tracker, changes = _tracker(store)
+    calls: list = []
+
+    def hook(block_id):
+        # Called before the block is first persisted or emitted.
+        calls.append((block_id, len(changes)))
+        return _entry(checkpoint_id=f"cp-{block_id}")
+
+    assert tracker.begin_action("coder", 1, "a1", on_new_block=hook) == "blk-0001"
+    tracker.finish_action("a1", True)
+    assert tracker.begin_action("coder", 1, "a2", on_new_block=hook) == "blk-0001"
+    item = store.open("QC", "b", "coder", 2)
+    assert tracker.begin_action("coder", 2, "a3", on_new_block=hook) == "blk-0002"
+
+    assert calls == [("blk-0001", 0), ("blk-0002", 2)]
+    blocks = _by_id(tracker)
+    assert blocks["blk-0001"]["entry"]["checkpoint_id"] == "cp-blk-0001"
+    assert blocks["blk-0002"]["entry"]["checkpoint_id"] == "cp-blk-0002"
+    assert blocks["blk-0002"]["work_item_id"] == item["id"]
+    assert changes[0]["entry"]["checkpoint_id"] == "cp-blk-0001"
+    persisted = load_blocks(blocks_path_for(store))["blocks"]
+    assert persisted[1]["entry"] == _entry(checkpoint_id="cp-blk-0002")
+
+
+def test_on_new_block_is_not_called_for_a_reopened_or_focused_block(tmp_path):
+    store = _store(tmp_path)
+    tracker, _ = _tracker(store)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.finish_action("a1", True)
+    tracker.close_all()
+    tracker.set_focus("blk-0001")
+
+    def hook(block_id):
+        raise AssertionError("no new block")
+
+    assert tracker.begin_action("coder", 2, "a2", on_new_block=hook) == "blk-0001"
+    assert tracker.blocks()[0]["entry"] is None
+
+
+def test_a_failing_on_new_block_discards_the_block_and_propagates(tmp_path):
+    store = _store(tmp_path)
+    tracker, changes = _tracker(store)
+    tracker.note_delegation("planner", "coder", "delegate_to_QC_metrics")
+
+    def hook(block_id):
+        raise FileNotFoundError("no dataset")
+
+    with pytest.raises(FileNotFoundError):
+        tracker.begin_action("coder", 1, "a1", on_new_block=hook)
+    assert tracker.blocks() == []
+    assert changes == []
+    tracker.close_all()
+    assert load_blocks(blocks_path_for(store))["blocks"] == []
+    # The handoff title is still pending, and the action id was not consumed.
+    assert tracker.begin_action("coder", 1, "a1") == "blk-0001"
+    assert tracker.blocks()[0]["title"] == "QC metrics (from planner)"
+
+
+def test_on_new_block_must_return_a_dict(tmp_path):
+    store = _store(tmp_path)
+    tracker, _ = _tracker(store)
+    with pytest.raises(BlockError):
+        tracker.begin_action("coder", 1, "a1", on_new_block=lambda block_id: None)
+    assert tracker.blocks() == []
+
+
+def _v1_index(session_id="sess"):
+    return {
+        "schema_version": BLOCK_INDEX_SCHEMA,
+        "session_id": session_id,
+        "blocks": [
+            {
+                "schema_version": "caribou.block.v1",
+                "block_id": "blk-0001",
+                "session_id": session_id,
+                "index": 1,
+                "work_item_id": None,
+                "attempt": 1,
+                "implicit": True,
+                "title": "coder (no work item)",
+                "kind": None,
+                "agents": ["coder"],
+                "status": "ok",
+                "turn_start": 1,
+                "turn_end": 1,
+                "action_ids": ["old-1"],
+                "failed_action_ids": [],
+                "artifact_paths": [],
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            }
+        ],
+    }
+
+
+def test_v1_blocks_load_with_null_entry_and_are_rewritten_as_v2(tmp_path):
+    store = _store(tmp_path)
+    path = blocks_path_for(store)
+    path.write_text(json.dumps(_v1_index()))
+
+    loaded = load_blocks(path)["blocks"][0]
+    assert loaded["schema_version"] == "caribou.block.v1"
+    assert "entry" not in loaded and "inherited_from" not in loaded
+
+    tracker, _ = _tracker(store)
+    assert tracker.begin_action("coder", 2, "a2") == "blk-0002"
+    persisted = load_blocks(path)["blocks"]
+    assert [block["schema_version"] for block in persisted] == [BLOCK_SCHEMA] * 2
+    assert persisted[0]["entry"] is None
+
+
+def test_v2_block_missing_its_fields_is_malformed(tmp_path):
+    path = tmp_path / "blocks.json"
+    index = _v1_index()
+    index["blocks"][0]["schema_version"] = BLOCK_SCHEMA
+    path.write_text(json.dumps(index))
+    with pytest.raises(BlockError):
+        load_blocks(path)
+    index["blocks"][0].update(entry="nope", inherited_from=None)
+    path.write_text(json.dumps(index))
+    with pytest.raises(BlockError):
+        load_blocks(path)
+
+
+def test_fork_blocks_upgrades_v1_records(tmp_path):
+    src = tmp_path / "parent" / "blocks.json"
+    src.parent.mkdir()
+    src.write_text(json.dumps(_v1_index("parent")))
+    dst = tmp_path / "child" / "blocks.json"
+    assert fork_blocks(src, dst, child_session_id="child") is True
+    block = load_blocks(dst)["blocks"][0]
+    assert block["schema_version"] == BLOCK_SCHEMA
+    assert block["session_id"] == "child"
+    assert block["entry"] is None and block["inherited_from"] is None
+
+
+# -- inherit_blocks and immutability (A5) -----------------------------------
+
+
+def _parent_with_blocks(tmp_path):
+    """A parent session with three closed blocks: an implicit one, a work
+    item block (attempt 1, still In progress), and another implicit one."""
+    store = _store(tmp_path / "parent", session_id="parent")
+    tracker, _ = _tracker(store, session_id="parent")
+    tracker.begin_action("coder", 1, "p1", on_new_block=lambda b: _entry(1, "cp1"))
+    tracker.finish_action("p1", True)
+    store.open("QC", "b", "coder", 2)
+    tracker.begin_action("coder", 2, "p2", on_new_block=lambda b: _entry(2, "cp2"))
+    tracker.finish_action("p2", False)
+    tracker.begin_action("reviewer", 3, "p3", on_new_block=lambda b: _entry(3, "cp3"))
+    tracker.finish_action("p3", True)
+    tracker.close_all()
+    return store, blocks_path_for(store)
+
+
+def test_inherit_blocks_copies_blocks_below_the_index_and_stamps_lineage(tmp_path):
+    _, src = _parent_with_blocks(tmp_path)
+    dst = tmp_path / "child" / "blocks.json"
+    init_blocks(dst, "child")
+
+    assert inherit_blocks(
+        src, dst, below_index=3, parent_session_id="parent", child_session_id="child"
+    ) == 2
+
+    index = load_blocks(dst)
+    assert index["session_id"] == "child"
+    assert [block["block_id"] for block in index["blocks"]] == ["blk-0001", "blk-0002"]
+    for block in index["blocks"]:
+        assert block["session_id"] == "child"
+        assert block["schema_version"] == BLOCK_SCHEMA
+        assert block["inherited_from"] == {
+            "session_id": "parent",
+            "block_id": block["block_id"],
+        }
+    assert index["blocks"][1]["entry"]["checkpoint_id"] == "cp2"
+    # The parent is untouched.
+    assert all(block["inherited_from"] is None for block in load_blocks(src)["blocks"])
+
+
+def test_inherit_blocks_with_below_index_one_copies_nothing(tmp_path):
+    _, src = _parent_with_blocks(tmp_path)
+    dst = tmp_path / "child" / "blocks.json"
+    assert inherit_blocks(
+        src, dst, below_index=1, parent_session_id="parent", child_session_id="child"
+    ) == 0
+    assert load_blocks(dst)["blocks"] == []
+
+
+def test_inherit_blocks_rejects_bad_inputs(tmp_path):
+    _, src = _parent_with_blocks(tmp_path)
+    dst = tmp_path / "child" / "blocks.json"
+    kwargs = {"parent_session_id": "parent", "child_session_id": "child"}
+    with pytest.raises(BlockError):
+        inherit_blocks(tmp_path / "missing.json", dst, below_index=1, **kwargs)
+    with pytest.raises(BlockError):
+        inherit_blocks(src, dst, below_index=5, **kwargs)
+    with pytest.raises(BlockError):
+        inherit_blocks(src, dst, below_index=0, **kwargs)
+    with pytest.raises(BlockError):
+        inherit_blocks(
+            src, dst, below_index=2, parent_session_id="other", child_session_id="child"
+        )
+    assert not dst.exists()
+    inherit_blocks(src, dst, below_index=2, **kwargs)
+    with pytest.raises(BlockError):
+        inherit_blocks(src, dst, below_index=2, **kwargs)
+
+
+def test_inherit_blocks_refuses_a_running_block(tmp_path):
+    store = _store(tmp_path / "parent", session_id="parent")
+    tracker, _ = _tracker(store, session_id="parent")
+    tracker.begin_action("coder", 1, "p1")
+    with pytest.raises(BlockError, match="running"):
+        inherit_blocks(
+            blocks_path_for(store),
+            tmp_path / "child" / "blocks.json",
+            below_index=2,
+            parent_session_id="parent",
+            child_session_id="child",
+        )
+
+
+def _child_from(tmp_path, parent_store, src, *, below_index):
+    """A branch child whose work items are a copy of the parent's store."""
+    child_store = parent_store.copy_to(
+        tmp_path / "child" / "work-items",
+        child_session_id="child",
+        forked_from_session_id="parent",
+    )
+    inherit_blocks(
+        src,
+        blocks_path_for(child_store),
+        below_index=below_index,
+        parent_session_id="parent",
+        child_session_id="child",
+    )
+    tracker, changes = _tracker(child_store, session_id="child")
+    return child_store, tracker, changes
+
+
+def test_the_child_numbers_new_blocks_after_the_inherited_ones(tmp_path):
+    store, src = _parent_with_blocks(tmp_path)
+    _, tracker, _ = _child_from(tmp_path, store, src, below_index=2)
+    # blk-0001 is an inherited implicit block of the same agent: a new one.
+    assert tracker.begin_action("coder", 4, "c1") == "blk-0002"
+    assert tracker.blocks()[1]["inherited_from"] is None
+
+
+def test_an_inherited_work_item_attempt_continues_in_a_new_block(tmp_path):
+    store, src = _parent_with_blocks(tmp_path)
+    _, tracker, _ = _child_from(tmp_path, store, src, below_index=3)
+
+    assert tracker.begin_action("coder", 4, "c1") == "blk-0003"
+    blocks = _by_id(tracker)
+    assert blocks["blk-0003"]["work_item_id"] == blocks["blk-0002"]["work_item_id"]
+    assert blocks["blk-0003"]["attempt"] == 1
+    assert blocks["blk-0002"]["action_ids"] == ["p2"]
+    assert blocks["blk-0002"]["status"] == "error"
+    assert tracker.begin_action("coder", 4, "c2") == "blk-0003"
+
+
+def test_inherited_blocks_are_never_focused_synced_or_closed(tmp_path):
+    store, src = _parent_with_blocks(tmp_path)
+    child_store, tracker, changes = _child_from(tmp_path, store, src, below_index=3)
+    before = {block["block_id"]: block for block in load_blocks(blocks_path_for(child_store))["blocks"]}
+
+    with pytest.raises(BlockError, match="inherited"):
+        tracker.set_focus("blk-0002")
+    # A reject of the inherited attempt would downgrade an ok block to warn;
+    # a Done would close an open one. Neither touches an inherited block.
+    item_id = before["blk-0002"]["work_item_id"]
+    child_store.close(item_id, "done", "coder", 5)
+    tracker.on_work_item_changed(child_store.read(item_id))
+    tracker.sync()
+    tracker.close_all()
+
+    after = {block["block_id"]: block for block in load_blocks(blocks_path_for(child_store))["blocks"]}
+    assert after == before
+    assert changes == []
+
+
+def test_an_artifact_cannot_be_added_to_an_inherited_block(tmp_path):
+    store, src = _parent_with_blocks(tmp_path)
+    _, tracker, _ = _child_from(tmp_path, store, src, below_index=2)
+    with pytest.raises(BlockError, match="immutable"):
+        tracker.record_artifact("plots/new.png", "p1")

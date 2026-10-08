@@ -154,3 +154,35 @@ def test_action_ledger_pairs_legacy_and_unified_action_ids() -> None:
         (new_id, "c = 3", True),
     ]
     assert ledger[1]["recorded_result"]["stderr"] == "boom"
+
+
+def test_a_default_capture_is_unpinned_published_and_has_no_fingerprint(tmp_path: Path) -> None:
+    dataset = tmp_path / "input.h5ad"
+    dataset.write_bytes(b"fixture")
+    output_dir = tmp_path / "session" / "outputs"
+    output_dir.mkdir(parents=True)
+    session = SimpleNamespace(
+        id="session-default",
+        output_dir=output_dir,
+        config=SimpleNamespace(dataset_path=str(dataset)),
+        current_agent="analyst",
+        current_turn=0,
+        sandbox_manager=None,
+        memory_manager=None,
+        events=[],
+        checkpoint_id=None,
+        checkpoint_turn=None,
+        checkpoint_healthy=False,
+    )
+
+    captured = capture_checkpoint(
+        session=session,
+        history=[],
+        runner_state={"current_agent_name": "analyst", "turns_completed": 0, "action_ledger": []},
+    )
+
+    assert captured["pin_block_id"] is None
+    assert captured["fingerprint"] is None
+    assert captured["ledger_base"] == "original_dataset"
+    assert captured["actions"] == []
+    assert session.checkpoint_id == captured["checkpoint_id"]

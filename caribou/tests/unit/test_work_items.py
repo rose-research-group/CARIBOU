@@ -10,6 +10,8 @@ from caribou.agents.AgentSystem import Agent
 from caribou.execution.evaluation import evaluate_work_item, parse_work_item_review
 from caribou.execution.work_items import (
     WorkItemConflict,
+    WorkItemNotFound,
+    copy_work_items_at,
     WorkItemPolicy,
     WorkItemStore,
     parse_work_item_command,
@@ -345,3 +347,101 @@ def test_mutations_see_commits_from_another_store_instance(tmp_path) -> None:
     assert (ticket["id"], own["id"]) == (0, 1)
     assert route_store.read(0)["title"] == "Ticket"
     assert [item["id"] for item in runner_store.list()] == [0, 1]
+
+
+def test_head_commit_is_none_until_the_first_commit(tmp_path) -> None:
+    store = WorkItemStore(
+        tmp_path / "work-items", session_id="s", policy=WorkItemPolicy()
+    )
+    assert store.head_commit() is None
+    store.open("QC", "b", "coder", 1)
+    head = store.head_commit()
+    assert head is not None and len(head) == 40
+    assert store.read(0)["latest_commit"] == head
+
+
+def test_copy_work_items_at_restores_the_store_as_of_a_commit(tmp_path) -> None:
+    store = WorkItemStore(
+        tmp_path / "parent",
+        session_id="parent",
+        policy=WorkItemPolicy(qc_mode="required"),
+    )
+    store.open("first", "b", "coder", 1)
+    at_entry = store.head_commit()
+    store.note(0, "coder", 2, "later note")
+    store.open("second", "b", "coder", 2)
+
+    child = copy_work_items_at(
+        tmp_path / "parent",
+        tmp_path / "child",
+        commit=at_entry,
+        child_session_id="child",
+        forked_from_session_id="parent",
+    )
+
+    assert [item["title"] for item in child.list()] == ["first"]
+    assert child.read(0)["notes"] == []
+    assert child.read(0)["session_id"] == "child"
+    assert child.policy.qc_mode == "required"
+    index = child._index()
+    assert index["session_id"] == "child"
+    assert index["forked_from_session_id"] == "parent"
+    assert index["next_id"] == 1
+    # The child keeps history up to the commit, plus its lineage commit.
+    log = subprocess.run(
+        ["git", "log", "--format=%H"], cwd=tmp_path / "child",
+        check=True, text=True, capture_output=True,
+    ).stdout.split()
+    assert log[1] == at_entry
+    # New ids continue from the commit's index, and the parent is untouched.
+    assert child.open("child item", "b", "coder", 3)["id"] == 1
+    assert [item["title"] for item in store.list()] == ["first", "second"]
+    assert store.read(0)["session_id"] == "parent"
+
+
+def test_copy_work_items_at_raises_for_an_unknown_commit(tmp_path) -> None:
+    store = WorkItemStore(tmp_path / "parent", session_id="p", policy=WorkItemPolicy())
+    kwargs = {"child_session_id": "c", "forked_from_session_id": "p"}
+    with pytest.raises(WorkItemNotFound):
+        copy_work_items_at(tmp_path / "parent", tmp_path / "c0", commit="0" * 40, **kwargs)
+    store.open("first", "b", "coder", 1)
+    for commit in ("0" * 40, "not-a-commit", "--all", ""):
+        with pytest.raises(WorkItemNotFound):
+            copy_work_items_at(tmp_path / "parent", tmp_path / "c1", commit=commit, **kwargs)
+    with pytest.raises(WorkItemNotFound):
+        copy_work_items_at(tmp_path / "missing", tmp_path / "c2", commit="HEAD", **kwargs)
+    assert not (tmp_path / "c1").exists()
+    assert not (tmp_path / "missing").exists()
+
+
+def test_copy_work_items_at_refuses_an_existing_destination(tmp_path) -> None:
+    store = WorkItemStore(tmp_path / "parent", session_id="p", policy=WorkItemPolicy())
+    store.open("first", "b", "coder", 1)
+    (tmp_path / "child").mkdir()
+    with pytest.raises(WorkItemConflict):
+        copy_work_items_at(
+            tmp_path / "parent",
+            tmp_path / "child",
+            commit=store.head_commit(),
+            child_session_id="c",
+            forked_from_session_id="p",
+        )
+
+
+def test_copy_at_a_brief_only_commit_gives_an_empty_store(tmp_path) -> None:
+    store = WorkItemStore(tmp_path / "parent", session_id="p", policy=WorkItemPolicy())
+    store.record_brief_provenance("{}")
+    at_entry = store.head_commit()
+    store.open("later", "b", "coder", 1)
+
+    child = copy_work_items_at(
+        tmp_path / "parent",
+        tmp_path / "child",
+        commit=at_entry,
+        child_session_id="c",
+        forked_from_session_id="p",
+    )
+
+    assert child.list() == []
+    assert (tmp_path / "child" / "brief.json").is_file()
+    assert child.open("first", "b", "coder", 2)["id"] == 0

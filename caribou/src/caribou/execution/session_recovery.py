@@ -24,6 +24,28 @@ CHECKPOINT_DIR = ".checkpoints"
 LIVE_DATASET = ".caribou-live-checkpoint.h5ad"
 CONTAINER_LIVE_DATASET = f"/workspace/outputs/{LIVE_DATASET}"
 ROLLING_CHECKPOINT_RETENTION = 3
+# The action ledger runs cumulatively from the session's original dataset:
+# replaying it in order on `bootstrap_anndata` rebuilds the checkpoint state.
+LEDGER_BASE_ORIGINAL = "original_dataset"
+FINGERPRINT_MARKER = "__CARIBOU_ADATA_FINGERPRINT__"
+FINGERPRINT_FIELDS = ("n_obs", "n_vars", "obs_keys", "var_keys", "obsm_keys", "layers_keys")
+# Executed in the sandbox; prints one marker line carrying the live `adata`
+# fingerprint as JSON. Shared by `capture_checkpoint` and `verify_fingerprint`.
+_FINGERPRINT_CODE = (
+    "import json as _caribou_json\n"
+    "_caribou_fp_adata = globals().get('adata')\n"
+    "if _caribou_fp_adata is None or not hasattr(_caribou_fp_adata, 'n_obs'):\n"
+    "    raise RuntimeError(\"no AnnData global named 'adata' to fingerprint\")\n"
+    "print("
+    f"{FINGERPRINT_MARKER!r} + _caribou_json.dumps({{"
+    "'n_obs': int(_caribou_fp_adata.n_obs), "
+    "'n_vars': int(_caribou_fp_adata.n_vars), "
+    "'obs_keys': sorted(str(k) for k in _caribou_fp_adata.obs.columns), "
+    "'var_keys': sorted(str(k) for k in _caribou_fp_adata.var.columns), "
+    "'obsm_keys': sorted(str(k) for k in _caribou_fp_adata.obsm.keys()), "
+    "'layers_keys': sorted(str(k) for k in _caribou_fp_adata.layers.keys())"
+    "}))\n"
+)
 
 
 def _now() -> str:
@@ -53,8 +75,18 @@ def _checkpoint_root(output_dir: Path) -> Path:
     return output_dir.parent / CHECKPOINT_DIR
 
 
+def _read_checkpoint_json(path: Path) -> dict[str, Any]:
+    return json.loads((path / "checkpoint.json").read_text(encoding="utf-8"))
+
+
 def _prune_superseded_checkpoints(root: Path, session: Any, latest_id: str) -> None:
-    """Bound rolling storage while retaining checkpoints referenced by attempts."""
+    """Bound rolling storage while retaining checkpoints referenced by attempts.
+
+    Checkpoints pinned to a block (`pin_block_id` set) are never deleted; the
+    rolling retention counts unpinned checkpoints only. The checkpoint that
+    `latest.json` names and `session.checkpoint_id` are always kept, so a run
+    of unpublished captures cannot push out the published latest.
+    """
 
     checkpoint_dirs = sorted(
         (
@@ -67,8 +99,17 @@ def _prune_superseded_checkpoints(root: Path, session: Any, latest_id: str) -> N
         key=lambda path: path.stat().st_mtime_ns,
         reverse=True,
     )
+    unpinned = [
+        path for path in checkpoint_dirs if not _read_checkpoint_json(path).get("pin_block_id")
+    ]
     protected = {latest_id}
-    protected.update(path.name for path in checkpoint_dirs[:ROLLING_CHECKPOINT_RETENTION])
+    protected.update(path.name for path in unpinned[:ROLLING_CHECKPOINT_RETENTION])
+    pointer = root / "latest.json"
+    if pointer.is_file():
+        protected.add(str(json.loads(pointer.read_text(encoding="utf-8"))["checkpoint_id"]))
+    published = getattr(session, "checkpoint_id", None)
+    if published:
+        protected.add(str(published))
     forked_from = getattr(session, "forked_from_checkpoint_id", None)
     if forked_from:
         protected.add(str(forked_from))
@@ -76,7 +117,7 @@ def _prune_superseded_checkpoints(root: Path, session: Any, latest_id: str) -> N
         referenced = attempt.get("source_checkpoint_id")
         if referenced:
             protected.add(str(referenced))
-    for path in checkpoint_dirs:
+    for path in unpinned:
         if path.name not in protected:
             shutil.rmtree(path, ignore_errors=True)
 
@@ -155,14 +196,103 @@ def _artifact_manifest(output_dir: Path) -> list[dict[str, Any]]:
     return manifest
 
 
+def _parse_fingerprint(stdout: str) -> dict[str, Any]:
+    """The fingerprint the sandbox printed after `FINGERPRINT_MARKER`; raises
+    ValueError when the marker line is missing or malformed."""
+
+    lines = [
+        line[len(FINGERPRINT_MARKER):]
+        for line in str(stdout or "").splitlines()
+        if line.startswith(FINGERPRINT_MARKER)
+    ]
+    if len(lines) != 1:
+        raise ValueError(f"expected one fingerprint line in sandbox output, found {len(lines)}")
+    value = json.loads(lines[0])
+    if not isinstance(value, dict) or set(value) != set(FINGERPRINT_FIELDS):
+        raise ValueError(f"fingerprint has unexpected fields: {value!r}")
+    return value
+
+
+def adata_fingerprint(sandbox: object) -> dict[str, Any]:
+    """Fingerprint the sandbox's live `adata`: shape plus sorted key lists.
+
+    Raises RuntimeError when the sandbox reports a failure and ValueError when
+    its output carries no well-formed fingerprint.
+    """
+
+    result = sandbox.exec_code(_FINGERPRINT_CODE, timeout=600)  # type: ignore[attr-defined]
+    if not isinstance(result, dict) or result.get("status") != "ok":
+        raise RuntimeError(str((result or {}).get("stderr") or "fingerprint computation failed"))
+    return _parse_fingerprint(str(result.get("stdout") or ""))
+
+
+def fingerprint_differences(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
+    """One line per fingerprint field whose value differs."""
+
+    differences: list[str] = []
+    for field in FINGERPRINT_FIELDS:
+        if expected.get(field) != actual.get(field):
+            if isinstance(expected.get(field), list) and isinstance(actual.get(field), list):
+                missing = sorted(set(expected[field]) - set(actual[field]))
+                extra = sorted(set(actual[field]) - set(expected[field]))
+                differences.append(f"{field}: missing {missing}, unexpected {extra}")
+            else:
+                differences.append(
+                    f"{field}: expected {expected.get(field)!r}, got {actual.get(field)!r}"
+                )
+    return differences
+
+
+def verify_fingerprint(sandbox: object, expected: dict[str, Any]) -> tuple[bool, str]:
+    """Compare the sandbox's live `adata` against a checkpoint fingerprint.
+
+    Returns `(True, detail)` on an exact match and `(False, detail)` when any
+    field differs (the detail lists each one) or the fingerprint could not be
+    computed. `expected=None` raises ValueError: whether an unverified restore
+    is acceptable is the caller's decision, not this function's.
+    """
+
+    if expected is None:
+        raise ValueError("checkpoint has no fingerprint; an unverified restore must be acknowledged by the caller")
+    try:
+        actual = adata_fingerprint(sandbox)
+    except (RuntimeError, ValueError) as exc:
+        return False, f"Could not fingerprint the restored AnnData: {exc}"
+    differences = fingerprint_differences(expected, actual)
+    if differences:
+        return False, "Restored AnnData does not match the checkpoint fingerprint: " + "; ".join(differences)
+    return True, (
+        f"Restored AnnData matches the checkpoint fingerprint "
+        f"({actual['n_obs']} observations x {actual['n_vars']} variables)."
+    )
+
+
 def capture_checkpoint(
     *,
     session: Any,
     history: list[dict[str, str]],
     runner_state: dict[str, Any],
+    pin_block_id: str | None = None,
+    publish: bool = True,
 ) -> dict[str, Any]:
-    """Capture one immutable checkpoint and atomically publish it as latest."""
+    """Capture one immutable checkpoint and, when `publish`, atomically
+    publish it as latest.
 
+    `pin_block_id` marks a block-entry checkpoint: it is exempt from rolling
+    retention, the sandbox write runs whenever a sandbox exists (it is taken
+    mid-turn, so `turns_completed` may still be 0), and `runner_state` must
+    carry the runner's in-memory `action_ledger`. With `publish=False` the
+    checkpoint is written but `latest.json` and the session's
+    `checkpoint_id` / `checkpoint_turn` / `checkpoint_healthy` are untouched,
+    so resume and fork never load it as latest.
+
+    The checkpoint records `fingerprint` (shape and key lists of the live
+    `adata`, computed in the same sandbox exec that writes the dataset, or
+    null when that exec did not run or failed) and `ledger_base`.
+    """
+
+    if pin_block_id is not None and "action_ledger" not in runner_state:
+        raise ValueError("a block-entry checkpoint needs the runner's in-memory action_ledger")
     checkpoint_id = f"checkpoint_{uuid4().hex}"
     root = _checkpoint_root(session.output_dir)
     destination_dir = root / checkpoint_id
@@ -170,8 +300,13 @@ def capture_checkpoint(
     source_dataset = session.output_dir / LIVE_DATASET
     dataset_kind = "working_anndata"
     capture_error: str | None = None
+    fingerprint: dict[str, Any] | None = None
+    sandbox_written = False
 
-    if session.sandbox_manager is not None and int(runner_state.get("turns_completed", 0)) > 0:
+    capture_live = session.sandbox_manager is not None and (
+        pin_block_id is not None or int(runner_state.get("turns_completed", 0)) > 0
+    )
+    if capture_live:
         capture_code = (
             "import os as _caribou_os\n"
             "_caribou_adata = globals().get('adata')\n"
@@ -180,16 +315,22 @@ def capture_checkpoint(
             f"_caribou_tmp = {CONTAINER_LIVE_DATASET!r} + '.tmp'\n"
             "_caribou_adata.write_h5ad(_caribou_tmp)\n"
             f"_caribou_os.replace(_caribou_tmp, {CONTAINER_LIVE_DATASET!r})\n"
+            + _FINGERPRINT_CODE
         )
         try:
             result = session.sandbox_manager.exec_code(capture_code, timeout=600)
             if not isinstance(result, dict) or result.get("status") != "ok":
                 raise RuntimeError(str((result or {}).get("stderr", "checkpoint capture failed")))
+            fingerprint = _parse_fingerprint(str(result.get("stdout") or ""))
+            sandbox_written = True
         except Exception as exc:  # checkpoint failure must not terminate live work
             capture_error = str(exc)
+            fingerprint = None
 
         if capture_error is None and not source_dataset.is_file():
             capture_error = "sandbox reported success but produced no live AnnData checkpoint"
+            fingerprint = None
+            sandbox_written = False
 
     if not source_dataset.is_file():
         dataset_kind = "original_dataset"
@@ -201,6 +342,21 @@ def capture_checkpoint(
     dataset_path = destination_dir / "dataset.h5ad"
     shutil.copy2(source_dataset, dataset_path)
     turn = int(runner_state.get("turns_completed", session.current_turn) or 0)
+    stored_state = dict(runner_state)
+    if "action_ledger" in runner_state:
+        actions = [dict(item) for item in runner_state["action_ledger"]]
+    else:
+        # Legacy and baseline captures carry no runner ledger. Store the
+        # ledger rebuilt from the full event log in the runner state too, so
+        # a runner resumed from this checkpoint inherits it instead of
+        # restarting from an empty ledger.
+        actions = _action_ledger(session.events, turn)
+        stored_state["action_ledger"] = [dict(item) for item in actions]
+    ledger_base = str(runner_state.get("ledger_base") or LEDGER_BASE_ORIGINAL)
+    if pin_block_id is not None:
+        complete = sandbox_written or (not actions and dataset_kind == "original_dataset")
+    else:
+        complete = capture_error is None or turn == 0
     checkpoint = {
         "schema_version": CHECKPOINT_SCHEMA,
         "checkpoint_id": checkpoint_id,
@@ -208,29 +364,31 @@ def capture_checkpoint(
         "created_at": _now(),
         "turn": turn,
         "current_agent": runner_state.get("current_agent_name") or session.current_agent,
+        "pin_block_id": pin_block_id,
         "dataset": {
             "path": "dataset.h5ad",
             "kind": dataset_kind,
             "sha256": _hash_file(dataset_path),
         },
+        "fingerprint": fingerprint,
+        "ledger_base": ledger_base,
         "history": [
             {"role": str(item.get("role", "")), "content": str(item.get("content", ""))}
             for item in history
         ],
-        "runner_state": dict(runner_state),
+        "runner_state": stored_state,
         "memory": _memory_snapshot(session.memory_manager),
-        "actions": [
-            dict(item) for item in runner_state.get("action_ledger", [])
-        ] or _action_ledger(session.events, turn),
+        "actions": actions,
         "artifacts": _artifact_manifest(session.output_dir),
         "capture_error": capture_error,
-        "complete": capture_error is None or turn == 0,
+        "complete": bool(complete),
     }
     _atomic_json(destination_dir / "checkpoint.json", checkpoint)
-    _atomic_json(root / "latest.json", {"checkpoint_id": checkpoint_id})
-    session.checkpoint_id = checkpoint_id
-    session.checkpoint_turn = turn
-    session.checkpoint_healthy = bool(checkpoint["complete"])
+    if publish:
+        _atomic_json(root / "latest.json", {"checkpoint_id": checkpoint_id})
+        session.checkpoint_id = checkpoint_id
+        session.checkpoint_turn = turn
+        session.checkpoint_healthy = bool(checkpoint["complete"])
     _prune_superseded_checkpoints(root, session, checkpoint_id)
     return checkpoint
 
@@ -277,6 +435,42 @@ def copy_output_tree(source: Path, destination: Path) -> None:
         elif path.is_file():
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, target)
+
+
+def copy_unchanged_artifacts(
+    src_output_dir: Path,
+    dst_output_dir: Path,
+    *,
+    manifest: list[dict[str, Any]],
+) -> list[str]:
+    """Copy the manifest's files whose current sha256 still matches it.
+
+    `manifest` is a checkpoint's `artifacts` list. Files created after the
+    checkpoint are not in it and are not copied. Returns the manifest paths
+    that were skipped because they are now missing or their content changed.
+    Raises ValueError for a manifest path that escapes `src_output_dir`, and
+    FileExistsError rather than overwrite a file already in the destination.
+    """
+
+    src_output_dir = Path(src_output_dir)
+    dst_output_dir = Path(dst_output_dir)
+    dst_output_dir.mkdir(parents=True, exist_ok=True)
+    source_root = src_output_dir.resolve()
+    skipped: list[str] = []
+    for entry in manifest:
+        relative = str(entry["path"])
+        source = (src_output_dir / relative).resolve()
+        if source_root not in source.parents:
+            raise ValueError(f"artifact path escapes the output directory: {relative}")
+        if not source.is_file() or _hash_file(source) != entry["sha256"]:
+            skipped.append(relative)
+            continue
+        target = dst_output_dir / relative
+        if target.exists():
+            raise FileExistsError(f"artifact already exists in the destination: {target}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    return skipped
 
 
 def bootstrap_anndata(sandbox: object) -> tuple[bool, str]:

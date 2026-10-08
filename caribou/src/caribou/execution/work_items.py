@@ -229,6 +229,42 @@ class WorkItemStore:
         result = self._git("rev-parse", "--verify", "HEAD", check=False)
         return result.returncode == 0
 
+    def head_commit(self) -> Optional[str]:
+        """The store's latest commit, or None when it has no commits yet."""
+        with self._lock:
+            if not self._has_head():
+                return None
+            return self._git("rev-parse", "HEAD").stdout.strip()
+
+    def _resolve_commit(self, commit: str) -> str:
+        """The full id of `commit`, which must be in this store's history.
+
+        Raises WorkItemNotFound for an unknown commit or one that is not an
+        ancestor of HEAD.
+        """
+        if not commit or commit.startswith("-"):
+            raise WorkItemNotFound(f"work-item commit {commit!r} is not valid")
+        if not self._has_head():
+            raise WorkItemNotFound(
+                f"work-item commit {commit!r} is unknown: the store has no commits"
+            )
+        resolved = self._git(
+            "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}", check=False
+        )
+        if resolved.returncode != 0:
+            raise WorkItemNotFound(f"work-item commit {commit!r} is unknown")
+        full = resolved.stdout.strip()
+        ancestor = self._git("merge-base", "--is-ancestor", full, "HEAD", check=False)
+        if ancestor.returncode == 1:
+            raise WorkItemNotFound(
+                f"work-item commit {commit!r} is not in the store's history"
+            )
+        if ancestor.returncode != 0:
+            raise WorkItemPersistenceError(
+                f"work-item Git operation failed: {ancestor.stderr.strip()}"
+            )
+        return full
+
     def _read_head_json(self, relative_path: str, default: Any = None) -> Any:
         if not self._has_head():
             return default
@@ -593,8 +629,45 @@ class WorkItemStore:
         matches HEAD when unlocked (commits are atomic via `os.replace`), so
         a lock-protected `shutil.copytree` yields a valid child `.git`.
         """
+        return self._copy(
+            dst_dir,
+            commit=None,
+            child_session_id=child_session_id,
+            forked_from_session_id=forked_from_session_id,
+        )
+
+    def copy_at(
+        self,
+        dst_dir: Path,
+        *,
+        commit: str,
+        child_session_id: str,
+        forked_from_session_id: str,
+    ) -> "WorkItemStore":
+        """`copy_to`, but the child's store is this store as of `commit`.
+
+        The child keeps the history up to `commit`; later items, reviews and
+        transitions are not in it. Raises WorkItemNotFound when `commit` is
+        unknown or not in this store's history, before anything is copied.
+        """
+        return self._copy(
+            dst_dir,
+            commit=commit,
+            child_session_id=child_session_id,
+            forked_from_session_id=forked_from_session_id,
+        )
+
+    def _copy(
+        self,
+        dst_dir: Path,
+        *,
+        commit: Optional[str],
+        child_session_id: str,
+        forked_from_session_id: str,
+    ) -> "WorkItemStore":
         dst_dir = Path(dst_dir)
         with self._lock:
+            resolved = None if commit is None else self._resolve_commit(commit)
             if dst_dir.exists():
                 raise WorkItemConflict(f"fork destination already exists: {dst_dir}")
             shutil.copytree(self.root, dst_dir)
@@ -605,20 +678,35 @@ class WorkItemStore:
             origin_run_id=self.origin_run_id,
         )
         with child._lock:
+            if resolved is not None:
+                # The child's own Git repo, never the project's: rewind its
+                # branch and working tree to `commit`.
+                child._git("reset", "--hard", "--quiet", resolved)
+                # Git drops `items/` when no item existed at `commit`.
+                child.items_dir.mkdir(parents=True, exist_ok=True)
+                child._index_cache = None
             index = child._index()
             index["session_id"] = child_session_id
             index["forked_from_session_id"] = forked_from_session_id
             child._atomic_json(child.root / "index.json", index)
-            for item_path in child.items_dir.glob("*.json"):
+            item_paths = sorted(child.items_dir.glob("*.json"))
+            for item_path in item_paths:
                 item = json.loads(item_path.read_text(encoding="utf-8"))
                 item["session_id"] = child_session_id
                 child._atomic_json(item_path, item)
-            child._git("add", "index.json", "items")
+            # `git add items` fails on an empty directory (a store whose only
+            # commit is its frozen brief), so name the item files instead.
+            child._git(
+                "add",
+                "index.json",
+                *(path.relative_to(child.root).as_posix() for path in item_paths),
+            )
             child._git(
                 "commit",
                 "--quiet",
                 "-m",
-                f"fork: recorded from session {forked_from_session_id}",
+                f"fork: recorded from session {forked_from_session_id}"
+                + ("" if resolved is None else f" at {resolved}"),
             )
             child._index_cache = None
         return child
@@ -737,6 +825,52 @@ class WorkItemStore:
                 label += ", reopened"
             self._commit(f"work-item {item_id}: review {label}", index, item)
             return self.read(item_id)
+
+
+def copy_work_items_at(
+    src_dir: Path,
+    dst_dir: Path,
+    *,
+    commit: str,
+    child_session_id: str,
+    forked_from_session_id: str,
+) -> WorkItemStore:
+    """Copy a session's work-item store as of `commit` for a branch.
+
+    Uses the same lineage stamping as `work_item_runtime.copy_work_items`
+    (`WorkItemStore.copy_to`). The policy is the one committed at `commit`.
+    Raises WorkItemNotFound when `src_dir` holds no store or `commit` is not
+    in its history.
+    """
+    src_dir = Path(src_dir)
+    if not (src_dir / ".git").exists():
+        raise WorkItemNotFound(f"no work-item store at {src_dir}")
+    parent = WorkItemStore(
+        src_dir, session_id=forked_from_session_id, policy=WorkItemPolicy()
+    )
+    with parent._lock:
+        resolved = parent._resolve_commit(commit)
+        shown = parent._git("show", f"{resolved}:index.json", check=False)
+    if shown.returncode == 0:
+        try:
+            committed = json.loads(shown.stdout)
+        except json.JSONDecodeError as exc:
+            raise WorkItemPersistenceError(
+                f"committed work-item index at {resolved} is invalid"
+            ) from exc
+        parent.policy = WorkItemPolicy.from_dict(
+            {
+                key: value
+                for key, value in committed.items()
+                if key in {"qc_mode", "stall_turns", "stall_halt_turns"}
+            }
+        )
+    return parent.copy_at(
+        dst_dir,
+        commit=resolved,
+        child_session_id=child_session_id,
+        forked_from_session_id=forked_from_session_id,
+    )
 
 
 def render_work_item_prompt(policy: WorkItemPolicy) -> str:

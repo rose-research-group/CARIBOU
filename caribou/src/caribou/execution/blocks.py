@@ -23,7 +23,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 from caribou.execution.work_items import WorkItemStore
 
-BLOCK_SCHEMA = "caribou.block.v1"
+# v2 adds "entry" (the block-entry record: checkpoint, fingerprint and
+# work-item commit captured before the block's first action) and
+# "inherited_from" (set on blocks a branch copied from its parent). A v1 block
+# has neither; readers report both as null, since it predates them.
+BLOCK_SCHEMA = "caribou.block.v2"
+LEGACY_BLOCK_SCHEMAS = ("caribou.block.v1",)
+_READABLE_BLOCK_SCHEMAS = (BLOCK_SCHEMA, *LEGACY_BLOCK_SCHEMAS)
 BLOCK_INDEX_SCHEMA = "caribou.block_index.v1"
 BLOCKS_FILENAME = "blocks.json"
 
@@ -53,8 +59,24 @@ def blocks_path_for(work_item_store: WorkItemStore) -> Path:
     return Path(work_item_store.root).parent / BLOCKS_FILENAME
 
 
+def _is_inherited(block: Dict[str, Any]) -> bool:
+    return block.get("inherited_from") is not None
+
+
+def _upgrade_block(block: Dict[str, Any]) -> Dict[str, Any]:
+    """Rewrite a loaded block as v2 in place (writers always write v2)."""
+    block["schema_version"] = BLOCK_SCHEMA
+    block.setdefault("entry", None)
+    block.setdefault("inherited_from", None)
+    return block
+
+
 def load_blocks(blocks_path: Path) -> Optional[Dict[str, Any]]:
     """The parsed block index, or None when `blocks_path` does not exist.
+
+    Reads v1 and v2 blocks. A v1 block is returned as stored (no `entry` or
+    `inherited_from` key); both mean null for it. `BlockTracker`,
+    `fork_blocks` and `inherit_blocks` rewrite what they load as v2.
 
     Raises `BlockError` on malformed content (bad JSON, wrong schema version,
     missing keys, or block indices that are not exactly 1..n in order).
@@ -81,11 +103,19 @@ def load_blocks(blocks_path: Path) -> Optional[Dict[str, Any]]:
     for position, block in enumerate(blocks, start=1):
         if not isinstance(block, dict):
             raise BlockError(f"block {position} is not an object: {blocks_path}")
-        if block.get("schema_version") != BLOCK_SCHEMA:
+        if block.get("schema_version") not in _READABLE_BLOCK_SCHEMAS:
             raise BlockError(
                 f"block {position} has schema_version "
                 f"{block.get('schema_version')!r}: {blocks_path}"
             )
+        if block["schema_version"] == BLOCK_SCHEMA:
+            for key in ("entry", "inherited_from"):
+                if key not in block:
+                    raise BlockError(f"block {position} has no {key!r}: {blocks_path}")
+                if block[key] is not None and not isinstance(block[key], dict):
+                    raise BlockError(
+                        f"block {position} has a non-object {key!r}: {blocks_path}"
+                    )
         if block.get("index") != position or block.get("block_id") != _block_id(
             position
         ):
@@ -142,10 +172,82 @@ def fork_blocks(src_path: Path, dst_path: Path, *, child_session_id: str) -> boo
         raise BlockError(f"fork destination already exists: {dst_path}")
     index["session_id"] = child_session_id
     for block in index["blocks"]:
+        _upgrade_block(block)
         block["session_id"] = child_session_id
     dst_path.parent.mkdir(parents=True, exist_ok=True)
     _write_index(dst_path, index)
     return True
+
+
+def inherit_blocks(
+    src_path: Path,
+    dst_path: Path,
+    *,
+    below_index: int,
+    parent_session_id: str,
+    child_session_id: str,
+) -> int:
+    """Copy a parent's blocks with `index < below_index` into a branch child.
+
+    Each copy gets `session_id = child_session_id` and `inherited_from =
+    {"session_id": parent_session_id, "block_id": <its block_id>}` (the
+    immediate parent, also for a branch of a branch); everything else,
+    including `entry`, is kept. The child's tracker never attributes to,
+    focuses, syncs or closes an inherited block, and numbers its own blocks
+    from `below_index`. Returns the number of blocks copied.
+
+    Raises `BlockError` when the parent has no blocks.json, its session_id is
+    not `parent_session_id`, `below_index` is outside 1..n+1, a copied block
+    is still running, or `dst_path` already holds blocks (an empty index the
+    server wrote for the child with `init_blocks` is replaced).
+    """
+    if not parent_session_id or not child_session_id:
+        raise ValueError("parent_session_id and child_session_id must be non-empty")
+    index = load_blocks(src_path)
+    if index is None:
+        raise BlockError(f"parent has no blocks file: {src_path}")
+    if index["session_id"] != parent_session_id:
+        raise BlockError(
+            f"blocks file belongs to session {index['session_id']!r}, "
+            f"not {parent_session_id!r}: {src_path}"
+        )
+    blocks = index["blocks"]
+    if not 1 <= below_index <= len(blocks) + 1:
+        raise BlockError(
+            f"below_index {below_index} is outside 1..{len(blocks) + 1}: {src_path}"
+        )
+    dst_path = Path(dst_path)
+    existing = load_blocks(dst_path)
+    if existing is not None:
+        if existing["blocks"]:
+            raise BlockError(f"branch destination already has blocks: {dst_path}")
+        if existing["session_id"] != child_session_id:
+            raise BlockError(
+                f"branch destination belongs to session "
+                f"{existing['session_id']!r}, not {child_session_id!r}: {dst_path}"
+            )
+    copied = [copy.deepcopy(block) for block in blocks if block["index"] < below_index]
+    for block in copied:
+        if block["status"] == _OPEN:
+            raise BlockError(
+                f"cannot inherit {block['block_id']}: it is still running"
+            )
+        _upgrade_block(block)
+        block["session_id"] = child_session_id
+        block["inherited_from"] = {
+            "session_id": parent_session_id,
+            "block_id": block["block_id"],
+        }
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_index(
+        dst_path,
+        {
+            "schema_version": BLOCK_INDEX_SCHEMA,
+            "session_id": child_session_id,
+            "blocks": copied,
+        },
+    )
+    return len(copied)
 
 
 class BlockTracker:
@@ -179,7 +281,8 @@ class BlockTracker:
             # file, the same way WorkItemStore keeps its index's original
             # session_id. Forks re-stamp the file explicitly via fork_blocks.
             self.session_id = index["session_id"]
-            self._blocks = index["blocks"]
+            # v1 blocks are rewritten as v2 on the next change.
+            self._blocks = [_upgrade_block(block) for block in index["blocks"]]
         else:
             # Sessions the web server creates already have one (init_blocks);
             # CLI and control runs get theirs here.
@@ -255,6 +358,8 @@ class BlockTracker:
             "action_ids": [],
             "failed_action_ids": [],
             "artifact_paths": [],
+            "entry": None,
+            "inherited_from": None,
             "created_at": timestamp,
             "updated_at": timestamp,
         }
@@ -283,7 +388,7 @@ class BlockTracker:
 
     def _apply_item(self, item: Dict[str, Any]) -> None:
         for block in self._blocks:
-            if block["work_item_id"] != item["id"]:
+            if block["work_item_id"] != item["id"] or _is_inherited(block):
                 continue
             if block is self._focus and block["status"] == _OPEN:
                 # A focused block stays open until the focus clears;
@@ -320,7 +425,9 @@ class BlockTracker:
             {
                 block["work_item_id"]
                 for block in self._blocks
-                if block["status"] in (_OPEN, "ok") and not block["implicit"]
+                if block["status"] in (_OPEN, "ok")
+                and not block["implicit"]
+                and not _is_inherited(block)
             }
         )
         for item_id in item_ids:
@@ -341,8 +448,14 @@ class BlockTracker:
             )
             attempt = 1 + _rejections(item)
             for block in self._blocks:
-                if block["work_item_id"] == item["id"] and block["attempt"] == attempt:
+                if (
+                    block["work_item_id"] == item["id"]
+                    and block["attempt"] == attempt
+                    and not _is_inherited(block)
+                ):
                     return block
+            # An inherited block for this attempt is immutable: the branch
+            # continues the same attempt number in a new block of its own.
             return self._new_block(
                 owner=owner,
                 turn=turn,
@@ -356,14 +469,17 @@ class BlockTracker:
             and last["implicit"]
             and last["status"] == _OPEN
             and last["agents"][0] == owner
+            and not _is_inherited(last)
         ):
             return last
+        # The handoff title is consumed by `begin_action` once the block is
+        # committed, so a failed `on_new_block` leaves it pending.
         return self._new_block(
             owner=owner,
             turn=turn,
             work_item_id=None,
             attempt=1,
-            title=self._pending_titles.pop(owner, f"{owner} (no work item)"),
+            title=self._pending_titles.get(owner, f"{owner} (no work item)"),
         )
 
     # -- workbench focus and handoffs --------------------------------------
@@ -380,6 +496,11 @@ class BlockTracker:
         )
         if block is None:
             raise BlockError(f"cannot focus unknown block {block_id!r}")
+        if _is_inherited(block):
+            raise BlockError(
+                f"cannot focus {block_id!r}: it is inherited from session "
+                f"{block['inherited_from']['session_id']!r} and is immutable"
+            )
         if block is self._focus:
             return
         self.clear_focus()
@@ -420,8 +541,22 @@ class BlockTracker:
             raise ValueError(f"delegation command names no task: {command!r}")
         self._pending_titles[to_agent] = f"{task} (from {from_agent})"
 
-    def begin_action(self, owner: str, turn: int, action_id: str) -> str:
-        """Attribute a code action that is about to execute; returns its block_id."""
+    def begin_action(
+        self,
+        owner: str,
+        turn: int,
+        action_id: str,
+        *,
+        on_new_block: Optional[Callable[[str], Dict[str, Any]]] = None,
+    ) -> str:
+        """Attribute a code action that is about to execute; returns its block_id.
+
+        When the action creates a new block (not when it reopens or focuses
+        an existing one), `on_new_block(block_id)` is called before this
+        returns and before the block is first persisted; the dict it returns
+        becomes the block's `entry`. With no hook, `entry` stays null. If the
+        hook raises, the new block is discarded and the error propagates.
+        """
         if action_id in self._by_action:
             raise BlockError(f"action {action_id!r} was already attributed")
         self.sync()
@@ -430,7 +565,24 @@ class BlockTracker:
             if block["status"] != _OPEN:
                 self._focus_reopened = True
         else:
+            known = len(self._blocks)
             block = self._attribute(owner, turn)
+            if len(self._blocks) > known:
+                if on_new_block is not None:
+                    try:
+                        entry = on_new_block(block["block_id"])
+                    except BaseException:
+                        self._blocks.pop()
+                        raise
+                    if not isinstance(entry, dict):
+                        self._blocks.pop()
+                        raise BlockError(
+                            f"on_new_block returned {type(entry).__name__}, "
+                            f"expected a dict for {block['block_id']}"
+                        )
+                    block["entry"] = copy.deepcopy(entry)
+                if block["implicit"]:
+                    self._pending_titles.pop(owner, None)
         last = self._last_block
         if last is not None and last is not block and last["implicit"]:
             self._close(last, rejected=False)
@@ -466,6 +618,11 @@ class BlockTracker:
         block = self._by_action.get(action_id)
         if block is None:
             raise BlockError(f"artifact {path!r} names unknown action {action_id!r}")
+        if _is_inherited(block) and path not in block["artifact_paths"]:
+            raise BlockError(
+                f"artifact {path!r} names action {action_id!r} of inherited "
+                f"block {block['block_id']}, which is immutable"
+            )
         if path not in block["artifact_paths"]:
             block["artifact_paths"].append(path)
             self._changed(block)
@@ -477,5 +634,6 @@ class BlockTracker:
         self._focus = None
         self._focus_reopened = False
         for block in self._blocks:
-            self._close(block, rejected=False)
+            if not _is_inherited(block):
+                self._close(block, rejected=False)
         self._last_block = None

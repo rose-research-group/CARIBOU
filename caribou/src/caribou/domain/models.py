@@ -773,8 +773,11 @@ class BlockChangedPayload(DomainModel):
 
     @model_validator(mode="after")
     def validate_block_record(self) -> "BlockChangedPayload":
-        if self.block.get("schema_version") != "caribou.block.v1":
-            raise ValueError("block record must have schema_version 'caribou.block.v1'")
+        # v1 records predate block-entry checkpoints and inheritance (v2).
+        if self.block.get("schema_version") not in ("caribou.block.v1", "caribou.block.v2"):
+            raise ValueError(
+                "block record must have schema_version 'caribou.block.v1' or 'caribou.block.v2'"
+            )
         if not isinstance(self.block.get("block_id"), str) or not self.block["block_id"]:
             raise ValueError("block record is missing a non-empty 'block_id'")
         return self
