@@ -227,6 +227,31 @@
             </div>
           </div>
         }
+
+        <div class="field-grid">
+          <div class="field">
+            <label for="evaluator-provider">Evaluator provider</label>
+            <select
+              id="evaluator-provider"
+              [ngModel]="evaluatorProvider"
+              (ngModelChange)="evaluatorProviderChange.emit($event)"
+            >
+              <option value="openai">OpenAI</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="openrouter">OpenRouter</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="evaluator-model-name">Exact evaluator model</label>
+            <input
+              id="evaluator-model-name"
+              [ngModel]="evaluatorModelName"
+              (ngModelChange)="evaluatorModelNameChange.emit($event)"
+              autocomplete="off"
+            />
+            <small>One evaluator is frozen across every experiment condition.</small>
+          </div>
+        </div>
       </section>
 
       <section class="form-section" aria-labelledby="accountability-heading">

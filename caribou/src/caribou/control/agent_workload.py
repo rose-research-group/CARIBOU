@@ -32,6 +32,7 @@ from caribou.domain.models import (
     HeartbeatPayload,
     MessagePayload,
     RagPayload,
+    WorkItemChangedPayload,
 )
 from caribou.domain.serialization import file_hash, sha256_bytes
 from caribou.execution.runner import (
@@ -776,6 +777,24 @@ def _event_recorder(
                 turn=turn,
                 current_agent=agent_name,
                 stage="agent_session_end",
+            )
+            return
+        if event_type == "work_item_changed":
+            item = payload["item"]
+            if not isinstance(item, dict):
+                raise RuntimeError("runner event field 'item' is not an object")
+            store.append_run_event(
+                run_id,
+                event_type=EventType.work_item_changed,
+                payload=WorkItemChangedPayload(
+                    item_id=item["id"],
+                    status=item["status"],
+                    owner=item["owner"],
+                    item=item,
+                ),
+                actor="agent-runner",
+                turn=turn,
+                current_agent=agent_name,
             )
             return
         raise RuntimeError(f"unsupported runner event: {event_type}")

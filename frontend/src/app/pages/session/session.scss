@@ -375,6 +375,112 @@
   position: relative;
 }
 
+/* ── Session brief (WS-5) ── */
+.brief-panel {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: -1.25rem -1.5rem 1rem;
+  padding: 1rem 1.5rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.brief-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.brief-draft-card {
+  margin-top: 0.75rem;
+  padding: 1rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+
+  h3 {
+    margin: 0 0 0.75rem;
+    font-size: 0.95rem;
+  }
+
+  dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.35rem 1rem;
+    margin: 0;
+  }
+
+  dt {
+    font-weight: 600;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+  }
+
+  dd {
+    margin: 0;
+
+    ul {
+      margin: 0;
+      padding-left: 1.1rem;
+    }
+  }
+}
+
+.brief-edit-textarea {
+  width: 100%;
+  margin-top: 0.5rem;
+  font-family: monospace;
+  font-size: 0.8rem;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem;
+}
+
+.brief-draft-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.brief-panel-frozen {
+  margin-bottom: 1rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+
+  summary {
+    cursor: pointer;
+    color: var(--text-muted);
+  }
+
+  dl {
+    margin: 0.5rem 0 0;
+  }
+
+  dt {
+    font-weight: 600;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+  }
+
+  dd {
+    margin: 0 0 0.5rem;
+
+    ul {
+      margin: 0;
+      padding-left: 1.1rem;
+    }
+  }
+}
+
 .jump-to-latest {
   position: sticky;
   bottom: 0.75rem;
@@ -881,6 +987,24 @@ pre.error-message {
   color: var(--text);
 }
 
+.eval-error {
+  font-size: 0.82rem;
+  color: var(--error);
+}
+
+.eval-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.eval-assessment {
+  font-size: 0.84rem;
+  color: var(--text);
+  white-space: pre-wrap;
+  margin: 0;
+}
+
 /* ── Input bar ── */
 .input-bar {
   display: flex;
@@ -917,6 +1041,38 @@ pre.error-message {
 }
 
 .send-btn { align-self: flex-end; padding: 0.55rem 1.25rem; }
+
+.work-item-row {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  margin-bottom: 0.45rem;
+  padding: 0.55rem;
+  border: 1px solid var(--border-color);
+  border-radius: 0.45rem;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+
+  &.selected { border-color: var(--accent-color); }
+}
+
+.work-item-heading { font-weight: 600; }
+.work-item-meta { font-size: 0.75rem; opacity: 0.75; }
+.work-item-detail {
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border-color);
+  overflow-wrap: anywhere;
+}
+.work-item-detail-actions { display: flex; justify-content: space-between; gap: 0.5rem; }
+.work-item-history { font-size: 0.75rem; opacity: 0.85; }
+.work-item-review { margin-top: 0.4rem; }
+.work-item-review p { margin: 0.2rem 0; }
+.work-item-commit { display: block; margin-top: 0.5rem; font-size: 0.65rem; opacity: 0.65; }
 
 /* Artifact filter tabs + search */
 .artifact-filter-tabs {

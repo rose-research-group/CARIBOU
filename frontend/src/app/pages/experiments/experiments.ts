@@ -39,6 +39,10 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
   error = signal<string | null>(null);
   result = signal<string | null>(null);
   verifiedCount = signal<number | null>(null);
+  showCloneForm = signal(false);
+  cloneEvaluatorProvider = signal('openai');
+  cloneEvaluatorModel = signal('');
+  cloneReason = signal('');
   tokenConfigured = this.control.hasAccessToken;
   accessStatus = signal<AccessStatus>(this.tokenConfigured() ? 'saved' : 'missing');
 
@@ -82,6 +86,31 @@ export class ExperimentsComponent implements OnInit, OnDestroy {
   });
   canCancel = computed(() => !!this.run() && !this.isTerminal());
   canResume = computed(() => this.run()?.state === 'resumable' && this.run()?.resume_eligible);
+
+  cloneExperiment(): void {
+    const current = this.run();
+    const model = this.cloneEvaluatorModel().trim();
+    if (!current || !model || this.action() !== null) return;
+    this.action.set('clone');
+    this.error.set(null);
+    this.control.cloneExperiment(
+      current.experiment_id,
+      this.cloneEvaluatorProvider(),
+      model,
+      this.cloneReason(),
+    ).subscribe({
+      next: response => {
+        this.action.set(null);
+        this.showCloneForm.set(false);
+        this.specificationText.set(JSON.stringify(response.data['specification'], null, 2));
+        this.result.set(JSON.stringify(response, null, 2));
+      },
+      error: error => {
+        this.action.set(null);
+        this.setError(error);
+      },
+    });
+  }
 
   private pollTimer: number | null = null;
   private polling = false;

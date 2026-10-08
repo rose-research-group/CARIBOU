@@ -203,6 +203,112 @@
 
     <!-- Chat panel -->
     <main class="chat-panel" #chatPanel (scroll)="onScroll($event)">
+      <!-- Briefing phase (WS-5): a distinct pre-execution interview. The
+           conversation itself renders in the normal chat below; this
+           banner + draft card are the confirmation gate on top of it. -->
+      @if (briefPhase()) {
+        <div class="brief-panel">
+          <div class="brief-banner">
+            <app-icon name="info" [size]="16" />
+            <span>Briefing in progress — describe what you want. The agent will propose a
+              brief for you to accept, reject, or edit before any work starts.</span>
+          </div>
+          @if (briefDraft(); as draft) {
+            <div class="brief-draft-card">
+              <h3>Proposed brief</h3>
+              <dl>
+                <dt>Deliverable</dt>
+                <dd>{{ draft.deliverable }}</dd>
+                <dt>In scope</dt>
+                <dd>
+                  <ul><li *ngFor="let item of draft.in_scope">{{ item }}</li></ul>
+                </dd>
+                @if (draft.out_of_scope.length > 0) {
+                  <dt>Out of scope</dt>
+                  <dd>
+                    <ul><li *ngFor="let item of draft.out_of_scope">{{ item }}</li></ul>
+                  </dd>
+                }
+                <dt>Done when</dt>
+                <dd>
+                  <ul><li *ngFor="let item of draft.done_when">{{ item }}</li></ul>
+                </dd>
+                @if (draft.risks.length > 0) {
+                  <dt>Risks</dt>
+                  <dd>
+                    <ul><li *ngFor="let item of draft.risks">{{ item }}</li></ul>
+                  </dd>
+                }
+              </dl>
+
+              @if (briefEditing()) {
+                <label>Edit the brief JSON, then submit</label>
+                <textarea
+                  class="brief-edit-textarea"
+                  rows="10"
+                  [ngModel]="briefEditDraft()"
+                  (ngModelChange)="briefEditDraft.set($event)"
+                ></textarea>
+                <div class="brief-draft-actions">
+                  <button class="btn btn-ghost btn-sm" type="button" (click)="briefEditing.set(false)">
+                    Cancel
+                  </button>
+                  <button
+                    class="btn btn-primary btn-sm"
+                    type="button"
+                    [disabled]="submittingBriefDecision()"
+                    (click)="submitEditedBrief()"
+                  >
+                    Submit edited brief
+                  </button>
+                </div>
+              } @else {
+                <div class="brief-draft-actions">
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    type="button"
+                    [disabled]="submittingBriefDecision()"
+                    (click)="rejectBrief('Please revise and re-propose.')"
+                  >
+                    Reject
+                  </button>
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    type="button"
+                    [disabled]="submittingBriefDecision()"
+                    (click)="briefEditing.set(true)"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    class="btn btn-primary btn-sm"
+                    type="button"
+                    [disabled]="submittingBriefDecision()"
+                    (click)="acceptBrief()"
+                  >
+                    Accept
+                  </button>
+                </div>
+              }
+            </div>
+          }
+        </div>
+      } @else if (frozenBrief(); as brief) {
+        <details class="brief-panel-frozen">
+          <summary>Session brief: {{ brief.deliverable }}</summary>
+          <dl>
+            <dt>In scope</dt>
+            <dd>
+              <ul><li *ngFor="let item of brief.in_scope">{{ item }}</li></ul>
+            </dd>
+            <dt>Done when</dt>
+            <dd>
+              <ul><li *ngFor="let item of brief.done_when">{{ item }}</li></ul>
+            </dd>
+          </dl>
+        </details>
+      }
+
       <div class="chat-content">
 
         @if (hiddenChatItemCount() > 0) {
@@ -412,6 +518,57 @@
         </section>
       }
 
+      <section class="sidebar-section work-items-section">
+        <h3>Work Items <span class="count">{{ workItems().length }}</span></h3>
+        @for (item of workItems(); track item.id) {
+          <button type="button" class="work-item-row"
+            [class.selected]="selectedWorkItem()?.id === item.id"
+            (click)="selectWorkItem(item.id)">
+            <span class="work-item-heading">#{{ item.id }} {{ item.title }}</span>
+            <span class="work-item-meta">{{ item.status }} · {{ item.owner }}</span>
+            <span class="work-item-meta">Created T{{ item.created_turn }} · {{ item.created_at | date:'short' }}</span>
+            @if (item.completed_at) {
+              <span class="work-item-meta">Completed T{{ item.completed_turn }} · {{ item.completed_at | date:'short' }}</span>
+            }
+          </button>
+        }
+        @if (workItems().length === 0) {
+          <p class="empty">No work items yet.</p>
+        }
+        @if (selectedWorkItem(); as item) {
+          <div class="work-item-detail">
+            <div class="work-item-detail-actions">
+              <strong>#{{ item.id }} · {{ item.status }}</strong>
+              <button type="button" class="btn btn-ghost btn-xs"
+                (click)="reviewWorkItem(item.id)"
+                [disabled]="!canReviewWorkItem(item) || workItemReviewing()">
+                {{ workItemReviewing() ? 'Reviewing…' : 'Review' }}
+              </button>
+            </div>
+            <p>{{ item.body }}</p>
+            @if (item.completion_summary) {
+              <p><strong>Completion:</strong> {{ item.completion_summary }}</p>
+            }
+            <div class="work-item-history">
+              @for (transition of item.transitions; track $index) {
+                <div>{{ transition['timestamp'] | date:'short' }} · {{ transition['kind'] }} · {{ transition['actor'] }}</div>
+              }
+              @for (review of item.reviews; track $index) {
+                <div class="work-item-review">
+                  {{ review['timestamp'] | date:'short' }} · review {{ review['verdict'] || 'failed' }}
+                  @if (review['assessment']) { <p>{{ review['assessment'] }}</p> }
+                  @if (review['error']) { <p class="eval-error">{{ review['error'] }}</p> }
+                </div>
+              }
+            </div>
+            <code class="work-item-commit">{{ item.latest_commit }}</code>
+          </div>
+        }
+        @if (workItemError()) {
+          <div class="eval-error">{{ workItemError() }}</div>
+        }
+      </section>
+
       <section class="sidebar-section">
         <h3>Artifacts <span class="count">{{ artifacts().length }}</span></h3>
         @if (artifacts().length > 3) {
@@ -434,7 +591,7 @@
             (input)="artifactSearch.set($any($event.target).value)"
             placeholder="Search…" aria-label="Search artifacts" />
         }
-        @for (artifact of filteredArtifacts(); track artifact.id) {
+        @for (artifact of filteredArtifacts(); track artifact.path) {
           <app-artifact-card [artifact]="artifact" />
         }
         @if (artifacts().length === 0) {
@@ -547,6 +704,75 @@
           </div>
         </section>
       }
+
+      <section class="sidebar-section">
+        <h3>
+          <span>Evaluation</span>
+          <button class="btn btn-ghost btn-xs" (click)="openEvaluatorModelEditor()">
+            Change model
+          </button>
+          <button class="btn btn-ghost btn-xs" (click)="evaluate()"
+            [disabled]="!canEvaluate() || evaluating()"
+            [title]="canEvaluate() ? 'Send the full run transcript to an evaluator agent' : 'Start (or restart) the run before evaluating it'">
+            {{ evaluating() ? 'Evaluating…' : 'Evaluate' }}
+          </button>
+        </h3>
+        @if (session()?.evaluator_model; as evaluatorModel) {
+          <div class="meta-list eval-meta">
+            <span class="ml">Model</span>
+            <span>{{ evaluatorModel.resolved_model?.provider }} / {{ evaluatorModel.resolved_model?.model }}</span>
+            <span class="ml">Revision</span><span>{{ evaluatorModel.revision }}</span>
+          </div>
+        }
+        @if (editingEvaluatorModel()) {
+          <div class="eval-result">
+            <label>Binding</label>
+            <select [(ngModel)]="evaluatorModelForm.mode">
+              <option value="inherit_worker">Same as worker</option>
+              <option value="explicit">Configure separately</option>
+            </select>
+            @if (evaluatorModelForm.mode === 'explicit') {
+              <label>Backend</label>
+              <select [(ngModel)]="evaluatorModelForm.llm_backend">
+                @for (be of configSvc.backends(); track be.id) {
+                  <option [value]="be.id">{{ be.display_name }}</option>
+                }
+              </select>
+              <label>Exact model ID</label>
+              <input [(ngModel)]="evaluatorModelForm.model_name" />
+            }
+            <label>Reason <span class="field-note">optional</span></label>
+            <textarea
+              [ngModel]="evaluatorModelReason()"
+              (ngModelChange)="evaluatorModelReason.set($event)"
+              maxlength="1000"
+              rows="2"
+            ></textarea>
+            @if (evaluatorModelError()) {
+              <div class="eval-error">{{ evaluatorModelError() }}</div>
+            }
+            <button class="btn btn-ghost btn-xs" (click)="editingEvaluatorModel.set(false)">Cancel</button>
+            <button class="btn btn-primary btn-xs" (click)="saveEvaluatorModel()" [disabled]="evaluatorModelSaving()">
+              {{ evaluatorModelSaving() ? 'Saving…' : 'Save model' }}
+            </button>
+          </div>
+        }
+        @if (evaluationError()) {
+          <div class="eval-error">{{ evaluationError() }}</div>
+        }
+        @if (evaluationResult(); as ev) {
+          <div class="eval-result">
+            <div class="meta-list eval-meta">
+              <span class="ml">Evaluator</span><span>{{ ev.evaluator_agent }}</span>
+              <span class="ml">Turn</span><span>{{ ev.turn }}</span>
+              <span class="ml">Model</span><span>{{ ev.provider }} / {{ ev.model }}</span>
+            </div>
+            <p class="eval-assessment">{{ ev.assessment }}</p>
+          </div>
+        } @else if (!evaluationError()) {
+          <div class="empty">No evaluation yet.</div>
+        }
+      </section>
     </aside>
   </div>
 
@@ -774,6 +1000,8 @@
               }
             </select>
           }
+          <label>Model change reason <span class="field-note">optional</span></label>
+          <textarea [(ngModel)]="recoveryForm.model_change_reason" maxlength="1000" rows="2"></textarea>
         }
         <div class="recovery-field-label">
           <label for="session-recovery-method">Recovery method</label>

@@ -95,6 +95,7 @@ class EventType(StringEnum):
     budget_recorded = "budget_recorded"
     failure_recorded = "failure_recorded"
     heartbeat = "heartbeat"
+    work_item_changed = "work_item_changed"
 
 
 class ArtifactType(StringEnum):

@@ -480,6 +480,30 @@
       "title": "ExecutorKind",
       "type": "string"
     },
+    "ExperimentEvaluatorSpec": {
+      "additionalProperties": false,
+      "description": "One frozen evaluator shared by every condition in an experiment.",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/ContentReference"
+        },
+        "agent_name": {
+          "minLength": 1,
+          "title": "Agent Name",
+          "type": "string"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelSpec"
+        }
+      },
+      "required": [
+        "agent_name",
+        "agent",
+        "model"
+      ],
+      "title": "ExperimentEvaluatorSpec",
+      "type": "object"
+    },
     "FailureCategory": {
       "enum": [
         "validation",
@@ -937,6 +961,17 @@
       "title": "Created At",
       "type": "string"
     },
+    "evaluator": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExperimentEvaluatorSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "exclusions": {
       "items": {
         "minLength": 1,
@@ -967,6 +1002,20 @@
       "title": "Metrics",
       "type": "array"
     },
+    "model_change_reason": {
+      "anyOf": [
+        {
+          "maxLength": 1000,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Change Reason"
+    },
     "negative_interpretation": {
       "minLength": 1,
       "title": "Negative Interpretation",
@@ -976,6 +1025,19 @@
       "minLength": 1,
       "title": "Owner",
       "type": "string"
+    },
+    "parent_spec_id": {
+      "anyOf": [
+        {
+          "pattern": "^spec_[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Spec Id"
     },
     "question": {
       "minLength": 1,
@@ -1002,8 +1064,11 @@
       "type": "array"
     },
     "schema_version": {
-      "const": "caribou.experiment_spec.v1",
       "default": "caribou.experiment_spec.v1",
+      "enum": [
+        "caribou.experiment_spec.v1",
+        "caribou.experiment_spec.v2"
+      ],
       "title": "Schema Version",
       "type": "string"
     },

@@ -6,6 +6,7 @@ import secrets
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
@@ -20,6 +21,7 @@ from caribou.control.api import (
     machine_response,
 )
 from caribou.control.service import ExperimentService
+from caribou.config import CARIBOU_HOME
 from caribou.control.specs import validate_control_spec
 from caribou.core.control_access import CONTROL_TOKEN_ENV, resolve_control_access_token
 from caribou.domain.enums import InterfaceOrigin
@@ -81,6 +83,12 @@ class ExperimentSubmissionRequest(_RequestModel):
     specification: ExperimentSpec
     idempotency_key: str = Field(min_length=1, max_length=256)
     expected_plan_hash: str | None = None
+
+
+class ExperimentCloneRequest(_RequestModel):
+    evaluator_provider: str = Field(min_length=1, max_length=64)
+    evaluator_model: str = Field(min_length=1, max_length=256)
+    reason: str | None = Field(default=None, max_length=1000)
 
 
 class RunCancellationRequest(_RequestModel):
@@ -312,6 +320,47 @@ def submit_experiment(
         )
 
     return _call("experiment.submit", operation, success_status=202)
+
+
+@router.post("/experiments/{experiment_id}/clone")
+def clone_experiment(
+    experiment_id: str,
+    request: ExperimentCloneRequest,
+    service: ExperimentService = Depends(get_experiment_service),
+) -> JSONResponse:
+    """Create an unsubmitted v2 draft with a changed evaluator model."""
+
+    def operation() -> dict[str, Any]:
+        destination = (
+            CARIBOU_HOME / "experiment_drafts" / f"{experiment_id}-{uuid4().hex}.yaml"
+        )
+        spec, path = service.clone_with_evaluator(
+            experiment_id,
+            destination,
+            provider=request.evaluator_provider,
+            model=request.evaluator_model,
+            reason=request.reason,
+        )
+        return machine_response(
+            "experiment.clone",
+            object_type="experiment_spec",
+            object_id=spec.spec_id,
+            state="initialized",
+            data={
+                "parent_experiment_id": experiment_id,
+                "specification": spec.model_dump(mode="json"),
+                "specification_path": str(path),
+                "spec_hash": model_hash(spec),
+                "model_change_reason": spec.model_change_reason,
+            },
+            links={
+                "validate": "/api/control/experiments/validate",
+                "plan": "/api/control/experiments/plan",
+                "submit": "/api/control/experiments",
+            },
+        )
+
+    return _call("experiment.clone", operation, success_status=201)
 
 
 @router.get("/runs/{run_id}")

@@ -118,6 +118,7 @@ def capabilities_command(
             "capabilities": {"status": "implemented", "streaming": False},
             "schema": {"status": "implemented", "streaming": False},
             "experiment.init": {"status": "implemented", "mutates": True},
+            "experiment.clone": {"status": "implemented", "mutates": True},
             "experiment.validate": {"status": "implemented", "mutates": False},
             "experiment.plan": {"status": "implemented", "mutates": False},
             "experiment.submit": {"status": "implemented", "mutates": True},
@@ -234,6 +235,51 @@ def init_experiment_command(
         )
 
     _machine_call("experiment.init", json_output, operation)
+
+
+@experiment_app.command("clone")
+def clone_experiment_command(
+    experiment_id: str = typer.Argument(...),
+    output: Path = typer.Option(..., "--output", resolve_path=False),
+    evaluator_provider: str = typer.Option(..., "--evaluator-provider"),
+    evaluator_model: str = typer.Option(..., "--evaluator-model"),
+    reason: str | None = typer.Option(
+        None, "--reason", help="Optional human explanation for the model change."
+    ),
+    overwrite: bool = typer.Option(False, "--overwrite"),
+    json_output: bool = typer.Option(False, "--json", help="Emit one JSON object."),
+) -> None:
+    """Clone a submitted experiment into an unsubmitted evaluator-model revision."""
+
+    def operation() -> Mapping[str, Any]:
+        service = ExperimentService()
+        spec, destination = service.clone_with_evaluator(
+            experiment_id,
+            output,
+            provider=evaluator_provider,
+            model=evaluator_model,
+            reason=reason,
+            overwrite=overwrite,
+        )
+        return machine_response(
+            "experiment.clone",
+            object_type="experiment_spec",
+            object_id=spec.spec_id,
+            state="initialized",
+            data={
+                "parent_experiment_id": experiment_id,
+                "parent_spec_id": spec.parent_spec_id,
+                "spec_hash": model_hash(spec),
+                "specification": str(destination),
+                "model_change_reason": spec.model_change_reason,
+            },
+            links={
+                "validate": f"caribou experiment validate {destination} --json",
+                "plan": f"caribou experiment plan {destination} --json",
+            },
+        )
+
+    _machine_call("experiment.clone", json_output, operation)
 
 
 @experiment_app.command("validate")

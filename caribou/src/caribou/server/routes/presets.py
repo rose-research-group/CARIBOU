@@ -36,6 +36,8 @@ class PresetResolveRequest(BaseModel):
     executor: Literal["local", "slurm"]
     owner: str = Field(min_length=1, max_length=256)
     reviewer: str = Field(min_length=1, max_length=256)
+    evaluator_provider: Literal["openai", "deepseek", "openrouter"] | None = None
+    evaluator_model_name: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 def get_preset_resolver() -> PresetResolver:
@@ -79,6 +81,8 @@ def resolve_preset(
             executor=request.executor,
             owner=request.owner,
             reviewer=request.reviewer,
+            evaluator_provider=request.evaluator_provider,
+            evaluator_model_name=request.evaluator_model_name,
         )
         checks = validate_control_spec(
             specification,

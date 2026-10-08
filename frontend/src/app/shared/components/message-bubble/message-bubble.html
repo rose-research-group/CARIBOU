@@ -1,28 +1,38 @@
-<div class="bubble" [class.user]="message.role === 'user'" [class.assistant]="message.role === 'assistant'" [class.system]="message.role === 'system'" [class.streaming]="streaming">
-  <div class="bubble-meta">
-    @if (message.role === 'system') {
-      <span
-        class="role-label system-message-label"
-        tabindex="0"
-        aria-label="System message. Visible because Show system messages is enabled in Settings under Developer mode."
-        appTooltip="Visible because Show system messages is enabled in Settings under Developer mode."
-        tooltipPosition="bottom">
-        System message
-      </span>
-      @if (message.agent_name && message.agent_name !== 'System') {
-        <span class="system-message-source">{{ message.agent_name }}</span>
+@if (visible) {
+  <div class="bubble" [class.user]="message.role === 'user'" [class.assistant]="message.role === 'assistant'" [class.system]="message.role === 'system'" [class.streaming]="streaming">
+    <div class="bubble-meta">
+      @if (message.role === 'system') {
+        <span
+          class="role-label system-message-label"
+          tabindex="0"
+          aria-label="System message. Visible because Show system messages is enabled in Settings under Developer mode."
+          appTooltip="Visible because Show system messages is enabled in Settings under Developer mode."
+          tooltipPosition="bottom">
+          System message
+        </span>
+        @if (message.agent_name && message.agent_name !== 'System') {
+          <span class="system-message-source">{{ message.agent_name }}</span>
+        }
+      } @else {
+        <span class="role-label">{{ message.role === 'user' ? 'You' : message.agent_name || 'Agent' }}</span>
       }
+      <span class="timestamp" *ngIf="message.timestamp && !streaming">
+        {{ message.timestamp | date:'HH:mm:ss' }}
+      </span>
+      <span class="streaming-cursor" *ngIf="streaming">▌</span>
+    </div>
+    @if (streaming) {
+      <div class="bubble-content md-body streaming-text">{{ message.content }}</div>
+    } @else if (toolCall) {
+      <div class="bubble-content tool-call" [attr.title]="toolCall!.label">
+        <span class="tool-call-badge">
+          <app-icon name="zap" [size]="12" aria-hidden="true" />
+          Tool call
+        </span>
+        <code class="tool-call-command">{{ toolCall!.command }}</code>
+      </div>
     } @else {
-      <span class="role-label">{{ message.role === 'user' ? 'You' : message.agent_name || 'Agent' }}</span>
+      <div class="bubble-content md-body" [innerHTML]="displayContent | markdown"></div>
     }
-    <span class="timestamp" *ngIf="message.timestamp && !streaming">
-      {{ message.timestamp | date:'HH:mm:ss' }}
-    </span>
-    <span class="streaming-cursor" *ngIf="streaming">▌</span>
   </div>
-  @if (streaming) {
-    <div class="bubble-content md-body streaming-text">{{ message.content }}</div>
-  } @else {
-    <div class="bubble-content md-body" [innerHTML]="message.content | markdown"></div>
-  }
-</div>
+}

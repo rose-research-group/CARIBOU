@@ -40,6 +40,8 @@ export class ResourcesStepComponent implements OnChanges {
   @Input() maxTurns = 10;
   @Input() provider: PresetProvider = 'openai';
   @Input() modelName = 'gpt-4.1-2025-04-14';
+  @Input() evaluatorProvider: PresetProvider = 'openai';
+  @Input() evaluatorModelName = 'gpt-4.1-2025-04-14';
   @Input() openrouterEndpoint = '';
   @Input() executor: PresetExecutor = 'slurm';
   @Input() owner = '';
@@ -49,6 +51,8 @@ export class ResourcesStepComponent implements OnChanges {
   @Output() maxTurnsChange = new EventEmitter<number>();
   @Output() providerChange = new EventEmitter<PresetProvider>();
   @Output() modelNameChange = new EventEmitter<string>();
+  @Output() evaluatorProviderChange = new EventEmitter<PresetProvider>();
+  @Output() evaluatorModelNameChange = new EventEmitter<string>();
   @Output() openrouterEndpointChange = new EventEmitter<string>();
   @Output() executorChange = new EventEmitter<PresetExecutor>();
   @Output() ownerChange = new EventEmitter<string>();

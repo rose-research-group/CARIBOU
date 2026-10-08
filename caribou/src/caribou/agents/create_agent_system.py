@@ -95,6 +95,33 @@ def define_agents() -> Dict[str, Dict[str, Any]]:
         print(f"- {Colors.OKCYAN}{name}{Colors.ENDC}")
     return agents
 
+def designate_evaluator_agent(agents: Dict[str, Dict[str, Any]]) -> "str | None":
+    """Optionally mark one agent as this system's evaluator (reviews a full
+    run's transcript when the /evaluate command or its web-UI equivalent is
+    used). Saved as the top-level 'evaluator_agent' blueprint field."""
+    print(f"\n{Colors.OKBLUE}--- Evaluator Agent ---{Colors.ENDC}")
+    print("Optionally designate one agent as this system's evaluator.")
+    names = list(agents.keys())
+    while True:
+        for i, name in enumerate(names):
+            print(f"  {i + 1}: {Colors.OKCYAN}{name}{Colors.ENDC}")
+        choice = input(
+            f"{Colors.WARNING}Enter a number to designate an evaluator, "
+            f"or press Enter to skip: {Colors.ENDC}"
+        ).strip()
+        if not choice:
+            print(f"{Colors.OKCYAN}No evaluator agent designated.{Colors.ENDC}")
+            return None
+        try:
+            idx = int(choice) - 1
+            if not 0 <= idx < len(names):
+                raise ValueError
+        except ValueError:
+            print(f"{Colors.FAIL}Invalid selection. Please enter a valid number or press Enter to skip.{Colors.ENDC}")
+            continue
+        print(f"{Colors.OKGREEN}'{Colors.OKCYAN}{names[idx]}{Colors.OKGREEN}' designated as the evaluator agent.{Colors.ENDC}")
+        return names[idx]
+
 def connect_agents(agents: Dict[str, Dict[str, Any]]) -> None:
     print(f"\n{Colors.OKBLUE}--- Agent Connection ---{Colors.ENDC}")
     print("Now, let's define the connections (neighbors) between agents.")
@@ -179,10 +206,19 @@ def _atomic_write_json(obj: Any, path: Path) -> None:
         tmp_path = Path(tmp.name)
     tmp_path.replace(path)
 
-def save_configuration(global_policy: str, agents_config: Dict[str, Any], output_dir: str) -> None:
+def save_configuration(
+    global_policy: str,
+    agents_config: Dict[str, Any],
+    output_dir: str,
+    evaluator_agent: "str | None" = None,
+) -> None:
     if not agents_config:
         return
-    final_structure = {"global_policy": global_policy, "agents": agents_config}
+    final_structure = {
+        "global_policy": global_policy,
+        "evaluator_agent": evaluator_agent,
+        "agents": agents_config,
+    }
     ensure_dir(Path(output_dir))
     filename = input(f"\n{Colors.WARNING}Enter a filename for your agent system (e.g., 'my_research_team.json'): {Colors.ENDC}").strip()
     if not filename.endswith(".json"):
@@ -200,9 +236,10 @@ def main():
     output_directory = get_output_directory()
     agents_data = define_agents()
     if agents_data:
+        evaluator_agent = designate_evaluator_agent(agents_data)
         connect_agents(agents_data)
         assign_code_samples(agents_data)
-        save_configuration(global_policy_text, agents_data, output_directory)
+        save_configuration(global_policy_text, agents_data, output_directory, evaluator_agent=evaluator_agent)
 
 if __name__ == "__main__":
     main()

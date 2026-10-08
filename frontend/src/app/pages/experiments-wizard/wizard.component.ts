@@ -55,6 +55,8 @@ export class WizardComponent implements OnInit {
   maxTurns = signal(10);
   provider = signal<PresetProvider>('openai');
   modelName = signal('gpt-4.1-2025-04-14');
+  evaluatorProvider = signal<PresetProvider>('openai');
+  evaluatorModelName = signal('gpt-4.1-2025-04-14');
   openrouterEndpoint = signal('');
   executor = signal<PresetExecutor>('slurm');
   owner = signal('web-operator');
@@ -277,8 +279,8 @@ export class WizardComponent implements OnInit {
       this.error.set(`Maximum turns must be between 1 and ${preset.maximum_max_turns}.`);
       return;
     }
-    if (!this.modelName().trim() || !this.owner().trim() || !this.reviewer().trim()) {
-      this.error.set('Model name, owner, and reviewer are required.');
+    if (!this.modelName().trim() || !this.evaluatorModelName().trim() || !this.owner().trim() || !this.reviewer().trim()) {
+      this.error.set('Worker model, evaluator model, owner, and reviewer are required.');
       return;
     }
     if (this.provider() === 'openrouter' && !this.openrouterEndpoint().trim()) {
@@ -296,6 +298,8 @@ export class WizardComponent implements OnInit {
       executor: this.executor(),
       owner: this.owner().trim(),
       reviewer: this.reviewer().trim(),
+      evaluator_provider: this.evaluatorProvider(),
+      evaluator_model_name: this.evaluatorModelName().trim(),
     };
 
     this.busy.set(true);

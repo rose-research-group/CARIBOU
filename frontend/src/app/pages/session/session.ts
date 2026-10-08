@@ -1,6 +1,6 @@
 import {
   Component, OnInit, OnDestroy, inject, signal, ViewChild,
-  ElementRef, AfterViewChecked, computed, HostListener, effect
+  ElementRef, AfterViewChecked, computed, HostListener, effect, untracked
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
@@ -14,12 +14,14 @@ import { ToastService } from '../../core/services/toast.service';
 import { PreferencesService } from '../../core/services/preferences.service';
 import { SessionCacheService } from '../../core/services/session-cache.service';
 import {
-  Message, Artifact, MemoryState, RecoveryMode, SessionForkRequest, SessionResumeRequest
+  Message, Artifact, MemoryState, EvaluationResult, EvaluatorModelConfig,
+  RecoveryMode, SessionForkRequest, SessionResumeRequest,
+  WorkItemDetail, WorkItemSummary, SessionBriefFields,
 } from '../../core/models/session.model';
 import {
   MessageCompleteData, AgentSwitchData, CodeSubmittedData,
   CodeResultData, ErrorData, StatusChangeData, RecoveryCompletedData,
-  SystemMessageData
+  SystemMessageData, WorkItemChangedData, BriefDraftData,
 } from '../../core/models/events.model';
 import { MessageBubbleComponent } from '../../shared/components/message-bubble/message-bubble';
 import { ArtifactCardComponent } from '../../shared/components/artifact-card/artifact-card';
@@ -27,6 +29,7 @@ import { StatusIndicatorComponent } from '../../shared/components/status-indicat
 import { IconComponent } from '../../shared/components/icon/icon';
 import { TooltipDirective } from '../../shared/directives/tooltip.directive';
 import { navigateTabToSession, reserveNewTab } from '../../core/utils/app-navigation';
+import { dedupeArtifactsByPath } from '../../core/utils/artifacts';
 
 export interface ErrorRecord {
   code: string;
@@ -102,6 +105,18 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   artifactSearch = signal('');
   memoryState = signal<MemoryState | null>(null);
   memoryStateError = signal(false);
+  evaluating = signal(false);
+  evaluationResult = signal<EvaluationResult | null>(null);
+  evaluationError = signal<string | null>(null);
+  workItems = signal<WorkItemSummary[]>([]);
+  selectedWorkItem = signal<WorkItemDetail | null>(null);
+  workItemReviewing = signal(false);
+  workItemError = signal<string | null>(null);
+  editingEvaluatorModel = signal(false);
+  evaluatorModelSaving = signal(false);
+  evaluatorModelError = signal<string | null>(null);
+  evaluatorModelReason = signal('');
+  evaluatorModelForm: EvaluatorModelConfig = { mode: 'inherit_worker' };
   showConnectionBanner = computed(() => {
     const s = this.stream.connectionState();
     return s === 'reconnecting' || s === 'expired';
@@ -133,8 +148,24 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   private memoryPollSub: Subscription | null = null;
   private shouldScrollToBottom = false;
   private cacheHydrated = false;
+  // Highest event seq whose effects are already in the state restored from
+  // sessionStorage. The server replays its full event log on connect, so
+  // handlers that APPEND to cached state skip events at or below it.
+  // (Reconnect replay within this page is dropped earlier, by the stream's own
+  // seq high-water mark.) Idempotent handlers still run for those events so
+  // un-cached state (pending code, brief draft) is rebuilt.
+  private hydratedSeq = 0;
 
   session = this.sessionSvc.currentSession;
+  // WS-5: the briefing conversation is a distinct phase, not a normal chat
+  // turn — `briefPhase` gates the interview view, `briefDraft` is the
+  // agent's current proposal (cleared once a decision is submitted).
+  briefPhase = computed(() => this.session()?.phase === 'briefing');
+  briefDraft = signal<SessionBriefFields | null>(null);
+  frozenBrief = computed(() => this.session()?.brief ?? null);
+  submittingBriefDecision = signal(false);
+  briefEditDraft = signal<string>('');
+  briefEditing = signal(false);
   status = computed(() => this.session()?.status ?? 'stopped');
   currentAgent = computed(() => this.session()?.current_agent ?? '');
   isIdle = computed(() => this.status() === 'idle');
@@ -163,6 +194,10 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   isInitialInteractiveTurn = computed(() =>
     this.session()?.mode === 'interactive' && (this.session()?.current_turn ?? 0) <= 1
   );
+  // Mirrors the server's own readiness check — false after a server restart
+  // until the runner is relaunched, even if current_turn > 0 (see
+  // can_evaluate in session_state.py's to_response()).
+  canEvaluate = computed(() => this.session()?.can_evaluate ?? false);
   waitingLabel = computed(() =>
     this.isInitialInteractiveTurn() ? 'Getting environment set up…' : 'Waiting for agent…'
   );
@@ -353,6 +388,9 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
         artifacts: this.artifacts(),
         errorLog: this.errorLog(),
         statusLog: this.statusLog(),
+        // untracked: every event (tokens included) bumps seq; only changes to
+        // the cached signals above should trigger a rewrite.
+        lastSeq: Math.max(this.hydratedSeq, untracked(() => this.stream.lastSeq())),
       });
     });
   }
@@ -368,6 +406,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
         this.artifacts.set(cached.artifacts as Artifact[] ?? []);
         this.errorLog.set(cached.errorLog as ErrorRecord[] ?? []);
         this.statusLog.set(cached.statusLog as StatusEntry[] ?? []);
+        this.hydratedSeq = cached.lastSeq;
       }
     }
     this.cacheHydrated = true;
@@ -391,7 +430,8 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
             this.shouldScrollToBottom = true;
           }
         });
-        this.sessionSvc.getArtifacts(id).subscribe(a => this.artifacts.set(a));
+        this.sessionSvc.getArtifacts(id).subscribe(a => this.artifacts.set(dedupeArtifactsByPath(a)));
+        this.loadWorkItems(id);
         this.sessionStartTs = Date.now();
         this.fetchMemoryState(id);
       },
@@ -444,6 +484,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
 
     this.subs.add(this.stream.agentSwitch$.subscribe(ev => {
       const d = ev.data as AgentSwitchData;
+      if (ev.seq <= this.hydratedSeq) return;
       this.chatItems.update(items => [
         ...items,
         { kind: 'delegation', turn: ev.turn, delegation: { from: d.from_agent, to: d.to_agent, command: d.command } }
@@ -455,6 +496,8 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
       const key = `${ev.turn}-${d.block_index}`;
       this.pendingCode.update(m => { const n = new Map(m); n.set(key, d); return n; });
       this.awaitingCodeResult.set(true);
+      // Card already restored from the session cache.
+      if (ev.seq <= this.hydratedSeq) return;
       this.chatItems.update(items => [...items, {
         kind: 'code',
         turn: ev.turn,
@@ -466,35 +509,71 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.subs.add(this.stream.codeResult$.subscribe(ev => {
       const result = ev.data as CodeResultData;
       const key = `${ev.turn}-${result.block_index}`;
-      const pending = this.pendingCode();
-      const submitted = pending.get(key);
-      if (submitted) {
-        this.pendingCode.update(m => { const n = new Map(m); n.delete(key); return n; });
-        this.chatItems.update(items => {
-          for (let i = items.length - 1; i >= 0; i--) {
-            const item = items[i];
-            if (item.kind === 'code' && item.codeEvent && !item.codeEvent.result &&
-                item.codeEvent.submitted.block_index === result.block_index && item.turn === ev.turn) {
-              const updated = [...items];
-              updated[i] = { ...item, codeEvent: { submitted: item.codeEvent.submitted, result } };
-              return updated;
-            }
+      this.pendingCode.update(m => { const n = new Map(m); n.delete(key); return n; });
+      // Attach to the card itself rather than requiring a pendingCode hit: a
+      // card restored from the cache mid-execution has no pending entry.
+      // Cards that already carry a result (replayed, cached) are left alone.
+      let attached = false;
+      this.chatItems.update(items => {
+        for (let i = items.length - 1; i >= 0; i--) {
+          const item = items[i];
+          if (item.kind === 'code' && item.codeEvent && !item.codeEvent.result &&
+              item.codeEvent.submitted.block_index === result.block_index && item.turn === ev.turn) {
+            const updated = [...items];
+            updated[i] = { ...item, codeEvent: { submitted: item.codeEvent.submitted, result } };
+            attached = true;
+            return updated;
           }
-          return items;
-        });
-        if (this.autoScrollEnabled()) this.shouldScrollToBottom = true;
-      }
+        }
+        return items;
+      });
+      if (attached && this.autoScrollEnabled()) this.shouldScrollToBottom = true;
       if (this.pendingCode().size === 0) {
         this.awaitingCodeResult.set(false);
       }
     }));
 
+    // The event payload carries no artifact id (needed for the download URL),
+    // so refetch the list; an overwritten file keeps its `path` and replaces
+    // the existing entry rather than adding a duplicate card.
     this.subs.add(this.stream.artifacts$.subscribe(() => {
-      this.sessionSvc.getArtifacts(id).subscribe(a => this.artifacts.set(a));
+      this.sessionSvc.getArtifacts(id).subscribe(a => this.artifacts.set(dedupeArtifactsByPath(a)));
+    }));
+
+    this.subs.add(this.stream.workItemChanges$.subscribe(ev => {
+      const d = ev.data as WorkItemChangedData;
+      this.workItems.update(items => {
+        const summary: WorkItemSummary = d.item;
+        return [...items.filter(item => item.id !== summary.id), summary]
+          .sort((a, b) => a.id - b.id);
+      });
+      if (this.selectedWorkItem()?.id === d.item.id) {
+        this.selectedWorkItem.set(d.item);
+      }
+    }));
+
+    this.subs.add(this.stream.briefDraft$.subscribe(ev => {
+      const d = ev.data as BriefDraftData;
+      this.briefDraft.set(d.brief);
+      this.briefEditDraft.set(JSON.stringify(d.brief, null, 2));
+      this.briefEditing.set(false);
+    }));
+
+    this.subs.add(this.stream.briefAccepted$.subscribe(() => {
+      this.briefDraft.set(null);
+      this.briefEditing.set(false);
+      this.submittingBriefDecision.set(false);
+    }));
+
+    this.subs.add(this.stream.phaseChange$.subscribe(() => {
+      // Phase lives on the Session record itself, not just the event
+      // stream — refetch so `briefPhase`/`frozenBrief` pick up the change.
+      this.sessionSvc.getSession(id).subscribe();
     }));
 
     this.subs.add(this.stream.errors$.subscribe(ev => {
       this.waitingForAgent.set(false);
+      if (ev.seq <= this.hydratedSeq) return;
       const d = ev.data as ErrorData;
       const record: ErrorRecord = {
         code: d.code,
@@ -527,6 +606,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
       } else if ((d.status === 'stopped' || d.status === 'error') && this.memoryPollSub) {
         this.stopMemoryPolling(id);
       }
+      if (ev.seq <= this.hydratedSeq) return;
       this.statusLog.update(log => {
         const last = log[log.length - 1];
         if (last && last.status === d.status && last.reason === d.reason) {
@@ -738,7 +818,15 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
       ? this.sessionSvc.resumeSession(s.id, request)
       : kind === 'retry'
         ? this.sessionSvc.retryRecovery(s.id, request)
-        : this.sessionSvc.forkSession(s.id, { ...request, name: this.recoveryForm.name.trim(), llm_backend: this.recoveryForm.llm_backend, model_name: this.recoveryForm.model_name, ollama_model: this.recoveryForm.ollama_model });
+        : this.sessionSvc.forkSession(s.id, {
+            ...request,
+            name: this.recoveryForm.name.trim(),
+            llm_backend: this.recoveryForm.llm_backend,
+            model_name: this.recoveryForm.model_name,
+            ollama_model: this.recoveryForm.ollama_model,
+            evaluator_model: this.recoveryForm.evaluator_model,
+            model_change_reason: this.recoveryForm.model_change_reason?.trim() || undefined,
+          });
     operation.subscribe({
       next: result => {
         this.recoverySubmitting.set(false);
@@ -802,6 +890,175 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     if (!this.isRunning() || this.session()?.mode !== 'interactive') return;
     this.cancellingResponse.set(true);
     this.stream.cancelResponse();
+  }
+
+  evaluate(): void {
+    const id = this.session()?.id;
+    if (!id || !this.canEvaluate() || this.evaluating()) return;
+    this.evaluating.set(true);
+    this.evaluationError.set(null);
+    this.sessionSvc.evaluate(id).subscribe({
+      next: (result) => {
+        this.evaluating.set(false);
+        this.evaluationResult.set(result);
+      },
+      error: (err) => {
+        this.evaluating.set(false);
+        this.evaluationError.set(err?.error?.detail ?? 'Evaluation failed.');
+        this.toasts.show({ kind: 'error', title: 'Evaluation failed', ttlMs: 4000 });
+      },
+    });
+  }
+
+  loadWorkItems(sessionId?: string): void {
+    const id = sessionId ?? this.session()?.id;
+    if (!id) return;
+    this.sessionSvc.getWorkItems(id).subscribe({
+      next: items => this.workItems.set(items),
+      error: err => this.workItemError.set(err?.error?.detail ?? 'Unable to load work items.'),
+    });
+  }
+
+  selectWorkItem(itemId: number): void {
+    const id = this.session()?.id;
+    if (!id) return;
+    this.workItemError.set(null);
+    this.sessionSvc.getWorkItem(id, itemId).subscribe({
+      next: item => this.selectedWorkItem.set(item),
+      error: err => this.workItemError.set(err?.error?.detail ?? 'Unable to load work item.'),
+    });
+  }
+
+  canReviewWorkItem(item: WorkItemSummary): boolean {
+    return this.canEvaluate() && (item.status === 'In review' || item.status === 'Done');
+  }
+
+  reviewWorkItem(itemId: number): void {
+    const id = this.session()?.id;
+    if (!id || this.workItemReviewing()) return;
+    this.workItemReviewing.set(true);
+    this.workItemError.set(null);
+    this.sessionSvc.reviewWorkItem(id, itemId).subscribe({
+      next: result => {
+        this.workItemReviewing.set(false);
+        this.selectedWorkItem.set(result.item);
+        this.workItems.update(items => [
+          ...items.filter(item => item.id !== result.item.id),
+          result.item,
+        ].sort((a, b) => a.id - b.id));
+      },
+      error: err => {
+        this.workItemReviewing.set(false);
+        this.workItemError.set(err?.error?.detail ?? 'Work-item review failed.');
+      },
+    });
+  }
+
+  acceptBrief(): void {
+    const id = this.session()?.id;
+    if (!id || this.submittingBriefDecision()) return;
+    this.submittingBriefDecision.set(true);
+    this.sessionSvc.submitBriefDecision(id, 'accept').subscribe({
+      error: err => {
+        this.submittingBriefDecision.set(false);
+        this.toasts.show({
+          kind: 'error',
+          title: 'Failed to accept the brief',
+          detail: err?.error?.detail,
+          ttlMs: 4000,
+        });
+      },
+    });
+  }
+
+  rejectBrief(reason: string): void {
+    const id = this.session()?.id;
+    if (!id || this.submittingBriefDecision()) return;
+    this.submittingBriefDecision.set(true);
+    this.sessionSvc.submitBriefDecision(id, 'reject', { reason }).subscribe({
+      next: () => {
+        this.submittingBriefDecision.set(false);
+        this.briefDraft.set(null);
+      },
+      error: err => {
+        this.submittingBriefDecision.set(false);
+        this.toasts.show({
+          kind: 'error',
+          title: 'Failed to reject the brief',
+          detail: err?.error?.detail,
+          ttlMs: 4000,
+        });
+      },
+    });
+  }
+
+  submitEditedBrief(): void {
+    const id = this.session()?.id;
+    if (!id || this.submittingBriefDecision()) return;
+    let parsed: Partial<SessionBriefFields>;
+    try {
+      parsed = JSON.parse(this.briefEditDraft());
+    } catch {
+      this.toasts.show({ kind: 'error', title: 'Edited brief is not valid JSON', ttlMs: 4000 });
+      return;
+    }
+    this.submittingBriefDecision.set(true);
+    this.sessionSvc.submitBriefDecision(id, 'edit', { brief: parsed }).subscribe({
+      error: err => {
+        this.submittingBriefDecision.set(false);
+        this.toasts.show({
+          kind: 'error',
+          title: 'Failed to submit the edited brief',
+          detail: err?.error?.detail,
+          ttlMs: 4000,
+        });
+      },
+    });
+  }
+
+  openEvaluatorModelEditor(): void {
+    const state = this.session()?.evaluator_model;
+    if (!state) return;
+    this.evaluatorModelForm = { ...state.selection };
+    this.evaluatorModelReason.set('');
+    this.evaluatorModelError.set(null);
+    this.editingEvaluatorModel.set(true);
+  }
+
+  saveEvaluatorModel(): void {
+    const session = this.session();
+    if (!session || this.evaluatorModelSaving()) return;
+    if (
+      this.evaluatorModelForm.mode === 'explicit' &&
+      (!this.evaluatorModelForm.llm_backend?.trim() || !this.evaluatorModelForm.model_name?.trim())
+    ) {
+      this.evaluatorModelError.set('Backend and exact model identifier are required.');
+      return;
+    }
+    const selection: EvaluatorModelConfig = this.evaluatorModelForm.mode === 'inherit_worker'
+      ? { mode: 'inherit_worker' }
+      : {
+          mode: 'explicit',
+          llm_backend: this.evaluatorModelForm.llm_backend?.trim(),
+          model_name: this.evaluatorModelForm.model_name?.trim(),
+        };
+    this.evaluatorModelSaving.set(true);
+    this.evaluatorModelError.set(null);
+    this.sessionSvc.updateEvaluatorModel(session.id, {
+      selection,
+      expected_revision: session.evaluator_model.revision,
+      reason: this.evaluatorModelReason().trim() || null,
+    }).subscribe({
+      next: () => {
+        this.evaluatorModelSaving.set(false);
+        this.editingEvaluatorModel.set(false);
+        this.toasts.show({ kind: 'success', title: 'Evaluator model updated', ttlMs: 3000 });
+      },
+      error: err => {
+        this.evaluatorModelSaving.set(false);
+        this.evaluatorModelError.set(err?.error?.detail ?? 'Unable to update evaluator model.');
+      },
+    });
   }
 
   retryReconnect(): void {

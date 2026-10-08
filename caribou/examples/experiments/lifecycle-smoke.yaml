@@ -1,3 +1,4 @@
+schema_version: caribou.experiment_spec.v2
 spec_id: spec_00000000000000000000000000000001
 title: Local lifecycle smoke probe
 study_class: pilot
@@ -37,6 +38,14 @@ conditions:
     parameters:
       caribou.execution_adapter: lifecycle_smoke
       caribou.lifecycle_smoke_seconds: 0.25
+evaluator:
+  agent_name: evaluator
+  agent:
+    uri: artifact://probe/evaluator-agent
+    content_hash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  model:
+    provider: probe
+    model: deterministic-evaluator@v1
 repetitions: 1
 execution:
   executor: local

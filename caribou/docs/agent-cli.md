@@ -112,6 +112,22 @@ checkout is rejected, and the first resolution of a large container can take tim
 while its content hash is computed. Presets are convenience inputs, not validated
 biological protocols or evidence of benchmark performance.
 
+Experiment specification v2 additionally freezes one evaluator agent reference
+and one exact evaluator model for the whole experiment. The evaluator is distinct
+from each condition's worker model and from metric evaluator artifacts. Submitted
+specifications are immutable: use `caribou experiment clone` (or **Clone model**
+in the web run monitor), optionally recording a model-change reason, then validate,
+plan, and submit the new draft. Version-1 specifications remain readable but do
+not acquire an inferred evaluator.
+
+Interactive CLI and web sessions default the evaluator model to the worker model
+for compatibility. A separate evaluator can be selected at creation. Web sessions
+may change only the evaluator model in place using a revision-checked request;
+the change and optional reason are recorded as an event and system message. In the
+interactive CLI, `/evaluator status` inspects the binding and `/evaluator model
+--llm PROVIDER --model MODEL_ID [--reason TEXT]` changes it. Worker model changes
+continue to require a fork, where the optional reason is also retained.
+
 The separately tested `agent_path_smoke` adapter crosses the real control
 service, detached worker, existing agent runner, blueprint delegation, command
 parser, event journal, and artifact store. Its model client and sandbox are
@@ -137,7 +153,9 @@ the declared local CPU, memory, and storage maxima.
 
 For DeepSeek V4, frozen model parameters may additionally contain `thinking`
 (boolean) and `reasoning_effort` (`high` or `max`; valid only when thinking is
-enabled). The preset resolver locks `deepseek-v4-flash` to quick mode and
+enabled). The preset resolver locks `deepseek-v4-flash` and `deepseek-flash`
+(the `deepseek-v4.1` backend's model id — DeepSeek now serves V4.1 Flash
+under this id, not a separate "v4.1" string) to quick mode and
 `deepseek-v4-pro` to thinking mode at high effort so the effective request mode
 is preserved alongside the exact model ID. Standard CLI session reports created
 with `--make-report` also record these values as `model` and

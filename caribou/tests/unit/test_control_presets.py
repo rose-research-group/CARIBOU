@@ -11,6 +11,7 @@ from caribou.control.presets import PRESETS, PresetResolver, get_preset_list
 from caribou.control.specs import validate_control_spec
 from caribou.core.deepseek import (
     DEEPSEEK_FAST_MODEL,
+    DEEPSEEK_FLASH_V41_MODEL,
     DEEPSEEK_THINKING_MODEL,
 )
 from caribou.domain.enums import ExecutorKind, TopologyKind
@@ -106,6 +107,10 @@ def test_preset_catalog_exposes_only_supported_resolution_controls() -> None:
             {"max_output_tokens": 4_096, "thinking": False},
         ),
         (
+            DEEPSEEK_FLASH_V41_MODEL,
+            {"max_output_tokens": 4_096, "thinking": False},
+        ),
+        (
             DEEPSEEK_THINKING_MODEL,
             {
                 "max_output_tokens": 4_096,
@@ -163,7 +168,11 @@ def test_deepseek_preset_rejects_retiring_alias(
 
     assert failure.value.code == "PRESET_DEEPSEEK_MODEL_UNSUPPORTED"
     assert failure.value.details == {
-        "supported_models": [DEEPSEEK_FAST_MODEL, DEEPSEEK_THINKING_MODEL]
+        "supported_models": [
+            DEEPSEEK_FAST_MODEL,
+            DEEPSEEK_FLASH_V41_MODEL,
+            DEEPSEEK_THINKING_MODEL,
+        ]
     }
 
 

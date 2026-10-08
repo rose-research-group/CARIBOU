@@ -16,7 +16,11 @@ from typing import Optional
 
 from caribou.config import DEFAULT_AGENT_DIR
 from caribou.core.python_environments import PythonEnvironmentError
-from caribou.server.models import ResolvedModelInfo, SessionCreateRequest
+from caribou.server.models import (
+    EvaluatorModelConfig,
+    ResolvedModelInfo,
+    SessionCreateRequest,
+)
 from caribou.server.session_state import (
     SANDBOX_DATA_PATH,
     SANDBOX_REF_DATA_PATH,
@@ -25,38 +29,39 @@ from caribou.server.session_state import (
 _log = logging.getLogger(__name__)
 
 
-def resolve_model_info(
-    config: SessionCreateRequest,
+def resolve_model_binding(
     *,
+    backend: str,
+    model_name: str | None = None,
+    ollama_model: str | None = None,
     resolved_model_name: str | None = None,
 ) -> ResolvedModelInfo | None:
-    """Resolve the exact model record shown to users and persisted on disk."""
+    """Resolve one provider/model request into persisted provenance."""
 
     from caribou.core.deepseek import (
         deepseek_profile_for_backend,
         is_deepseek_backend,
     )
 
-    backend = config.llm_backend
     if is_deepseek_backend(backend):
         profile = deepseek_profile_for_backend(backend)
         return ResolvedModelInfo(
             provider="deepseek",
-            model=resolved_model_name or profile.model,
+            model=resolved_model_name or model_name or profile.model,
             parameters=profile.model_parameters(),
         )
     if backend == "chatgpt":
         return ResolvedModelInfo(
             provider="openai",
-            model=resolved_model_name or "gpt-4o",
+            model=resolved_model_name or model_name or "gpt-4o",
         )
     if backend == "claude":
         return ResolvedModelInfo(
             provider="anthropic",
-            model=resolved_model_name or "claude-sonnet-4-6",
+            model=resolved_model_name or model_name or "claude-sonnet-4-6",
         )
     if backend == "openrouter":
-        model = resolved_model_name or config.model_name or ""
+        model = resolved_model_name or model_name or ""
         if model:
             return ResolvedModelInfo(
                 provider="openrouter",
@@ -70,12 +75,46 @@ def resolve_model_info(
     if backend.startswith("ollama"):
         model = (
             resolved_model_name
-            or config.ollama_model
+            or ollama_model
+            or model_name
             or os.environ.get("OLLAMA_MODEL", "")
         )
         if model:
             return ResolvedModelInfo(provider="ollama", model=model)
     return None
+
+
+def resolve_model_info(
+    config: SessionCreateRequest,
+    *,
+    resolved_model_name: str | None = None,
+) -> ResolvedModelInfo | None:
+    """Resolve the exact model record shown to users and persisted on disk."""
+
+    return resolve_model_binding(
+        backend=config.llm_backend,
+        model_name=getattr(config, "model_name", None),
+        ollama_model=getattr(config, "ollama_model", None),
+        resolved_model_name=resolved_model_name,
+    )
+
+
+def resolve_evaluator_model_info(
+    config: SessionCreateRequest,
+    *,
+    worker_resolved: ResolvedModelInfo | None = None,
+    resolved_model_name: str | None = None,
+) -> ResolvedModelInfo | None:
+    selection = config.evaluator_model
+    if selection.mode == "inherit_worker":
+        return worker_resolved or resolve_model_info(config)
+    assert selection.llm_backend is not None
+    return resolve_model_binding(
+        backend=selection.llm_backend,
+        model_name=selection.model_name,
+        ollama_model=selection.ollama_model,
+        resolved_model_name=resolved_model_name,
+    )
 
 
 class SandboxUnavailableError(RuntimeError):
@@ -114,8 +153,13 @@ def find_blueprint(name: str) -> Path:
     )
 
 
-def build_llm_client(config: SessionCreateRequest):
-    """Return (llm_client, model_name) for the given backend string."""
+def build_model_client(
+    *,
+    backend: str,
+    model_name: str | None = None,
+    ollama_model: str | None = None,
+):
+    """Return ``(client, exact_model_name)`` for one model binding."""
     from openai import OpenAI
 
     from caribou.core.deepseek import (
@@ -124,13 +168,11 @@ def build_llm_client(config: SessionCreateRequest):
         is_deepseek_backend,
     )
 
-    backend = config.llm_backend
-
     if backend == "chatgpt":
         key = os.environ.get("OPENAI_API_KEY", "")
         if not key:
             raise EnvironmentError("OPENAI_API_KEY not set.")
-        return OpenAI(api_key=key), "gpt-4o"
+        return OpenAI(api_key=key), model_name or "gpt-4o"
 
     if backend == "claude":
         key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -138,14 +180,14 @@ def build_llm_client(config: SessionCreateRequest):
             raise EnvironmentError("ANTHROPIC_API_KEY not set.")
         from caribou.core.anthropic_wrapper import AnthropicClient
 
-        return AnthropicClient(api_key=key), "claude-sonnet-4-6"
+        return AnthropicClient(api_key=key), model_name or "claude-sonnet-4-6"
 
     if is_deepseek_backend(backend):
         key = os.environ.get("DEEPSEEK_API_KEY", "")
         if not key:
             raise EnvironmentError("DEEPSEEK_API_KEY not set.")
         profile = deepseek_profile_for_backend(backend)
-        return create_deepseek_client(key, profile=profile), profile.model
+        return create_deepseek_client(key, profile=profile), model_name or profile.model
 
     if backend == "openrouter":
         from caribou.core.openrouter import (
@@ -156,15 +198,15 @@ def build_llm_client(config: SessionCreateRequest):
         key = os.environ.get("OPENROUTER_API_KEY", "")
         if not key:
             raise EnvironmentError("OPENROUTER_API_KEY not set.")
-        if not config.model_name:
+        if not model_name:
             raise ValueError("Select an OpenRouter model before starting the session.")
-        model = validate_openrouter_model_id(config.model_name, strict=False)
+        model = validate_openrouter_model_id(model_name, strict=False)
         return create_openrouter_client(key), model
 
     if backend.startswith("ollama"):
         host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
         env_model = os.environ.get("OLLAMA_MODEL", "")
-        requested_model = config.ollama_model or env_model or ""
+        requested_model = ollama_model or model_name or env_model or ""
         from caribou.server.ollama_service import ensure_ollama_ready
         from caribou.core.ollama_wrapper import OllamaClient
 
@@ -172,6 +214,47 @@ def build_llm_client(config: SessionCreateRequest):
         return OllamaClient(host=resolved_host, model=model_name), model_name
 
     raise ValueError(f"Unknown LLM backend: {backend!r}")
+
+
+def build_llm_client(config: SessionCreateRequest):
+    """Backward-compatible worker model resolver."""
+
+    return build_model_client(
+        backend=config.llm_backend,
+        model_name=getattr(config, "model_name", None),
+        ollama_model=getattr(config, "ollama_model", None),
+    )
+
+
+def build_evaluator_client(
+    config: SessionCreateRequest,
+    *,
+    worker_client: object,
+    worker_model_name: str,
+) -> tuple[object, str, ResolvedModelInfo | None]:
+    selection: EvaluatorModelConfig = config.evaluator_model
+    if selection.mode == "inherit_worker":
+        return (
+            worker_client,
+            worker_model_name,
+            resolve_model_info(config, resolved_model_name=worker_model_name),
+        )
+    assert selection.llm_backend is not None
+    client, exact_model = build_model_client(
+        backend=selection.llm_backend,
+        model_name=selection.model_name,
+        ollama_model=selection.ollama_model,
+    )
+    return (
+        client,
+        exact_model,
+        resolve_model_binding(
+            backend=selection.llm_backend,
+            model_name=selection.model_name,
+            ollama_model=selection.ollama_model,
+            resolved_model_name=exact_model,
+        ),
+    )
 
 
 def _preflight_docker() -> None:

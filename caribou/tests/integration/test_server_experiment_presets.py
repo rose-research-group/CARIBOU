@@ -93,7 +93,7 @@ def test_preset_catalog_and_resolution_use_machine_contract(
     assert payload["object"]["state"] == "validated"
     assert (
         payload["data"]["specification"]["schema_version"]
-        == "caribou.experiment_spec.v1"
+        == "caribou.experiment_spec.v2"
     )
     assert payload["data"]["specification"]["execution"]["executor"] == "local"
     assert payload["links"]["submit"] == "/api/control/experiments"

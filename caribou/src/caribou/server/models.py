@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    field_validator,
+    model_validator,
+)
 
 from caribou.core.python_environments import ResolvedPythonEnvironment
 
@@ -82,6 +89,39 @@ class MemoryConfigResponse(BaseModel):
     chunk_size: Optional[int] = None
 
 
+class EvaluatorModelConfig(BaseModel):
+    """Requested evaluator model binding.
+
+    ``inherit_worker`` preserves the historical behaviour while keeping the
+    evaluator role explicit in persisted state and API responses.
+    """
+
+    mode: Literal["inherit_worker", "explicit"] = "inherit_worker"
+    llm_backend: Optional[str] = None
+    model_name: Optional[str] = None
+    ollama_model: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_explicit_binding(self) -> "EvaluatorModelConfig":
+        if self.mode == "explicit" and not (self.llm_backend or "").strip():
+            raise ValueError("explicit evaluator model requires llm_backend")
+        if self.mode == "inherit_worker" and any(
+            value is not None
+            for value in (self.llm_backend, self.model_name, self.ollama_model)
+        ):
+            raise ValueError(
+                "inherit_worker evaluator model cannot declare provider-specific fields"
+            )
+        return self
+
+
+def _normalize_optional_reason(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
 class SessionCreateRequest(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=120)
     mode: SessionMode
@@ -102,6 +142,18 @@ class SessionCreateRequest(BaseModel):
     memory_chunk_size: Optional[int] = None
     compress_memory: bool = False
     agent_report_memory: bool = False
+    evaluator_model: EvaluatorModelConfig = Field(default_factory=EvaluatorModelConfig)
+    # None = use the blueprint's own brief_policy (its default). An explicit
+    # value overrides the blueprint for this session only — e.g. turning
+    # briefing on for a blueprint that doesn't declare brief_policy at all.
+    brief_mode: Optional[Literal["off", "context", "seed_item"]] = None
+    # A pre-authored, already-frozen brief (raw fields, not a SessionBrief
+    # instance — created_at/created_by are harness-set regardless of what's
+    # supplied here). Mirrors the CLI's `--brief <path>`: skips the briefing
+    # conversation entirely and pins this brief immediately. Auto sessions
+    # never run a briefing conversation, so this is their only way to have
+    # a brief at all.
+    brief: Optional[Dict[str, Any]] = None
 
 
 class ResolvedModelInfo(BaseModel):
@@ -110,6 +162,22 @@ class ResolvedModelInfo(BaseModel):
     provider: str
     model: str
     parameters: Dict[str, Any] = Field(default_factory=dict)
+
+
+class EvaluatorModelState(BaseModel):
+    selection: EvaluatorModelConfig
+    resolved_model: Optional[ResolvedModelInfo] = None
+    revision: int = Field(default=1, ge=1)
+
+
+class EvaluatorModelUpdateRequest(BaseModel):
+    selection: EvaluatorModelConfig
+    expected_revision: int = Field(ge=1)
+    reason: Optional[str] = Field(default=None, max_length=1000)
+
+    _normalize_reason = field_validator("reason", mode="before")(
+        _normalize_optional_reason
+    )
 
 
 class MessageRecord(BaseModel):
@@ -133,6 +201,14 @@ class ArtifactRecord(BaseModel):
     size_bytes: int
     created_at: datetime = Field(default_factory=datetime.utcnow)
     local_path: str = ""
+    # Posix path relative to the session's output_dir — the artifact's
+    # identity. An overwrite of the same path replaces the record.
+    path: str
+    # st_mtime_ns of the file version this record describes.
+    mtime_ns: int
+    # The code block that produced it (execution.event_ids.make_action_id),
+    # or None when produced outside a code block.
+    action_id: Optional[str] = None
 
     @property
     def download_url(self) -> str:
@@ -151,6 +227,66 @@ class CodeEventRecord(BaseModel):
     duration_ms: int = 0
 
 
+class EvaluationResult(BaseModel):
+    session_id: str
+    turn: int
+    evaluator_agent: str
+    evaluator_source: str
+    model: str
+    provider: Optional[str] = None
+    evaluator_model: Optional[ResolvedModelInfo] = None
+    evaluator_model_revision: int = 1
+    provider_receipt: Dict[str, Any] = Field(default_factory=dict)
+    assessment: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class WorkItemSummary(BaseModel):
+    id: int
+    title: str
+    status: str
+    owner: str
+    created_turn: int
+    created_at: str
+    completed_turn: Optional[int] = None
+    completed_at: Optional[str] = None
+
+
+class WorkItemDetail(WorkItemSummary):
+    schema_version: str
+    run_id: str
+    body: str
+    completion_summary: Optional[str] = None
+    closed_turn: Optional[int] = None
+    closed_at: Optional[str] = None
+    transitions: List[Dict[str, Any]] = Field(default_factory=list)
+    reviews: List[Dict[str, Any]] = Field(default_factory=list)
+    opening_commit: Optional[str] = None
+    latest_commit: Optional[str] = None
+
+
+class WorkItemReviewResult(BaseModel):
+    item: WorkItemDetail
+    verdict: str
+    assessment: str
+    provider_receipt: Dict[str, Any] = Field(default_factory=dict)
+
+
+class BriefDecisionRequest(BaseModel):
+    decision: Literal["accept", "reject", "edit"]
+    reason: Optional[str] = None
+    # Required when decision == "edit": the corrected brief fields, in the
+    # same shape as the agent's ```brief block (deliverable, in_scope,
+    # out_of_scope, done_when, and the optional fields).
+    brief: Optional[Dict[str, Any]] = None
+
+    @model_validator(mode="after")
+    def _edit_requires_brief(self) -> "BriefDecisionRequest":
+        if self.decision == "edit" and self.brief is None:
+            raise ValueError("decision 'edit' requires a 'brief' payload")
+        return self
+
+
 class SessionResponse(BaseModel):
     id: str
     name: str
@@ -160,6 +296,9 @@ class SessionResponse(BaseModel):
     agent_system: str
     llm_backend: str
     resolved_model: Optional[ResolvedModelInfo] = None
+    evaluator_model: EvaluatorModelState = Field(
+        default_factory=lambda: EvaluatorModelState(selection=EvaluatorModelConfig())
+    )
     sandbox_type: SandboxType
     python_environment: ResolvedPythonEnvironment
     dataset_path: str
@@ -171,6 +310,10 @@ class SessionResponse(BaseModel):
     artifact_count: int
     message_count: int
     memory: Optional[MemoryConfigResponse] = None
+    # False after a server restart until the runner is relaunched — restored
+    # sessions don't carry a live llm_client/agent_system (see
+    # session_persistence.py), so /evaluate would 400 even though current_turn > 0.
+    can_evaluate: bool = False
     parent_session_id: Optional[str] = None
     forked_from_checkpoint_id: Optional[str] = None
     attempt_number: int = 1
@@ -184,6 +327,16 @@ class SessionResponse(BaseModel):
     recovery_substep_total: Optional[int] = None
     checkpoint_turn: Optional[int] = None
     checkpoint_healthy: bool = False
+    # The effective brief mode for this session (session override, if any,
+    # else the blueprint's own brief_policy) — "off" if briefing is
+    # disabled. None until the agent system has loaded (still initializing).
+    brief_mode: Optional[Literal["off", "context", "seed_item"]] = None
+    # "briefing" while the interview conversation is active, "execution"
+    # once a frozen brief is pinned (or briefing never applied/ran).
+    phase: Literal["briefing", "execution"] = "execution"
+    # The frozen brief, once accepted — None until then. Draft proposals
+    # arrive only via the brief_draft WS event, not this field.
+    brief: Optional[Dict[str, Any]] = None
 
 
 class SessionResumeRequest(BaseModel):
@@ -198,8 +351,14 @@ class SessionForkRequest(SessionResumeRequest):
     llm_backend: Optional[str] = None
     model_name: Optional[str] = None
     ollama_model: Optional[str] = None
+    evaluator_model: Optional[EvaluatorModelConfig] = None
+    model_change_reason: Optional[str] = Field(default=None, max_length=1000)
     # Omitted means inherit; explicit null selects the bundled environment.
     python_environment_path: Optional[str] = None
+
+    _normalize_reason = field_validator("model_change_reason", mode="before")(
+        _normalize_optional_reason
+    )
 
 
 class PythonEnvironmentPathRequest(BaseModel):
@@ -249,17 +408,39 @@ class AgentConfig(BaseModel):
     code_samples: List[str] = []
 
 
+class WorkItemPolicyConfig(BaseModel):
+    qc_mode: Literal["optional", "required"] = "optional"
+
+
+class BriefPolicyConfig(BaseModel):
+    """A blueprint's `brief_policy` block, in the shape BriefPolicy.from_dict reads."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: StrictBool = False
+    mode: Literal["context", "seed_item"] = "context"
+    require_confirmation: StrictBool = True
+
+
 class BlueprintContent(BaseModel):
     name: str
     global_policy: str
     agents: Dict[str, AgentConfig]
     is_package_default: bool
+    evaluator_agent: Optional[str] = None
+    work_item_policy: WorkItemPolicyConfig = Field(default_factory=WorkItemPolicyConfig)
+    # None when the blueprint file has no brief_policy block.
+    brief_policy: Optional[BriefPolicyConfig] = None
 
 
 class SaveBlueprintRequest(BaseModel):
     name: str
     global_policy: str
     agents: Dict[str, AgentConfig]
+    evaluator_agent: Optional[str] = None
+    work_item_policy: WorkItemPolicyConfig = Field(default_factory=WorkItemPolicyConfig)
+    # None when the blueprint file has no brief_policy block.
+    brief_policy: Optional[BriefPolicyConfig] = None
 
 
 class ServerStatus(BaseModel):
@@ -316,7 +497,9 @@ class WSStopMessage(BaseModel):
 # ---------------------------------------------------------------------------
 # WebSocket events (server → client)  — raw dicts emitted by streaming_runner
 # ---------------------------------------------------------------------------
-# Shape: { type: str, session_id: str, turn: int, timestamp: str, data: dict }
+# Shape: { type: str, session_id: str, turn: int, timestamp: str, data: dict,
+#          seq: int }  — seq is assigned when the session manager appends the
+#          event to the session's log (session_state.append_session_event).
 # Types: token | message_complete | agent_switch | code_submitted |
 #        code_result | artifact | status_change | metrics_result | error | pong
 

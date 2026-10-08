@@ -72,6 +72,10 @@
             {{ provider }}<br /><code>{{ modelName }}</code>
           </dd>
         </div>
+        <div title="One evaluator model frozen across every experiment condition">
+          <dt>Evaluator</dt>
+          <dd>{{ evaluatorProvider }}<br /><code>{{ evaluatorModelName }}</code></dd>
+        </div>
         @if (provider === 'openrouter') {
           <div title="Frozen upstream endpoint; provider fallback is disabled">
             <dt>OpenRouter endpoint</dt>

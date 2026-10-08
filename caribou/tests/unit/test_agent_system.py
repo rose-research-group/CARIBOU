@@ -4,6 +4,7 @@ Unit tests for Agent system and agent management.
 Tests agent configuration, command handling, prompt generation,
 and agent switching logic.
 """
+
 import pytest
 import json
 import tempfile
@@ -11,8 +12,12 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from caribou.agents.AgentSystem import Agent, AgentSystem, Command
-from caribou.execution.agent_management import _extract_possible_actions, _apply_agent_switch
+from caribou.execution.agent_management import (
+    _extract_possible_actions,
+    _apply_agent_switch,
+)
 from caribou.execution.ActionSpace import AgentActionSpace
+from caribou.execution.work_items import WorkItemPolicy
 
 
 class TestCommand:
@@ -23,7 +28,7 @@ class TestCommand:
         cmd = Command(
             name="delegate_to_coder",
             target_agent="coder",
-            description="Send task to coder"
+            description="Send task to coder",
         )
 
         assert cmd.name == "delegate_to_coder"
@@ -35,7 +40,7 @@ class TestCommand:
         cmd = Command(
             name="test_cmd",
             target_agent="test_agent",
-            description="A" * 50  # Long description
+            description="A" * 50,  # Long description
         )
 
         repr_str = repr(cmd)
@@ -50,7 +55,9 @@ class TestAgent:
     def test_agent_creation(self):
         """Test creating an agent."""
         commands = {
-            "delegate_to_other": Command("delegate_to_other", "other", "Delegate to other")
+            "delegate_to_other": Command(
+                "delegate_to_other", "other", "Delegate to other"
+            )
         }
         samples = {"sample1.py": "print('hello')"}
 
@@ -59,7 +66,7 @@ class TestAgent:
             prompt="You are a test agent.",
             commands=commands,
             code_samples=samples,
-            is_rag_enabled=True
+            is_rag_enabled=True,
         )
 
         assert agent.name == "test_agent"
@@ -74,10 +81,7 @@ class TestAgent:
         samples = {"sample.py": "code"}
 
         agent = Agent(
-            name="agent1",
-            prompt="Prompt",
-            commands=commands,
-            code_samples=samples
+            name="agent1", prompt="Prompt", commands=commands, code_samples=samples
         )
 
         repr_str = repr(agent)
@@ -87,26 +91,16 @@ class TestAgent:
 
     def test_get_full_prompt_basic(self):
         """Test basic prompt generation."""
-        agent = Agent(
-            name="basic",
-            prompt="Basic prompt",
-            commands={},
-            code_samples={}
-        )
+        agent = Agent(name="basic", prompt="Basic prompt", commands={}, code_samples={})
 
         prompt = agent.get_full_prompt()
         assert "Basic prompt" in prompt
-        assert "NOTE:" in prompt  # Notes instruction
-        assert "TODO:" in prompt  # TODO instruction
+        assert "NOTE:" not in prompt
+        assert "TODO:" not in prompt
 
     def test_get_full_prompt_with_global_policy(self):
         """Test prompt with global policy."""
-        agent = Agent(
-            name="agent",
-            prompt="Agent prompt",
-            commands={},
-            code_samples={}
-        )
+        agent = Agent(name="agent", prompt="Agent prompt", commands={}, code_samples={})
 
         prompt = agent.get_full_prompt(global_policy="Be helpful")
         assert "**GLOBAL POLICY**: Be helpful" in prompt
@@ -116,22 +110,15 @@ class TestAgent:
         """Test prompt with commands."""
         commands = {
             "delegate_to_coder": Command(
-                "delegate_to_coder",
-                "coder",
-                "Send coding tasks"
+                "delegate_to_coder", "coder", "Send coding tasks"
             ),
             "delegate_to_planner": Command(
-                "delegate_to_planner",
-                "planner",
-                "Send planning tasks"
-            )
+                "delegate_to_planner", "planner", "Send planning tasks"
+            ),
         }
 
         agent = Agent(
-            name="agent",
-            prompt="Agent prompt",
-            commands=commands,
-            code_samples={}
+            name="agent", prompt="Agent prompt", commands=commands, code_samples={}
         )
 
         prompt = agent.get_full_prompt()
@@ -148,7 +135,7 @@ class TestAgent:
             prompt="Agent prompt",
             commands={},
             code_samples={},
-            is_rag_enabled=True
+            is_rag_enabled=True,
         )
 
         prompt = agent.get_full_prompt()
@@ -158,23 +145,17 @@ class TestAgent:
 
     def test_get_full_prompt_with_code_samples(self):
         """Test prompt with code samples."""
-        samples = {
-            "example1.py": "code1",
-            "example2.py": "code2"
-        }
+        samples = {"example1.py": "code1", "example2.py": "code2"}
 
         agent = Agent(
-            name="agent",
-            prompt="Agent prompt",
-            commands={},
-            code_samples=samples
+            name="agent", prompt="Agent prompt", commands={}, code_samples=samples
         )
 
         prompt = agent.get_full_prompt()
-        assert "Code Samples Available" in prompt
+        assert "Code Samples (Reference ONLY" in prompt
         assert "example1.py" in prompt
         assert "example2.py" in prompt
-        assert "MUST BE REWRITTEN TO BE USED" in prompt
+        assert "MUST rewrite" in prompt
 
     def test_get_full_prompt_complete(self):
         """Test prompt with all features."""
@@ -188,10 +169,12 @@ class TestAgent:
             prompt="Complete agent",
             commands=commands,
             code_samples=samples,
-            is_rag_enabled=True
+            is_rag_enabled=True,
         )
 
-        prompt = agent.get_full_prompt(global_policy="Global")
+        prompt = agent.get_full_prompt(
+            global_policy="Global", work_item_policy=WorkItemPolicy()
+        )
 
         # Check all sections present
         assert "**GLOBAL POLICY**: Global" in prompt
@@ -199,8 +182,8 @@ class TestAgent:
         assert "delegate_to_other" in prompt
         assert "query_rag_<function>" in prompt
         assert "sample.py" in prompt
-        assert "NOTE:" in prompt
-        assert "TODO:" in prompt
+        assert "open_work_item" in prompt
+        assert "close_work_item" in prompt
 
 
 class TestAgentSystem:
@@ -210,7 +193,7 @@ class TestAgentSystem:
         """Test creating an agent system."""
         agents = {
             "agent1": Agent("agent1", "Prompt 1", {}, {}),
-            "agent2": Agent("agent2", "Prompt 2", {}, {})
+            "agent2": Agent("agent2", "Prompt 2", {}, {}),
         }
 
         system = AgentSystem(global_policy="Be helpful", agents=agents)
@@ -237,7 +220,7 @@ class TestAgentSystem:
         """Test getting all agents."""
         agents = {
             "agent1": Agent("agent1", "P1", {}, {}),
-            "agent2": Agent("agent2", "P2", {}, {})
+            "agent2": Agent("agent2", "P2", {}, {}),
         }
 
         system = AgentSystem(global_policy="Policy", agents=agents)
@@ -252,9 +235,7 @@ class TestAgentSystem:
         commands = {
             "delegate_to_agent2": Command("delegate_to_agent2", "agent2", "Delegate")
         }
-        agents = {
-            "agent1": Agent("agent1", "Agent 1 prompt", commands, {})
-        }
+        agents = {"agent1": Agent("agent1", "Agent 1 prompt", commands, {})}
 
         system = AgentSystem(global_policy="Be accurate", agents=agents)
 
@@ -268,7 +249,7 @@ class TestAgentSystem:
         """Test agent system string representation."""
         agents = {
             "agent1": Agent("agent1", "P1", {}, {}),
-            "agent2": Agent("agent2", "P2", {}, {})
+            "agent2": Agent("agent2", "P2", {}, {}),
         }
 
         system = AgentSystem(global_policy="A" * 50, agents=agents)
@@ -292,12 +273,12 @@ class TestAgentSystemLoadFromJSON:
                     "prompt": "You are a planning agent.",
                     "neighbors": {},
                     "code_samples": [],
-                    "rag": {"enabled": False}
+                    "rag": {"enabled": False},
                 }
-            }
+            },
         }
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(config, f)
             temp_path = f.name
 
@@ -315,6 +296,86 @@ class TestAgentSystemLoadFromJSON:
         finally:
             Path(temp_path).unlink()
 
+    def test_required_work_item_qc_needs_attached_evaluator(self, tmp_path):
+        path = tmp_path / "required.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "global_policy": "Policy",
+                    "work_item_policy": {"qc_mode": "required"},
+                    "agents": {"worker": {"prompt": "Work", "neighbors": {}}},
+                }
+            )
+        )
+
+        with pytest.raises(ValueError, match="needs an evaluator_agent"):
+            AgentSystem.load_from_json(str(path))
+
+    def test_required_work_item_qc_loads_declared_evaluator(self, tmp_path):
+        path = tmp_path / "required.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "global_policy": "Policy",
+                    "evaluator_agent": "reviewer",
+                    "work_item_policy": {"qc_mode": "required"},
+                    "agents": {
+                        "worker": {"prompt": "Work", "neighbors": {}},
+                        "reviewer": {"prompt": "Review", "neighbors": {}},
+                    },
+                }
+            )
+        )
+
+        system = AgentSystem.load_from_json(str(path))
+
+        assert system.work_item_policy.qc_mode == "required"
+        assert system.get_evaluator_agent().name == "reviewer"
+
+    def test_brief_policy_defaults_to_disabled_context_mode(self, tmp_path):
+        path = tmp_path / "plain.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "global_policy": "Policy",
+                    "agents": {"worker": {"prompt": "Work", "neighbors": {}}},
+                }
+            )
+        )
+        system = AgentSystem.load_from_json(str(path))
+        assert system.brief_policy.enabled is False
+        assert system.brief_policy.mode == "context"
+        assert system.brief_policy.require_confirmation is True
+
+    def test_brief_policy_is_parsed_from_blueprint(self, tmp_path):
+        path = tmp_path / "briefed.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "global_policy": "Policy",
+                    "brief_policy": {"enabled": True, "mode": "seed_item"},
+                    "agents": {"worker": {"prompt": "Work", "neighbors": {}}},
+                }
+            )
+        )
+        system = AgentSystem.load_from_json(str(path))
+        assert system.brief_policy.enabled is True
+        assert system.brief_policy.mode == "seed_item"
+
+    def test_invalid_brief_mode_is_rejected(self, tmp_path):
+        path = tmp_path / "bad.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "global_policy": "Policy",
+                    "brief_policy": {"enabled": True, "mode": "sideways"},
+                    "agents": {"worker": {"prompt": "Work", "neighbors": {}}},
+                }
+            )
+        )
+        with pytest.raises(ValueError, match="brief_policy.mode"):
+            AgentSystem.load_from_json(str(path))
+
     def test_load_with_commands(self):
         """Test loading configuration with commands."""
         config = {
@@ -325,22 +386,22 @@ class TestAgentSystemLoadFromJSON:
                     "neighbors": {
                         "delegate_to_coder": {
                             "target_agent": "coder",
-                            "description": "Send to coder"
+                            "description": "Send to coder",
                         }
                     },
                     "code_samples": [],
-                    "rag": {"enabled": False}
+                    "rag": {"enabled": False},
                 },
                 "coder": {
                     "prompt": "Coder prompt",
                     "neighbors": {},
                     "code_samples": [],
-                    "rag": {"enabled": False}
-                }
-            }
+                    "rag": {"enabled": False},
+                },
+            },
         }
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(config, f)
             temp_path = f.name
 
@@ -366,12 +427,12 @@ class TestAgentSystemLoadFromJSON:
                     "prompt": "Research prompt",
                     "neighbors": {},
                     "code_samples": [],
-                    "rag": {"enabled": True}
+                    "rag": {"enabled": True},
                 }
-            }
+            },
         }
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(config, f)
             temp_path = f.name
 
@@ -383,14 +444,15 @@ class TestAgentSystemLoadFromJSON:
         finally:
             Path(temp_path).unlink()
 
-    @patch('caribou.agents.AgentSystem.USER_CODE_SAMPLES_DIR')
-    @patch('caribou.agents.AgentSystem.PACKAGE_CODE_SAMPLES_DIR')
+    @patch("caribou.agents.AgentSystem.USER_CODE_SAMPLES_DIR")
+    @patch("caribou.agents.AgentSystem.PACKAGE_CODE_SAMPLES_DIR")
     def test_load_with_code_samples(self, mock_package_dir, mock_user_dir):
         """Test loading configuration with code samples."""
         # Create temporary directories for code samples
-        with tempfile.TemporaryDirectory() as temp_user_dir, \
-             tempfile.TemporaryDirectory() as temp_package_dir:
-
+        with (
+            tempfile.TemporaryDirectory() as temp_user_dir,
+            tempfile.TemporaryDirectory() as temp_package_dir,
+        ):
             mock_user_dir.__truediv__ = lambda self, x: Path(temp_user_dir) / x
             mock_package_dir.__truediv__ = lambda self, x: Path(temp_package_dir) / x
 
@@ -405,19 +467,23 @@ class TestAgentSystemLoadFromJSON:
                         "prompt": "Coder prompt",
                         "neighbors": {},
                         "code_samples": ["sample.py"],
-                        "rag": {"enabled": False}
+                        "rag": {"enabled": False},
                     }
-                }
+                },
             }
 
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", delete=False
+            ) as f:
                 json.dump(config, f)
                 temp_config_path = f.name
 
             try:
                 # Mock the path resolution
-                with patch.object(Path, 'exists', return_value=True), \
-                     patch.object(Path, 'read_text', return_value="print('hello')"):
+                with (
+                    patch.object(Path, "exists", return_value=True),
+                    patch.object(Path, "read_text", return_value="print('hello')"),
+                ):
                     system = AgentSystem.load_from_json(temp_config_path)
 
                     coder = system.get_agent("coder")
@@ -466,7 +532,9 @@ class TestExtractPossibleActions:
         """Test extracting actions including commands."""
         commands = {
             "delegate_to_coder": Command("delegate_to_coder", "coder", "Send to coder"),
-            "delegate_to_planner": Command("delegate_to_planner", "planner", "Send to planner")
+            "delegate_to_planner": Command(
+                "delegate_to_planner", "planner", "Send to planner"
+            ),
         }
         agent = Agent(name="agent", prompt="Prompt", commands=commands, code_samples={})
 
@@ -483,7 +551,7 @@ class TestExtractPossibleActions:
             prompt="Prompt",
             commands={},
             code_samples={},
-            is_rag_enabled=True
+            is_rag_enabled=True,
         )
 
         actions = _extract_possible_actions(agent)
@@ -503,7 +571,7 @@ class TestExtractPossibleActions:
             prompt="Prompt",
             commands=commands,
             code_samples={},
-            is_rag_enabled=True
+            is_rag_enabled=True,
         )
 
         actions = _extract_possible_actions(agent)
@@ -522,16 +590,13 @@ class TestApplyAgentSwitch:
     def test_apply_agent_switch_updates_history(self, mock_llm_client):
         """Test that agent switch updates history."""
         new_agent = Agent(
-            name="new_agent",
-            prompt="New agent prompt",
-            commands={},
-            code_samples={}
+            name="new_agent", prompt="New agent prompt", commands={}, code_samples={}
         )
 
         history = [
             {"role": "system", "content": "Global policy"},
             {"role": "system", "content": "Old agent prompt"},
-            {"role": "user", "content": "Hello"}
+            {"role": "user", "content": "Hello"},
         ]
 
         _apply_agent_switch(
@@ -540,7 +605,7 @@ class TestApplyAgentSwitch:
             history=history,
             memory_manager=None,
             action_space=None,
-            new_agent=new_agent
+            new_agent=new_agent,
         )
 
         # Second message should be updated
@@ -552,15 +617,12 @@ class TestApplyAgentSwitch:
         memory_manager = Mock()
 
         new_agent = Agent(
-            name="new_agent",
-            prompt="New prompt",
-            commands={},
-            code_samples={}
+            name="new_agent", prompt="New prompt", commands={}, code_samples={}
         )
 
         history = [
             {"role": "system", "content": "Global"},
-            {"role": "system", "content": "Old prompt"}
+            {"role": "system", "content": "Old prompt"},
         ]
 
         _apply_agent_switch(
@@ -569,7 +631,7 @@ class TestApplyAgentSwitch:
             history=history,
             memory_manager=memory_manager,
             action_space=None,
-            new_agent=new_agent
+            new_agent=new_agent,
         )
 
         # Should update memory manager
@@ -589,12 +651,12 @@ class TestApplyAgentSwitch:
             commands={
                 "delegate_to_other": Command("delegate_to_other", "other", "Delegate")
             },
-            code_samples={}
+            code_samples={},
         )
 
         history = [
             {"role": "system", "content": "Global"},
-            {"role": "system", "content": "Old prompt"}
+            {"role": "system", "content": "Old prompt"},
         ]
 
         _apply_agent_switch(
@@ -603,14 +665,16 @@ class TestApplyAgentSwitch:
             history=history,
             memory_manager=None,
             action_space=action_space,
-            new_agent=new_agent
+            new_agent=new_agent,
         )
 
         # Should update action space
         assert action_space.agent_name == "new_agent"
 
         # Should add action space message to history
-        action_space_msgs = [msg for msg in history if "ACTION SPACE UPDATE" in msg.get("content", "")]
+        action_space_msgs = [
+            msg for msg in history if "ACTION SPACE UPDATE" in msg.get("content", "")
+        ]
         assert len(action_space_msgs) >= 1
 
     def test_apply_agent_switch_with_analysis_context(self):
@@ -619,7 +683,7 @@ class TestApplyAgentSwitch:
 
         history = [
             {"role": "system", "content": "Global"},
-            {"role": "system", "content": "Old"}
+            {"role": "system", "content": "Old"},
         ]
 
         analysis_context = "\nAdditional context about the task."
@@ -630,7 +694,7 @@ class TestApplyAgentSwitch:
             history=history,
             memory_manager=None,
             action_space=None,
-            new_agent=new_agent
+            new_agent=new_agent,
         )
 
         # Should include analysis context in updated prompt
@@ -648,7 +712,7 @@ class TestApplyAgentSwitch:
             history=history,
             memory_manager=None,
             action_space=None,
-            new_agent=new_agent
+            new_agent=new_agent,
         )
 
         # Should insert at index 1

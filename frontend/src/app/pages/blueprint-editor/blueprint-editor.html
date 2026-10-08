@@ -121,6 +121,28 @@
                     rows="4"
                     placeholder="e.g. Be concise. Always wrap code in triple backticks. Never refuse a scientific request."></textarea>
                 </div>
+                <div class="form-field">
+                  <label class="form-label">Evaluator Agent <span class="form-hint">Reviews a full run's transcript when /evaluate (CLI) or Evaluate (web) is used — optional</span></label>
+                  <select class="form-input"
+                    [ngModel]="evaluatorAgent() ?? ''"
+                    (ngModelChange)="evaluatorAgent.set($event || null)"
+                    [disabled]="isPackageDefault()">
+                    <option value="">— none —</option>
+                    @for (key of agentKeys(); track key) {
+                      <option [value]="key">{{ key }}</option>
+                    }
+                  </select>
+                </div>
+                <div class="form-field">
+                  <label class="form-label">Work-item QC <span class="form-hint">Required QC sends closed items to the evaluator before completion</span></label>
+                  <select class="form-input"
+                    [ngModel]="workItemQcMode()"
+                    (ngModelChange)="workItemQcMode.set($event)"
+                    [disabled]="isPackageDefault()">
+                    <option value="optional">Optional — close directly</option>
+                    <option value="required">Required — evaluator approval</option>
+                  </select>
+                </div>
               </div>
             </div>
 

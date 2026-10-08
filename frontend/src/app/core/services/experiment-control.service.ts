@@ -29,12 +29,8 @@ export class ExperimentControlService {
   setAccessToken(value: string): void {
     const token = value.trim();
     this.accessToken.set(token);
-    try {
-      if (token) sessionStorage.setItem(CONTROL_TOKEN_STORAGE_KEY, token);
-      else sessionStorage.removeItem(CONTROL_TOKEN_STORAGE_KEY);
-    } catch {
-      // The in-memory value remains usable for this page when storage is blocked.
-    }
+    if (token) sessionStorage.setItem(CONTROL_TOKEN_STORAGE_KEY, token);
+    else sessionStorage.removeItem(CONTROL_TOKEN_STORAGE_KEY);
   }
 
   clearAccessToken(): void {
@@ -92,6 +88,23 @@ export class ExperimentControlService {
         specification,
         idempotency_key: idempotencyKey,
         expected_plan_hash: expectedPlanHash || null,
+      },
+      { headers: this.controlHeaders() },
+    );
+  }
+
+  cloneExperiment(
+    experimentId: string,
+    evaluatorProvider: string,
+    evaluatorModel: string,
+    reason?: string,
+  ): Observable<MachineResponse<Record<string, unknown>>> {
+    return this.http.post<MachineResponse<Record<string, unknown>>>(
+      `api/control/experiments/${encodeURIComponent(experimentId)}/clone`,
+      {
+        evaluator_provider: evaluatorProvider,
+        evaluator_model: evaluatorModel,
+        reason: reason?.trim() || null,
       },
       { headers: this.controlHeaders() },
     );

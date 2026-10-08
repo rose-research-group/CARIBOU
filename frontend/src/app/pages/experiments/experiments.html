@@ -388,7 +388,33 @@
             >
               Resume latest
             </button>
+            <button
+              class="btn btn-ghost btn-sm"
+              type="button"
+              (click)="showCloneForm.set(!showCloneForm())"
+              [disabled]="action() !== null"
+              title="Clone this frozen experiment into a new evaluator-model specification"
+            >
+              Clone model
+            </button>
           </div>
+          @if (showCloneForm()) {
+            <div class="form-grid">
+              <label>Evaluator provider</label>
+              <select [ngModel]="cloneEvaluatorProvider()" (ngModelChange)="cloneEvaluatorProvider.set($event)">
+                <option value="openai">OpenAI</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="openrouter">OpenRouter</option>
+              </select>
+              <label>Exact evaluator model</label>
+              <input [ngModel]="cloneEvaluatorModel()" (ngModelChange)="cloneEvaluatorModel.set($event)" />
+              <label>Reason <small>optional</small></label>
+              <textarea [ngModel]="cloneReason()" (ngModelChange)="cloneReason.set($event)" maxlength="1000" rows="2"></textarea>
+              <button class="btn btn-primary btn-sm" type="button" (click)="cloneExperiment()" [disabled]="!cloneEvaluatorModel().trim() || action() !== null">
+                {{ action() === 'clone' ? 'Cloning…' : 'Create draft' }}
+              </button>
+            </div>
+          }
           @if (current.end_reason) {
             <p class="end-reason"><strong>Outcome:</strong> {{ current.end_reason }}</p>
           }

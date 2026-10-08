@@ -85,6 +85,7 @@ _KEY_MAP = {
     "claude": "ANTHROPIC_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    "deepseek-v4.1": "DEEPSEEK_API_KEY",
     "deepseek-thinking": "DEEPSEEK_API_KEY",
     "ollama": None,
 }
@@ -415,6 +416,9 @@ def _load_blueprint_content(name: str) -> BlueprintContent:
         global_policy=global_policy,
         agents=agents,
         is_package_default=_is_package_default(name),
+        evaluator_agent=raw.get("evaluator_agent"),
+        work_item_policy=raw.get("work_item_policy") or {"qc_mode": "optional"},
+        brief_policy=raw.get("brief_policy"),
     )
 
 
@@ -434,7 +438,17 @@ def _to_disk_dict(req: SaveBlueprintRequest) -> dict:
             },
             **({"code_samples": agent.code_samples} if agent.code_samples else {}),
         }
-    return {"global_policy": req.global_policy, "agents": agents_dict}
+    return {
+        "global_policy": req.global_policy,
+        "evaluator_agent": req.evaluator_agent,
+        "work_item_policy": req.work_item_policy.model_dump(),
+        **(
+            {"brief_policy": req.brief_policy.model_dump()}
+            if req.brief_policy is not None
+            else {}
+        ),
+        "agents": agents_dict,
+    }
 
 
 def _validate_blueprint(req: SaveBlueprintRequest) -> None:
@@ -458,6 +472,15 @@ def _validate_blueprint(req: SaveBlueprintRequest) -> None:
                     422,
                     f"Agent '{agent_name}' command '{cmd_name}' references unknown agent '{cmd.target_agent}'.",
                 )
+    if req.evaluator_agent is not None and req.evaluator_agent not in agent_keys:
+        raise HTTPException(
+            422,
+            f"evaluator_agent '{req.evaluator_agent}' does not match any defined agent.",
+        )
+    if req.work_item_policy.qc_mode == "required" and req.evaluator_agent is None:
+        raise HTTPException(
+            422, "Required work-item QC needs an evaluator_agent in this blueprint."
+        )
 
 
 def _atomic_write(path: Path, data: dict) -> None:
@@ -506,7 +529,12 @@ async def update_blueprint(name: str, req: SaveBlueprintRequest) -> BlueprintCon
         raise HTTPException(404, f"Blueprint '{name}' not found in user blueprints.")
     _validate_blueprint(req)
     req = SaveBlueprintRequest(
-        name=name, global_policy=req.global_policy, agents=req.agents
+        name=name,
+        global_policy=req.global_policy,
+        agents=req.agents,
+        evaluator_agent=req.evaluator_agent,
+        work_item_policy=req.work_item_policy,
+        brief_policy=req.brief_policy,
     )
     _atomic_write(user_path, _to_disk_dict(req))
     return _load_blueprint_content(name)

@@ -34,6 +34,7 @@ from caribou.domain.models import (
     ContainerSpec,
     ContentReference,
     ExecutionSpec,
+    ExperimentEvaluatorSpec,
     ExperimentSpec,
     MemorySpec,
     MetricDefinition,
@@ -322,6 +323,8 @@ class PresetResolver:
         executor: str,
         owner: str,
         reviewer: str,
+        evaluator_provider: str | None = None,
+        evaluator_model_name: str | None = None,
     ) -> ExperimentSpec:
         definition = get_preset(preset_id)
         if profile not in RESOURCE_PROFILES:
@@ -339,12 +342,28 @@ class PresetResolver:
                 details={"provider": provider},
             )
         resolved_model_name = model_name.strip()
+        resolved_evaluator_provider = (
+            (evaluator_provider or provider).strip().casefold()
+        )
+        resolved_evaluator_model = (evaluator_model_name or resolved_model_name).strip()
         resolved_owner = owner.strip()
         resolved_reviewer = reviewer.strip()
         if not resolved_model_name or not resolved_owner or not resolved_reviewer:
             raise ControlError(
                 "PRESET_FIELD_REQUIRED",
                 "model name, owner, and reviewer must be non-empty",
+                exit_code=ExitCode.validation,
+            )
+        if resolved_evaluator_provider not in {"openai", "deepseek", "openrouter"}:
+            raise ControlError(
+                "PRESET_EVALUATOR_PROVIDER_UNSUPPORTED",
+                "evaluator supports openai, deepseek, or openrouter",
+                exit_code=ExitCode.validation,
+            )
+        if not resolved_evaluator_model:
+            raise ControlError(
+                "PRESET_EVALUATOR_MODEL_REQUIRED",
+                "evaluator model name must be non-empty",
                 exit_code=ExitCode.validation,
             )
         model_parameters: dict[str, object] = {"max_output_tokens": 4_096}
@@ -443,6 +462,11 @@ class PresetResolver:
             role="metric evaluator declaration",
             media_type="application/json",
         )
+        evaluator_agent = _content_reference(
+            self.package_root / "agents" / "evaluator_agent.json",
+            role="evaluator agent blueprint",
+            media_type="application/json",
+        )
         container_image = _content_reference(
             self.container_path,
             role="analysis container",
@@ -452,6 +476,7 @@ class PresetResolver:
         resources = RESOURCE_PROFILES[profile]
         spec_id = new_id("spec")
         return ExperimentSpec(
+            schema_version="caribou.experiment_spec.v2",
             spec_id=spec_id,
             title=definition.title,
             study_class=StudyClass.pilot,
@@ -477,6 +502,14 @@ class PresetResolver:
                     parameters={ADAPTER_PARAMETER: CARIBOU_AGENT_ADAPTER},
                 )
             ],
+            evaluator=ExperimentEvaluatorSpec(
+                agent_name="evaluator",
+                agent=evaluator_agent,
+                model=ModelSpec(
+                    provider=resolved_evaluator_provider,
+                    model=resolved_evaluator_model,
+                ),
+            ),
             repetitions=1,
             execution=ExecutionSpec(
                 executor=executor_kind,

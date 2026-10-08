@@ -88,11 +88,14 @@ environments fail session startup; CARIBOU never silently falls back to the
 bundled interpreter. Host environments are mutable developer inputs and do not
 replace frozen container images for controlled experiment or benchmark runs.
 
-DeepSeek uses exact V4 model IDs and exposes two locked modes:
+DeepSeek uses exact V4 model IDs and exposes three locked modes:
 
 ```bash
 # Fast responses: DeepSeek V4 Flash with thinking disabled
 caribou run auto --llm deepseek --turns 10 --prompt "Perform QC."
+
+# Fast responses: DeepSeek V4.1 Flash with thinking disabled
+caribou run auto --llm deepseek-v4.1 --turns 10 --prompt "Perform QC."
 
 # Deliberate responses: DeepSeek V4 Pro with thinking enabled at high effort
 caribou run auto --llm deepseek-thinking --turns 10 --prompt "Perform QC."

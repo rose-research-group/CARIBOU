@@ -21,12 +21,15 @@ from caribou.domain.models import (
     Artifact,
     Checkpoint,
     CodeIdentity,
+    ContentReference,
     Event,
+    ExperimentEvaluatorSpec,
     ExperimentSpec,
+    ModelSpec,
     Run,
     utc_now,
 )
-from caribou.domain.serialization import model_hash
+from caribou.domain.serialization import file_hash, model_hash
 
 from .api import ControlError, ExitCode, code_commit
 from .executor import LaunchResult, LocalProcessExecutor
@@ -118,9 +121,7 @@ def _safe_repository_identity(repository: str) -> str:
         if ":" in hostname and not hostname.startswith("["):
             hostname = f"[{hostname}]"
         network_location = hostname if port is None else f"{hostname}:{port}"
-        return urlunsplit(
-            (parsed.scheme, network_location, parsed.path, "", "")
-        )
+        return urlunsplit((parsed.scheme, network_location, parsed.path, "", ""))
 
     # Git's SCP-like clone syntax commonly includes a public SSH username. Drop
     # everything before the last @ so credentials or usernames are never emitted.
@@ -182,9 +183,7 @@ def _executing_code_identity() -> CodeIdentity:
     if repository is None:
         repository = _git_value(repository_root, "remote", "get-url", "origin")
         if repository is None:
-            raise _unresolved_identity(
-                "Git repository", "CARIBOU_CODE_REPOSITORY"
-            )
+            raise _unresolved_identity("Git repository", "CARIBOU_CODE_REPOSITORY")
     repository = _safe_repository_identity(repository)
     if not repository:
         raise ControlError(
@@ -296,6 +295,97 @@ class ExperimentService:
     def plan(self, spec: ExperimentSpec) -> dict:
         return build_local_plan(spec)
 
+    def clone_with_evaluator(
+        self,
+        experiment_id: str,
+        destination: Path,
+        *,
+        provider: str,
+        model: str,
+        reason: str | None = None,
+        overwrite: bool = False,
+    ) -> tuple[ExperimentSpec, Path]:
+        """Create an unsubmitted v2 draft with immutable source lineage."""
+
+        source = self.store.spec(experiment_id)
+        target = Path(os.path.abspath(destination.expanduser()))
+        if target.suffix.lower() not in {".yaml", ".yml"}:
+            raise ControlError(
+                "SPEC_OUTPUT_FORMAT_UNSUPPORTED",
+                "experiment clone writes YAML; use a .yaml or .yml path",
+                exit_code=ExitCode.validation,
+            )
+        if target.exists() and not overwrite:
+            raise ControlError(
+                "OUTPUT_EXISTS",
+                "experiment specification output exists; use --overwrite to replace it",
+                exit_code=ExitCode.conflict,
+            )
+        resolved_provider = provider.strip().casefold()
+        resolved_model = model.strip()
+        normalized_reason = (reason or "").strip() or None
+        if not resolved_provider or not resolved_model:
+            raise ControlError(
+                "EVALUATOR_MODEL_REQUIRED",
+                "evaluator provider and exact model identifier are required",
+                exit_code=ExitCode.validation,
+            )
+        if normalized_reason is not None and len(normalized_reason) > 1000:
+            raise ControlError(
+                "MODEL_CHANGE_REASON_TOO_LONG",
+                "model change reason cannot exceed 1000 characters",
+                exit_code=ExitCode.validation,
+            )
+        if source.evaluator is not None:
+            evaluator_agent = source.evaluator.agent
+            evaluator_agent_name = source.evaluator.agent_name
+        else:
+            evaluator_path = (
+                Path(__file__).resolve().parents[1] / "agents" / "evaluator_agent.json"
+            )
+            evaluator_agent = ContentReference(
+                uri=evaluator_path.resolve().as_uri(),
+                content_hash=file_hash(evaluator_path),
+                size_bytes=evaluator_path.stat().st_size,
+                media_type="application/json",
+            )
+            evaluator_agent_name = "evaluator"
+        candidate = source.model_copy(
+            update={
+                "schema_version": "caribou.experiment_spec.v2",
+                "spec_id": new_id("spec"),
+                "spec_version": source.spec_version + 1,
+                "parent_spec_id": source.spec_id,
+                "model_change_reason": normalized_reason,
+                "evaluator": ExperimentEvaluatorSpec(
+                    agent_name=evaluator_agent_name,
+                    agent=evaluator_agent,
+                    model=ModelSpec(provider=resolved_provider, model=resolved_model),
+                ),
+                "created_at": utc_now(),
+            }
+        )
+        clone = ExperimentSpec.model_validate_json(candidate.model_dump_json())
+        validate_control_spec(clone)
+        payload = yaml.safe_dump(clone.model_dump(mode="json"), sort_keys=True).encode(
+            "utf-8"
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(payload)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, target)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+        return clone, target
+
     def compare(self, experiment_id: str) -> dict[str, Any]:
         """Return a deterministic read-only comparison of logical run leaves."""
 
@@ -303,8 +393,7 @@ class ExperimentService:
         spec = self.store.spec(experiment_id)
         runs = [self.store.run(run_id) for run_id in experiment.run_ids]
         if model_hash(spec) != experiment.spec_hash or any(
-            run.experiment_id != experiment_id
-            or run.spec_hash != experiment.spec_hash
+            run.experiment_id != experiment_id or run.spec_hash != experiment.spec_hash
             for run in runs
         ):
             raise ControlError(

@@ -2,8 +2,10 @@ import { Injectable, inject, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, tap } from 'rxjs';
 import {
-  Artifact, CodeEvent, Message, MemoryState, Session, SessionCreateRequest,
-  SessionForkRequest, SessionResumeRequest
+  Artifact, CodeEvent, EvaluationResult, Message, MemoryState, Session, SessionCreateRequest,
+  SessionForkRequest, SessionResumeRequest,
+  EvaluatorModelState, EvaluatorModelUpdateRequest,
+  WorkItemDetail, WorkItemReviewResult, WorkItemSummary, SessionBriefFields,
 } from '../models/session.model';
 
 @Injectable({ providedIn: 'root' })
@@ -86,6 +88,33 @@ export class SessionService {
     return this.http.get<CodeEvent[]>(`api/sessions/${id}/code_events`);
   }
 
+  getWorkItems(id: string): Observable<WorkItemSummary[]> {
+    return this.http.get<WorkItemSummary[]>(`api/sessions/${id}/work-items`);
+  }
+
+  getWorkItem(id: string, itemId: number): Observable<WorkItemDetail> {
+    return this.http.get<WorkItemDetail>(`api/sessions/${id}/work-items/${itemId}`);
+  }
+
+  reviewWorkItem(id: string, itemId: number): Observable<WorkItemReviewResult> {
+    return this.http.post<WorkItemReviewResult>(
+      `api/sessions/${id}/work-items/${itemId}/review`,
+      {},
+    );
+  }
+
+  submitBriefDecision(
+    id: string,
+    decision: 'accept' | 'reject' | 'edit',
+    options?: { reason?: string; brief?: Partial<SessionBriefFields> },
+  ): Observable<void> {
+    return this.http.post<void>(`api/sessions/${id}/brief/decision`, {
+      decision,
+      reason: options?.reason ?? null,
+      brief: options?.brief ?? null,
+    });
+  }
+
   artifactDownloadUrl(sessionId: string, artifactId: string): string {
     const base = document.baseURI.replace(/\/$/, '');
     return `${base}/api/sessions/${sessionId}/artifacts/${artifactId}/download`;
@@ -98,6 +127,33 @@ export class SessionService {
 
   getMemoryState(id: string): Observable<MemoryState> {
     return this.http.get<MemoryState>(`api/sessions/${id}/memory`);
+  }
+
+  evaluate(id: string): Observable<EvaluationResult> {
+    return this.http.post<EvaluationResult>(`api/sessions/${id}/evaluate`, {});
+  }
+
+  getEvaluatorModel(id: string): Observable<EvaluatorModelState> {
+    return this.http.get<EvaluatorModelState>(`api/sessions/${id}/evaluator-model`);
+  }
+
+  updateEvaluatorModel(
+    id: string,
+    request: EvaluatorModelUpdateRequest,
+  ): Observable<EvaluatorModelState> {
+    return this.http.patch<EvaluatorModelState>(
+      `api/sessions/${id}/evaluator-model`,
+      request,
+    ).pipe(
+      tap(state => {
+        this.sessions.update(all => all.map(s =>
+          s.id === id ? { ...s, evaluator_model: state } : s
+        ));
+        if (this.currentSession()?.id === id) {
+          this.currentSession.update(s => s ? { ...s, evaluator_model: state } : s);
+        }
+      })
+    );
   }
 
   updateLocal(session: Session): void {

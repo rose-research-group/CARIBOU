@@ -1,6 +1,7 @@
 # caribou/cli/run_cli.py
 from __future__ import annotations
 
+import json
 import os
 import textwrap
 from pathlib import Path
@@ -33,7 +34,11 @@ from caribou.core.python_environments import (
 
 if TYPE_CHECKING:
     from caribou.agents.AgentSystem import AgentSystem
-    from caribou.execution.runner import SandboxManager
+    from caribou.execution.runner import (
+        RunnerEvent,
+        RunnerEventCallback,
+        SandboxManager,
+    )
 
 # --------------------------------------------------------------------------------------
 # Constants & Package Paths
@@ -56,7 +61,8 @@ LLM_BACKEND_CHOICES = [
 ]
 LLM_BACKEND_HELP = (
     "LLM backend: 'chatgpt', 'claude', 'ollama', 'deepseek' (V4 Flash quick), "
-    "'openrouter', or 'deepseek-thinking' (V4 Pro thinking)."
+    "'deepseek-v4.1' (V4.1 Flash quick), 'openrouter', or 'deepseek-thinking' "
+    "(V4 Pro thinking)."
 )
 
 # --------------------------------------------------------------------------------------
@@ -88,6 +94,7 @@ class AppContext:
         self.llm_client: object | None = None
         self.model_name: str | None = None
         self.model_parameters: Dict[str, object] = {}
+        self.evaluator_runtime: object | None = None
         self.initial_history: List[dict] | None = None
         self.dataset_path: Path | None = None
         self.reference_dataset_path: Optional[Path] = None
@@ -99,6 +106,8 @@ class AppContext:
         self.parent_params: Dict[str, Any] = {}
         self.make_report: bool = False
         self.agent_report_memory: bool = False
+        self.brief_policy: object | None = None
+        self.brief: object | None = None
 
 
 # --------------------------------------------------------------------------------------
@@ -148,6 +157,54 @@ def _prompt_for_benchmark_metric(console: Console) -> Optional[str]:
     if choice_idx == len(metrics):  # Skip selected
         return None
     return metrics[choice_idx].id
+
+
+# --------------------------------------------------------------------------------------
+# Runner event log
+# --------------------------------------------------------------------------------------
+CLI_EVENT_LOG_FILENAME = "events.jsonl"
+
+
+def _cli_event_log_callback(
+    output_dir: Optional[Path],
+) -> "RunnerEventCallback":
+    """Return a runner event callback that appends each event to events.jsonl.
+
+    The log lives in the runner's session artifacts directory (next to
+    ``notes.md`` and ``work-items/``): ``output_dir`` when the CLI was given
+    one, otherwise ``<default runs dir>/session_notes/<run_id>``, mirroring
+    ``run_agent_session``. The run id is taken from the first event because the
+    runner mints it. Each event is one ``json.dumps`` line, flushed as written;
+    a non-serializable payload raises instead of being coerced.
+    """
+    from caribou.execution.path_utils import get_default_runs_dir
+
+    log_path: Optional[Path] = None
+    log_run_id: Optional[str] = None
+
+    def record(event: "RunnerEvent") -> None:
+        nonlocal log_path, log_run_id
+        run_id = event["run_id"]
+        if log_path is None:
+            log_dir = (
+                output_dir
+                if output_dir is not None
+                else get_default_runs_dir() / "session_notes" / run_id
+            )
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / CLI_EVENT_LOG_FILENAME
+            log_run_id = run_id
+        elif run_id != log_run_id:
+            raise RuntimeError(
+                f"runner event run_id {run_id!r} does not match the event log's "
+                f"run_id {log_run_id!r}"
+            )
+        line = json.dumps(event, ensure_ascii=False)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+            handle.flush()
+
+    return record
 
 
 # --------------------------------------------------------------------------------------
@@ -229,8 +286,14 @@ def _setup_and_run_session(
             model_parameters=context.model_parameters,
             compress_memory=context.compress_memory,
             output_dir=host_output_path if context.output_dir else None,
+            event_callback=_cli_event_log_callback(
+                host_output_path if context.output_dir else None
+            ),
             make_report=context.make_report,
             agent_report_memory=context.agent_report_memory,
+            evaluator_runtime=context.evaluator_runtime,
+            brief_policy=context.brief_policy,
+            brief=context.brief,
         )
     finally:
         auto_save_mode = context.output_dir is not None
@@ -252,6 +315,13 @@ def _setup_and_run_session(
                 {"name": f.name, "size": f"{f.stat().st_size / 1e6:.2f} MB"}
                 for f in host_output_path.iterdir()
                 if f.is_file()
+            ]
+
+        # The CLI's own event log is session bookkeeping, not an agent output;
+        # keep it from changing the generated-files report.
+        if auto_save_mode:
+            output_files_info = [
+                f for f in output_files_info if f.get("name") != CLI_EVENT_LOG_FILENAME
             ]
 
         if output_files_info:
@@ -378,6 +448,8 @@ def initialize_context(
     resources_dir: Optional[Path],
     llm_backend: Optional[str],
     model_name: Optional[str],
+    evaluator_llm: Optional[str],
+    evaluator_model: Optional[str],
     ollama_host: str,
     sandbox: Optional[str],
     python_env: Optional[Path],
@@ -386,6 +458,8 @@ def initialize_context(
     output_dir: Optional[Path],  # <-- ADDED
     make_report: bool,
     agent_report_memory: bool,
+    brief_path: Optional[Path] = None,
+    brief_mode: Optional[str] = None,
 ) -> None:
     """
     Build out the AppContext with all shared resources and configuration.
@@ -416,6 +490,31 @@ def initialize_context(
             default_name=DEFAULT_BLUEPRINT_NAME,
         )
     context.agent_system = AgentSystem.load_from_json(str(blueprint))
+
+    # ---- Session brief (WS-5) ----
+    from caribou.execution.session_brief import SessionBrief, resolve_brief_policy
+
+    if brief_mode is not None and brief_mode not in {"off", "context", "seed_item"}:
+        raise typer.BadParameter(
+            "--brief-mode must be 'off', 'context', or 'seed_item'"
+        )
+    context.brief_policy = resolve_brief_policy(
+        context.agent_system.brief_policy, brief_mode
+    )
+    if brief_path is not None:
+        try:
+            raw = json.loads(Path(brief_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise typer.BadParameter(f"--brief could not be read/parsed: {exc}") from exc
+        raw.setdefault("created_at", datetime.utcnow().isoformat() + "Z")
+        raw.setdefault("created_by", "human")
+        try:
+            # created_at is a string here (JSON has no datetime type);
+            # SessionBrief's strict=True config rejects a str where a real
+            # datetime is expected unless told not to be strict.
+            context.brief = SessionBrief.model_validate(raw, strict=False)
+        except Exception as exc:  # pydantic ValidationError
+            raise typer.BadParameter(f"--brief failed validation: {exc}") from exc
 
     # ---- Driver Agent ----
     if driver_agent is None:
@@ -546,7 +645,7 @@ def initialize_context(
             )
             raise typer.Exit(1)
         context.llm_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        context.model_name = "gpt-5.2"
+        context.model_name = model_name or "gpt-5.2"
     elif llm_backend == "claude":
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         if not anthropic_key:
@@ -557,7 +656,7 @@ def initialize_context(
         from caribou.core.anthropic_wrapper import AnthropicClient
 
         context.llm_client = AnthropicClient(api_key=anthropic_key)
-        context.model_name = "claude-sonnet-4-5-20250929"
+        context.model_name = model_name or "claude-sonnet-4-5-20250929"
     elif is_deepseek_backend(llm_backend):
         if not os.getenv("DEEPSEEK_API_KEY"):
             console.print(
@@ -569,7 +668,7 @@ def initialize_context(
             cast(str, os.getenv("DEEPSEEK_API_KEY")),
             profile=profile,
         )
-        context.model_name = profile.model
+        context.model_name = model_name or profile.model
         context.model_parameters = profile.model_parameters()
     elif llm_backend == "openrouter":
         from caribou.core.openrouter import (
@@ -606,6 +705,49 @@ def initialize_context(
         context.model_name = "llama3"
     else:
         raise typer.BadParameter(f"Unknown LLM backend '{llm_backend}'.")
+
+    # ---- Evaluator LLM Backend ----
+    from caribou.execution.evaluation import EvaluatorRuntime
+    from caribou.server.session_setup import build_model_client, resolve_model_binding
+
+    if evaluator_llm is None:
+        worker_resolved = resolve_model_binding(
+            backend=llm_backend,
+            model_name=context.model_name,
+            resolved_model_name=context.model_name,
+        )
+        context.evaluator_runtime = EvaluatorRuntime(
+            llm_client=cast(object, context.llm_client),
+            model_name=cast(str, context.model_name),
+            provider=(worker_resolved.provider if worker_resolved else llm_backend),
+            selection={"mode": "inherit_worker"},
+        )
+    else:
+        if not evaluator_model:
+            raise typer.BadParameter(
+                "--evaluator-model is required with --evaluator-llm"
+            )
+        evaluator_client, exact_evaluator_model = build_model_client(
+            backend=evaluator_llm,
+            model_name=evaluator_model,
+        )
+        evaluator_resolved = resolve_model_binding(
+            backend=evaluator_llm,
+            model_name=evaluator_model,
+            resolved_model_name=exact_evaluator_model,
+        )
+        context.evaluator_runtime = EvaluatorRuntime(
+            llm_client=evaluator_client,
+            model_name=exact_evaluator_model,
+            provider=(
+                evaluator_resolved.provider if evaluator_resolved else evaluator_llm
+            ),
+            selection={
+                "mode": "explicit",
+                "llm_backend": evaluator_llm,
+                "model_name": evaluator_model,
+            },
+        )
 
     # ---- Additional Resources ----
     context.resources = (
@@ -663,6 +805,8 @@ def _extract_common_kwargs(params: Dict[str, Any]) -> Dict[str, Any]:
         "resources_dir",
         "llm_backend",
         "model_name",
+        "evaluator_llm",
+        "evaluator_model",
         "ollama_host",
         "sandbox",
         "python_env",
@@ -671,6 +815,8 @@ def _extract_common_kwargs(params: Dict[str, Any]) -> Dict[str, Any]:
         "output_dir",
         "make_report",
         "agent_report_memory",
+        "brief_path",
+        "brief_mode",
     ]
     out = {k: params.get(k, None) for k in keys}
     out["force_refresh"] = bool(out.get("force_refresh", False))
@@ -725,6 +871,12 @@ def main_run_callback(
     model_name: Optional[str] = typer.Option(
         None, "--model", help="Exact provider model identifier."
     ),
+    evaluator_llm: Optional[str] = typer.Option(
+        None, "--evaluator-llm", help="Evaluator LLM backend; defaults to worker."
+    ),
+    evaluator_model: Optional[str] = typer.Option(
+        None, "--evaluator-model", help="Exact evaluator model identifier."
+    ),
     ollama_host: str = typer.Option(
         "http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."
     ),
@@ -766,6 +918,21 @@ def main_run_callback(
         False,
         "--agent-report-memory",
         help="Use agent handoff reports as memory between agents instead of full transcripts.",
+    ),
+    brief_path: Optional[Path] = typer.Option(
+        None,
+        "--brief",
+        help="Path to a pre-authored, already-frozen brief (JSON). Skips the "
+        "briefing conversation and pins this brief immediately.",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    brief_mode: Optional[str] = typer.Option(
+        None,
+        "--brief-mode",
+        help="Override the blueprint's brief_policy for this run: 'off', "
+        "'context', or 'seed_item'.",
     ),
 ) -> None:
     """
@@ -849,6 +1016,12 @@ def run_interactive(
     model_name: str = typer.Option(
         None, "--model", help="Exact provider model identifier."
     ),
+    evaluator_llm: str = typer.Option(
+        None, "--evaluator-llm", help="Evaluator LLM backend; defaults to worker."
+    ),
+    evaluator_model: str = typer.Option(
+        None, "--evaluator-model", help="Exact evaluator model identifier."
+    ),
     ollama_host: str = typer.Option(
         "http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."
     ),
@@ -890,6 +1063,21 @@ def run_interactive(
         False,
         "--agent-report-memory",
         help="Use agent handoff reports as memory between agents instead of full transcripts.",
+    ),
+    brief_path: Optional[Path] = typer.Option(
+        None,
+        "--brief",
+        help="Path to a pre-authored, already-frozen brief (JSON). Skips the "
+        "briefing conversation and pins this brief immediately.",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    brief_mode: Optional[str] = typer.Option(
+        None,
+        "--brief-mode",
+        help="Override the blueprint's brief_policy for this run: 'off', "
+        "'context', or 'seed_item'.",
     ),
 ) -> None:
     """
@@ -961,6 +1149,12 @@ def run_auto(
     model_name: str = typer.Option(
         None, "--model", help="Exact provider model identifier."
     ),
+    evaluator_llm: str = typer.Option(
+        None, "--evaluator-llm", help="Evaluator LLM backend; defaults to worker."
+    ),
+    evaluator_model: str = typer.Option(
+        None, "--evaluator-model", help="Exact evaluator model identifier."
+    ),
     ollama_host: str = typer.Option(
         "http://localhost:11434", "--ollama-host", help="Base URL for Ollama backend."
     ),
@@ -1021,6 +1215,22 @@ def run_auto(
         False,
         "--agent-report-memory",
         help="Use agent handoff reports as memory between agents instead of full transcripts.",
+    ),
+    brief_path: Optional[Path] = typer.Option(
+        None,
+        "--brief",
+        help="Path to a pre-authored, already-frozen brief (JSON). Auto mode "
+        "never runs a briefing conversation; without this, an auto run has "
+        "no brief regardless of the blueprint's brief_policy.",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    brief_mode: Optional[str] = typer.Option(
+        None,
+        "--brief-mode",
+        help="Overrides the blueprint's brief_policy.mode for provenance when "
+        "--brief is given (e.g. 'seed_item'); has no other effect in auto mode.",
     ),
 ) -> None:
     """

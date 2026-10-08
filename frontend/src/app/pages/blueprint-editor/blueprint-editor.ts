@@ -10,7 +10,7 @@ import { IconComponent } from '../../shared/components/icon/icon';
 import { TooltipDirective } from '../../shared/directives/tooltip.directive';
 import {
   AgentConfig, AgentEntry, BlueprintContent, CommandConfig,
-  CommandEntry, SaveBlueprintRequest,
+  CommandEntry, SaveBlueprintRequest, BriefPolicyConfig,
 } from '../../core/models/blueprint.model';
 
 interface CodeSampleInfo {
@@ -40,6 +40,11 @@ export class BlueprintEditorComponent implements OnInit {
   isPackageDefault = signal(false);
   blueprintName = signal('');
   globalPolicy = signal('');
+  evaluatorAgent = signal<string | null>(null);
+  workItemQcMode = signal<'optional' | 'required'>('optional');
+  // Not editable in the form: held as received (object, null, or absent =
+  // undefined) and sent back unchanged on save.
+  briefPolicy = signal<BriefPolicyConfig | null | undefined>(undefined);
   agents = signal<AgentEntry[]>([]);
 
   // Tabs
@@ -71,7 +76,7 @@ export class BlueprintEditorComponent implements OnInit {
   });
 
   // Validation
-  validationErrors = computed(() => this._validate(this.agents(), this.blueprintName()));
+  validationErrors = computed(() => this._validate(this.agents(), this.blueprintName(), this.evaluatorAgent()));
 
   packageBlueprints = computed(() => this.allBlueprints().filter(b => !this._isUserBlueprint(b.name)));
   userBlueprints = computed(() => this.allBlueprints().filter(b => this._isUserBlueprint(b.name)));
@@ -100,6 +105,9 @@ export class BlueprintEditorComponent implements OnInit {
         this.isPackageDefault.set(bp.is_package_default);
         this.blueprintName.set(bp.name);
         this.globalPolicy.set(bp.global_policy);
+        this.evaluatorAgent.set(bp.evaluator_agent);
+        this.workItemQcMode.set(bp.work_item_policy?.qc_mode ?? 'optional');
+        this.briefPolicy.set(bp.brief_policy);
         const entries = this._toAgentEntries(bp.agents);
         this.agents.set(entries);
         this._resetImportState(entries.length);
@@ -117,6 +125,9 @@ export class BlueprintEditorComponent implements OnInit {
     this.isPackageDefault.set(false);
     this.blueprintName.set('');
     this.globalPolicy.set('');
+    this.evaluatorAgent.set(null);
+    this.workItemQcMode.set('optional');
+    this.briefPolicy.set(undefined);
     this.agents.set([]);
     this._resetImportState(0);
     this.activeTab.set('form');
@@ -176,6 +187,9 @@ export class BlueprintEditorComponent implements OnInit {
       name: this.blueprintName(),
       global_policy: this.globalPolicy(),
       agents: this._toAgentConfigMap(this.agents()),
+      evaluator_agent: this.evaluatorAgent(),
+      work_item_policy: { qc_mode: this.workItemQcMode() },
+      ...this._briefPolicyField(),
     };
 
     this.saving.set(true);
@@ -448,10 +462,20 @@ export class BlueprintEditorComponent implements OnInit {
     return map;
   }
 
+  /** `{ brief_policy }` when the blueprint has one (object or null), else `{}`
+   *  so an absent policy stays absent rather than becoming null. */
+  private _briefPolicyField(): { brief_policy?: BriefPolicyConfig | null } {
+    const briefPolicy = this.briefPolicy();
+    return briefPolicy === undefined ? {} : { brief_policy: briefPolicy };
+  }
+
   private _serializeToJson(): string {
     return JSON.stringify({
       name: this.blueprintName(),
       global_policy: this.globalPolicy(),
+      evaluator_agent: this.evaluatorAgent(),
+      work_item_policy: { qc_mode: this.workItemQcMode() },
+      ...this._briefPolicyField(),
       agents: this._toAgentConfigMap(this.agents()),
     }, null, 2);
   }
@@ -459,8 +483,18 @@ export class BlueprintEditorComponent implements OnInit {
   private _applyJsonToForm(raw: string): string | null {
     try {
       const parsed = JSON.parse(raw);
+      // Absent key = blueprint has no brief_policy; otherwise it must be an
+      // object or null and is kept verbatim.
+      const briefPolicy = parsed.brief_policy;
+      if (briefPolicy !== undefined && briefPolicy !== null &&
+          (typeof briefPolicy !== 'object' || Array.isArray(briefPolicy))) {
+        return 'brief_policy must be a JSON object or null.';
+      }
+      this.briefPolicy.set(briefPolicy);
       if (parsed.name !== undefined) this.blueprintName.set(parsed.name);
       if (parsed.global_policy !== undefined) this.globalPolicy.set(parsed.global_policy);
+      if (parsed.evaluator_agent !== undefined) this.evaluatorAgent.set(parsed.evaluator_agent);
+      this.workItemQcMode.set(parsed.work_item_policy?.qc_mode ?? 'optional');
       if (parsed.agents && typeof parsed.agents === 'object') {
         const entries = this._toAgentEntries(parsed.agents);
         this.agents.set(entries);
@@ -472,7 +506,7 @@ export class BlueprintEditorComponent implements OnInit {
     }
   }
 
-  private _validate(agents: AgentEntry[], name: string): string[] {
+  private _validate(agents: AgentEntry[], name: string, evaluatorAgent: string | null): string[] {
     const errors: string[] = [];
     if (!name.trim()) errors.push('Blueprint name is required.');
     if (name.includes('/') || name.includes('\\') || name.endsWith('.json')) {
@@ -491,6 +525,12 @@ export class BlueprintEditorComponent implements OnInit {
           errors.push(`Agent '${agent.key}': command '${cmd.key}' references unknown agent '${cmd.target_agent}'.`);
         }
       }
+    }
+    if (evaluatorAgent && !keys.has(evaluatorAgent)) {
+      errors.push(`Evaluator agent '${evaluatorAgent}' does not match any defined agent.`);
+    }
+    if (this.workItemQcMode() === 'required' && !evaluatorAgent) {
+      errors.push('Required work-item QC needs an evaluator agent.');
     }
     return errors;
   }

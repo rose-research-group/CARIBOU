@@ -13,6 +13,7 @@ from caribou.agents.create_agent_system import (
     CARIBOU_HOME,
     define_global_policy,
     define_agents,
+    designate_evaluator_agent,
     connect_agents,
     assign_code_samples,
     save_configuration,
@@ -38,9 +39,10 @@ def _run_interactive(output_dir: str, code_samples_dir: str):
     global_policy_text = define_global_policy()
     agents_data = define_agents()
     if agents_data:
+        evaluator_agent = designate_evaluator_agent(agents_data)
         connect_agents(agents_data)
         assign_code_samples(agents_data)
-        save_configuration(global_policy_text, agents_data, output_dir)
+        save_configuration(global_policy_text, agents_data, output_dir, evaluator_agent=evaluator_agent)
 
 
 @app.callback(invoke_without_command=True)

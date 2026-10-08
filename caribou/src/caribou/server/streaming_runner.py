@@ -8,9 +8,11 @@ those events to the browser.
 This is a parallel implementation to execution/runner.py — it shares the
 same helpers and execution model but replaces Console output with events.
 """
+
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import queue
 import threading
@@ -18,7 +20,10 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional
+from uuid import uuid4
+
+from caribou.execution.session_recovery import LIVE_DATASET
 
 # Consecutive no-action / code-exec failures we tolerate before ending the run.
 MAX_CONSECUTIVE_NO_ACTION = 3
@@ -28,6 +33,7 @@ MAX_CONSECUTIVE_EXEC_FAILURES = 5
 # ---------------------------------------------------------------------------
 # Token streaming helper
 # ---------------------------------------------------------------------------
+
 
 def _stream_tokens(llm_client, model: str, messages: List[Dict]) -> Any:
     """
@@ -55,8 +61,44 @@ def _stream_tokens(llm_client, model: str, messages: List[Dict]) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Artifact discovery
+# ---------------------------------------------------------------------------
+
+# Top-level entries of output_dir that are CARIBOU/sandbox internals, never
+# agent-produced artifacts. Excluded by exact name only; every other file,
+# including agent-created subfolders such as `plots/` or `qc/`, is scanned.
+_ARTIFACT_SCAN_EXCLUDED = frozenset(
+    {
+        # Live AnnData checkpoint the sandbox writes for session recovery
+        # (session_recovery.LIVE_DATASET), plus its atomic-write temp file.
+        LIVE_DATASET,
+        LIVE_DATASET + ".tmp",
+        # fontconfig/XDG cache older sandbox images wrote into the mount.
+        ".cache",
+        # Legacy work-item store location (a git repo); current sessions
+        # keep it beside output_dir, but older session dirs still hold it.
+        "work-items",
+    }
+)
+
+
+def _iter_artifact_files(output_dir: Path) -> List[Path]:
+    """Every file under output_dir, sorted, minus `_ARTIFACT_SCAN_EXCLUDED`."""
+    files: List[Path] = []
+    for entry in sorted(output_dir.iterdir()):
+        if entry.name in _ARTIFACT_SCAN_EXCLUDED:
+            continue
+        if entry.is_file():
+            files.append(entry)
+        elif entry.is_dir():
+            files.extend(path for path in sorted(entry.rglob("*")) if path.is_file())
+    return files
+
+
+# ---------------------------------------------------------------------------
 # Sync runner (runs inside a ThreadPoolExecutor thread)
 # ---------------------------------------------------------------------------
+
 
 def run_session_sync(
     *,
@@ -75,16 +117,48 @@ def run_session_sync(
     stop_flag: threading.Event,
     cancel_response_flag: Optional[threading.Event] = None,
     user_input_queue: Optional[queue.Queue] = None,
+    control_message_queue: Optional[queue.Queue] = None,
     logger: Optional[logging.Logger] = None,
     memory_manager: Any = None,
     report_memory: Any = None,
     checkpoint_callback: Optional[Callable[[List[Dict], Dict[str, Any]], None]] = None,
     resume_state: Optional[Dict[str, Any]] = None,
     start_waiting: bool = False,
+    work_item_store: Optional["WorkItemStore"] = None,
+    phase: str = "execution",
+    brief_policy: Optional["BriefPolicy"] = None,
+    brief_decision_queue: Optional[queue.Queue] = None,
+    brief: Optional[Dict[str, Any]] = None,
+    known_artifacts: Optional[Dict[str, int]] = None,
 ) -> None:
     """
     Main agent session loop. Replaces Console output with emit() calls.
     Designed to be run in a thread via asyncio.to_thread or ThreadPoolExecutor.
+
+    `phase`/`brief_policy`/`brief_decision_queue` (WS-5, web half): if
+    `phase == "briefing"`, runs the interview loop before the first
+    execution turn, mirroring `runner.py`'s `_run_briefing_phase`. The brief
+    itself, if any, is already pinned into `history` by
+    `session_manager._initialize_session` before this function is ever
+    called (same as `runner.py`'s history[1] injection) — this function
+    only needs `phase` to know whether to run the interview.
+
+    `brief`: the session's already-frozen brief as a plain dict
+    (`session.brief`) — a pre-authored brief, or one accepted before a
+    resume. Its `deliverable` is shown as the BRIEF GOAL line of the ambient
+    work-item state each turn. `None` when no brief was accepted (briefing
+    is opt-in); a brief accepted by this call's own interview replaces it.
+
+    `known_artifacts`: relative path -> mtime_ns of every artifact already
+    reported for this session (from its persisted artifact records). Seeds
+    the scan's dedupe map so a resumed session does not re-emit unchanged
+    files under the first new code block's action_id. `None`/`{}` for a
+    fresh session.
+
+    `work_item_store`: pass the session's cached singleton instance so the
+    turn loop and REST work-item routes see the same in-memory index cache
+    (see WS-0). Constructed locally only when not supplied, e.g. by direct
+    unit tests of this function.
     """
     from caribou.execution.ActionSpace import AgentActionSpace
     from caribou.execution.agent_management import (
@@ -94,12 +168,32 @@ def run_session_sync(
     from caribou.execution.message_utils import (
         _code_preview,
         _count_code_blocks,
-        _extract_artifacts_from_msg,
         detect_delegation,
         detect_end_session,
         detect_rag,
+        extract_labeled_block,
     )
+    from caribou.execution.event_ids import make_action_id
     from caribou.execution.rag_client import get_rag_client
+    from caribou.execution.work_items import (
+        WorkItemError,
+        WorkItemPolicy,
+        WorkItemStore,
+        parse_work_item_command,
+        render_work_item_prompt,
+    )
+    from caribou.execution.work_item_runtime import (
+        apply_command as apply_work_item_command,
+        end_session_block,
+        render_brief_pin,
+        render_work_item_state,
+        stall_report,
+        transfer_on_delegation,
+    )
+    from caribou.execution.session_brief import (
+        BriefParseError,
+        parse_brief_block,
+    )
     from caribou.core.io_helpers import (
         extract_python_code_blocks,
         format_execute_response,
@@ -109,19 +203,58 @@ def run_session_sync(
     console = Console(quiet=True)
     cancel_response_flag = cancel_response_flag or threading.Event()
     output_dir.mkdir(parents=True, exist_ok=True)
-    emitted_artifacts: Set[str] = set()
+    # Relative posix path -> st_mtime_ns of the last emitted `artifact`
+    # event for that file. A file is (re-)emitted whenever its mtime differs
+    # from the recorded one, so an overwritten plot is reported again.
+    emitted_artifacts: Dict[str, int] = dict(known_artifacts or {})
+    brief_goal: Optional[str] = brief["deliverable"] if brief is not None else None
+    work_item_policy = getattr(agent_system, "work_item_policy", WorkItemPolicy())
+    evaluator_agent_name = getattr(agent_system, "evaluator_agent_name", None)
+    # `output_dir` is the sandbox mount: agent code executing in it can edit
+    # or delete files there, and checkpoint restore can roll it back. Work
+    # items live in a sibling directory outside the sandbox so neither can
+    # silently revert work-item state. Constructed unconditionally — see the
+    # matching comment in runner.py for why auto mode also gets a store.
+    work_items = work_item_store or WorkItemStore(
+        output_dir.parent / "work-items",
+        session_id=session_id,
+        policy=work_item_policy,
+        origin_run_id=session_id,
+    )
+
+    def _agent_prompt(agent: Any) -> str:
+        return agent.get_full_prompt(None) + render_work_item_prompt(work_item_policy)
 
     def _emit(event_type: str, data: Dict, turn: int = 0) -> None:
-        emit({
-            "type": event_type,
-            "session_id": session_id,
-            "turn": turn,
-            "timestamp": datetime.utcnow().isoformat(),
-            "data": data,
-        })
+        if event_type == "system_message" and "id" not in data:
+            # Every one of this file's ~12 system_message call sites omits
+            # `id`, so the frontend's SessionResponse `id: undefined` was
+            # identical across all of them. `upsertMessage` on the frontend
+            # dedupes system messages by id — with every id equal to
+            # `undefined`, only the FIRST system message a session ever
+            # emits was ever shown; every later one (work-item feedback,
+            # delegation-transfer confirmations, RAG failures, ...) was
+            # silently dropped as an apparent duplicate. Assign a real id
+            # here, once, instead of touching every call site.
+            data = {**data, "id": str(uuid4())}
+        emit(
+            {
+                "type": event_type,
+                "session_id": session_id,
+                "turn": turn,
+                "timestamp": datetime.utcnow().isoformat(),
+                "data": data,
+            }
+        )
 
-    def _scan_new_artifacts(turn: int) -> None:
-        """Emit artifact events for any new files in output_dir."""
+    def _scan_new_artifacts(turn: int, action_id: Optional[str]) -> None:
+        """Emit artifact events for new or overwritten files in output_dir.
+
+        Walks output_dir recursively, skipping `_ARTIFACT_SCAN_EXCLUDED`.
+        `action_id` is the code block that just ran (contract: `None` for a
+        scan outside a code block). The same `path` is emitted again with a
+        newer `mtime_ns` when the file changes; consumers replace by `path`.
+        """
         mime_map = {
             ".png": ("plot", "image/png"),
             ".jpg": ("plot", "image/jpeg"),
@@ -133,22 +266,33 @@ def run_session_sync(
         }
         if not output_dir.exists():
             return
-        for fpath in sorted(output_dir.iterdir()):
-            if not fpath.is_file() or fpath.name in emitted_artifacts:
+        for fpath in _iter_artifact_files(output_dir):
+            relative = fpath.relative_to(output_dir).as_posix()
+            stat = fpath.stat()
+            if emitted_artifacts.get(relative) == stat.st_mtime_ns:
                 continue
             suffix = fpath.suffix.lower()
-            art_type, mime_type = mime_map.get(suffix, ("data", "application/octet-stream"))
-            emitted_artifacts.add(fpath.name)
-            _emit("artifact", {
-                "artifact": {
-                    "filename": fpath.name,
-                    "type": art_type,
-                    "mime_type": mime_type,
-                    "size_bytes": fpath.stat().st_size,
-                    "local_path": str(fpath),
-                    "turn": turn,
-                }
-            }, turn=turn)
+            art_type, mime_type = mime_map.get(
+                suffix, ("data", "application/octet-stream")
+            )
+            emitted_artifacts[relative] = stat.st_mtime_ns
+            _emit(
+                "artifact",
+                {
+                    "artifact": {
+                        "filename": fpath.name,
+                        "path": relative,
+                        "type": art_type,
+                        "mime_type": mime_type,
+                        "size_bytes": stat.st_size,
+                        "mtime_ns": stat.st_mtime_ns,
+                        "local_path": str(fpath),
+                        "turn": turn,
+                        "action_id": action_id,
+                    }
+                },
+                turn=turn,
+            )
 
     current_agent = driver_agent
     if resume_state and resume_state.get("current_agent_name"):
@@ -182,6 +326,9 @@ def run_session_sync(
     current_agent_history_start = int(
         (resume_state or {}).get("current_agent_history_start", len(history))
     )
+    # At most one automatic "continue" per user message, consumed after the agent
+    # opens a work item so it can proceed with the work instead of stopping.
+    auto_continue_budget = 1
 
     def _checkpoint_boundary() -> None:
         if checkpoint_callback is None:
@@ -203,8 +350,26 @@ def run_session_sync(
             },
         )
 
+    def _drain_control_messages(turn: int) -> None:
+        if control_message_queue is None:
+            return
+        while True:
+            try:
+                content = control_message_queue.get_nowait()
+            except queue.Empty:
+                return
+            history.append({"role": "system", "content": content})
+            if memory_manager is not None:
+                memory_manager.add_message("system", content)
+            _emit(
+                "system_message",
+                {"content": content, "category": "Configuration change"},
+                turn=turn,
+            )
+
     def _wait_for_user(turn: int, reason: Optional[str] = None) -> bool:
         """Wait for one interactive message; return false if the session stops."""
+        nonlocal auto_continue_budget
         _emit("status_change", {"status": "idle", "reason": reason}, turn=turn)
         if logger:
             logger.info("Waiting for user input | turn: %s", turn)
@@ -212,55 +377,238 @@ def run_session_sync(
             return False
 
         while True:
+            _drain_control_messages(turns_completed)
             if stop_flag.is_set():
                 if logger:
                     logger.info("Session stopped while waiting for user input")
-                _emit("status_change", {"status": "stopped", "reason": "user_requested"})
+                _emit(
+                    "status_change", {"status": "stopped", "reason": "user_requested"}
+                )
                 return False
             try:
                 user_msg = user_input_queue.get(timeout=1.0)
                 if logger:
-                    logger.info("User message received | turn: %s | length: %s chars", turn, len(user_msg))
+                    logger.info(
+                        "User message received | turn: %s | length: %s chars",
+                        turn,
+                        len(user_msg),
+                    )
                 history.append({"role": "user", "content": user_msg})
                 if memory_manager is not None:
                     memory_manager.add_message("user", user_msg)
+                auto_continue_budget = 1
                 next_turn = turns_completed + 1
-                _emit("message_complete", {
-                    "message": {
-                        "id": f"msg_{session_id}_user_{next_turn}",
-                        "turn": next_turn,
-                        "role": "user",
-                        "agent_name": "",
-                        "content": user_msg,
-                        "timestamp": datetime.utcnow().isoformat(),
-                    }
-                }, turn=next_turn)
+                _emit(
+                    "message_complete",
+                    {
+                        "message": {
+                            "id": f"msg_{session_id}_user_{next_turn}",
+                            "turn": next_turn,
+                            "role": "user",
+                            "agent_name": "",
+                            "content": user_msg,
+                            "timestamp": datetime.utcnow().isoformat(),
+                        }
+                    },
+                    turn=next_turn,
+                )
                 return True
             except queue.Empty:
                 continue
 
+    def _run_briefing_phase() -> tuple[Optional[dict], bool]:
+        """Run the interview loop until the human accepts a brief or ends
+        the session. Mirrors runner.py's `_run_briefing_phase`, simplified
+        relative to the main turn loop the same way the CLI version is: raw
+        `history` passed straight to the provider (no memory-manager context
+        assembly), and no checkpointing — briefing runs entirely before any
+        checkpoint boundary, so a crash mid-briefing loses the conversation,
+        same limitation as the CLI.
+
+        Returns `(brief_dict, ended)`: `brief_dict` is the accepted brief
+        (as a plain dict), or `None` if the session ended during briefing
+        instead (`ended=True` in that case).
+        """
+        _emit("status_change", {"status": "running", "reason": "briefing"})
+        while True:
+            if not _wait_for_user(0, "briefing_waiting"):
+                return None, True
+            if stop_flag.is_set():
+                return None, True
+
+            full_msg = ""
+            for token in _stream_tokens(llm_client, model_name, history):
+                if stop_flag.is_set() or cancel_response_flag.is_set():
+                    break
+                full_msg += token
+                _emit(
+                    "token", {"agent_name": driver_agent.name, "token": token}, turn=0
+                )
+            msg = full_msg
+            history.append({"role": "assistant", "content": msg})
+            if memory_manager is not None:
+                memory_manager.add_message("assistant", msg)
+            _emit(
+                "message_complete",
+                {
+                    "message": {
+                        "id": f"msg_{session_id}_briefing_{len(history)}",
+                        "turn": 0,
+                        "role": "assistant",
+                        "agent_name": driver_agent.name,
+                        "content": msg,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                },
+                turn=0,
+            )
+
+            if detect_end_session(msg):
+                _emit(
+                    "status_change",
+                    {"status": "stopped", "reason": "briefing_declined"},
+                )
+                return None, True
+
+            block = extract_labeled_block(msg, "brief")
+            if block is None:
+                continue
+
+            try:
+                draft = parse_brief_block(block, created_by=driver_agent.name)
+            except BriefParseError as exc:
+                feedback = exc.feedback
+                history.append({"role": "system", "content": feedback})
+                if memory_manager is not None:
+                    memory_manager.add_message("system", feedback)
+                _emit(
+                    "system_message",
+                    {"content": feedback, "category": "Brief"},
+                    turn=0,
+                )
+                continue
+
+            draft_dict = draft.model_dump(mode="json")
+            _emit("brief_draft", {"brief": draft_dict}, turn=0)
+            if brief_decision_queue is None:
+                # No decision channel wired up (e.g. a lower-level unit
+                # test) — treat any valid draft as auto-accepted so callers
+                # that don't exercise the confirmation gate aren't forced
+                # to supply one.
+                return draft_dict, False
+
+            decision: Optional[Dict[str, Any]] = None
+            while decision is None:
+                if stop_flag.is_set():
+                    return None, True
+                try:
+                    decision = brief_decision_queue.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+
+            kind = decision.get("decision")
+            if kind == "accept":
+                return draft_dict, False
+            if kind == "reject":
+                reason = decision.get("reason") or "Please revise and re-propose."
+                feedback = f"Brief rejected by the human: {reason}"
+                history.append({"role": "system", "content": feedback})
+                if memory_manager is not None:
+                    memory_manager.add_message("system", feedback)
+                _emit(
+                    "system_message",
+                    {"content": feedback, "category": "Brief"},
+                    turn=0,
+                )
+                continue
+            if kind == "edit":
+                try:
+                    edited = parse_brief_block(
+                        json.dumps(decision.get("brief") or {}), created_by="human"
+                    )
+                except BriefParseError as exc:
+                    feedback = f"Human edit was invalid: {exc.feedback}"
+                    history.append({"role": "system", "content": feedback})
+                    if memory_manager is not None:
+                        memory_manager.add_message("system", feedback)
+                    _emit(
+                        "system_message",
+                        {"content": feedback, "category": "Brief"},
+                        turn=0,
+                    )
+                    continue
+                return edited.model_dump(mode="json"), False
+            # Unknown decision kind: treat as a no-op, keep waiting.
+            decision = None
+
     try:
+        if phase == "briefing" and resume_state is None:
+            frozen_brief_dict, ended_during_briefing = _run_briefing_phase()
+            if ended_during_briefing:
+                return
+            if frozen_brief_dict is not None:
+                from caribou.execution.session_brief import SessionBrief
+                from caribou.execution.work_item_runtime import freeze_brief
+
+                # frozen_brief_dict came from model_dump(mode="json"), so
+                # created_at is an ISO string; SessionBrief's strict=True
+                # config rejects a str where it expects a real datetime
+                # unless validation is told explicitly not to be strict.
+                accepted = SessionBrief.model_validate(
+                    frozen_brief_dict, strict=False
+                )
+                seed_item = freeze_brief(
+                    accepted,
+                    brief_path=output_dir.parent / "brief.json",
+                    store=work_items,
+                    brief_mode=(
+                        brief_policy.mode if brief_policy is not None else "context"
+                    ),
+                    owner=driver_agent.name,
+                    turn=0,
+                )
+                brief_goal = accepted.deliverable
+                pin = render_brief_pin(accepted)
+                history.append({"role": "system", "content": pin})
+                if memory_manager is not None:
+                    memory_manager.add_message("system", pin)
+                _emit("system_message", {"content": pin, "category": "Brief"}, turn=0)
+                _emit("brief_accepted", {"brief": frozen_brief_dict}, turn=0)
+                if seed_item is not None:
+                    _emit("work_item_changed", {"item": seed_item}, turn=0)
+                _emit("phase_change", {"phase": "execution"}, turn=0)
+
         if start_waiting and not is_auto:
             if not _wait_for_user(turns_completed, "recovered_ready"):
                 return
         while True:
+            _drain_control_messages(turns_completed)
             if stop_flag.is_set():
                 if logger:
                     logger.info("Session stopped (user requested)")
-                _emit("status_change", {"status": "stopped", "reason": "user_requested"})
+                _emit(
+                    "status_change", {"status": "stopped", "reason": "user_requested"}
+                )
                 return
 
             if is_auto and turns_completed >= max_turns:
                 if logger:
                     logger.info("Session stopped — max turns reached (%s)", max_turns)
-                _emit("status_change", {"status": "stopped", "reason": f"max turns reached ({max_turns})"})
+                _emit(
+                    "status_change",
+                    {"status": "stopped", "reason": f"max turns reached ({max_turns})"},
+                )
                 return
 
             turn = turns_completed + 1
-            _emit("status_change", {
-                "status": "running",
-                "reason": f"turn {turn} — {current_agent.name}",
-            }, turn=turn)
+            _emit(
+                "status_change",
+                {
+                    "status": "running",
+                    "reason": f"turn {turn} — {current_agent.name}",
+                },
+                turn=turn,
+            )
 
             # --- Build cleaned context ---
             if report_memory is not None:
@@ -269,14 +617,18 @@ def run_session_sync(
                 if logger:
                     logger.info(
                         "Turn %s | agent: %s | context_length: %s (report_memory)",
-                        turn, current_agent.name, len(cleaned_context),
+                        turn,
+                        current_agent.name,
+                        len(cleaned_context),
                     )
             elif memory_manager is not None:
                 cleaned_context = memory_manager.get_context()
                 if logger:
                     logger.info(
                         "Turn %s | agent: %s | context_length: %s (episodic)",
-                        turn, current_agent.name, len(cleaned_context),
+                        turn,
+                        current_agent.name,
+                        len(cleaned_context),
                     )
             else:
                 cleaned_context = []
@@ -285,6 +637,48 @@ def run_session_sync(
                     if isinstance(m.get("content"), str):
                         m["content"] = m["content"].rstrip()
                     cleaned_context.append(m)
+
+            # Ambient work-item state (WS-2): recomputed from the store each
+            # turn and appended after context assembly, same as runner.py.
+            state_block = render_work_item_state(
+                work_items, current_agent.name, brief_goal=brief_goal
+            )
+            if state_block:
+                cleaned_context.append({"role": "system", "content": state_block})
+
+            # Item-level stall detection (WS-4).
+            stalled = stall_report(
+                work_items,
+                current_agent.name,
+                turn=turn,
+                stall_turns=work_item_policy.stall_turns,
+            )
+            if stalled is not None:
+                if stalled["idle_turns"] >= work_item_policy.stall_halt_turns:
+                    halt_note = (
+                        f"Halted: work item {stalled['item_id']} "
+                        f"('{stalled['title']}') stalled for "
+                        f"{stalled['idle_turns']} turns."
+                    )
+                    work_items.note(stalled["item_id"], "runner", turn, halt_note)
+                    _checkpoint_boundary()
+                    _emit(
+                        "status_change",
+                        {"status": "stopped", "reason": "work_item_stalled"},
+                        turn=turn,
+                    )
+                    return
+                cleaned_context.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            f"[SYSTEM] Work item {stalled['item_id']} "
+                            f"('{stalled['title']}') has had no status change "
+                            f"for {stalled['idle_turns']} turns. Close it, "
+                            "transfer it, or explain why it is still open."
+                        ),
+                    }
+                )
 
             if logger and (memory_manager is None and report_memory is None):
                 logger.info(
@@ -316,7 +710,11 @@ def run_session_sync(
                             )
                     full_msg += token
                     token_chars += len(token)
-                    _emit("token", {"agent_name": current_agent.name, "token": token}, turn=turn)
+                    _emit(
+                        "token",
+                        {"agent_name": current_agent.name, "token": token},
+                        turn=turn,
+                    )
                 msg = full_msg
                 if logger:
                     logger.info(
@@ -328,12 +726,16 @@ def run_session_sync(
             except Exception as exc:
                 if logger:
                     logger.error("LLM error | turn: %s | %s", turn, exc, exc_info=True)
-                _emit("error", {"code": "LLM_ERROR", "message": str(exc), "fatal": True})
+                _emit(
+                    "error", {"code": "LLM_ERROR", "message": str(exc), "fatal": True}
+                )
                 _emit("status_change", {"status": "error", "reason": str(exc)})
                 return
 
             if stop_flag.is_set():
-                _emit("status_change", {"status": "stopped", "reason": "user_requested"})
+                _emit(
+                    "status_change", {"status": "stopped", "reason": "user_requested"}
+                )
                 return
 
             if cancel_response_flag.is_set() and not is_auto:
@@ -349,35 +751,103 @@ def run_session_sync(
                 memory_manager.add_message("assistant", msg)
             turns_completed += 1
 
-            _emit("message_complete", {
-                "message": {
-                    "id": f"msg_{session_id}_{turn}",
-                    "turn": turn,
-                    "role": "assistant",
-                    "agent_name": current_agent.name,
-                    "content": msg,
-                    "timestamp": datetime.utcnow().isoformat(),
-                }
-            }, turn=turn)
+            _emit(
+                "message_complete",
+                {
+                    "message": {
+                        "id": f"msg_{session_id}_{turn}",
+                        "turn": turn,
+                        "role": "assistant",
+                        "agent_name": current_agent.name,
+                        "content": msg,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                },
+                turn=turn,
+            )
+
+            _action_fired = False
+            _delegated = False
+            _opened_work_item = False
+
+            # --- Enforced work-item commands ---
+            work_command = parse_work_item_command(msg)
+            work_result = apply_work_item_command(
+                work_items, msg, owner=current_agent.name, turn=turn
+            )
+            if work_result is not None:
+                _action_fired = True
+                if (
+                    work_command is not None
+                    and work_command.name == "open_work_item"
+                    and work_result.success
+                ):
+                    _opened_work_item = True
+                feedback = work_result.feedback
+                history.append({"role": "system", "content": feedback})
+                if memory_manager is not None:
+                    memory_manager.add_message("system", feedback)
+                _emit(
+                    "system_message",
+                    {"content": feedback, "category": "Work item"},
+                    turn=turn,
+                )
+                if work_result.changed_item is not None:
+                    _emit(
+                        "work_item_changed",
+                        {"item": work_result.changed_item},
+                        turn=turn,
+                    )
 
             # --- End session detection ---
             has_delegation = detect_delegation(msg) is not None
-            if detect_end_session(msg) and _count_code_blocks(msg) == 0 and not has_delegation:
+            end_session_refused = False
+            if detect_end_session(msg):
+                blocking = end_session_block(work_items, current_agent.name)
+                if blocking:
+                    end_session_refused = True
+                    feedback = (
+                        f"end_session refused. Current owner {current_agent.name} "
+                        "still owns non-Done work items: "
+                        + ", ".join(
+                            f"{item['id']} ({item['status']}, owner={item['owner']})"
+                            for item in blocking
+                        )
+                    )
+                    history.append({"role": "system", "content": feedback})
+                    if memory_manager is not None:
+                        memory_manager.add_message("system", feedback)
+                    _emit(
+                        "system_message",
+                        {"content": feedback, "category": "Work item"},
+                        turn=turn,
+                    )
+            if (
+                detect_end_session(msg)
+                and _count_code_blocks(msg) == 0
+                and not has_delegation
+                and not end_session_refused
+            ):
                 if is_auto:
                     if logger:
-                        logger.info("Session finished — agent signalled end | turn: %s", turn)
+                        logger.info(
+                            "Session finished — agent signalled end | turn: %s", turn
+                        )
                     _checkpoint_boundary()
-                    _emit("status_change", {"status": "stopped", "reason": "agent_finished"})
+                    _emit(
+                        "status_change",
+                        {"status": "stopped", "reason": "agent_finished"},
+                    )
                     return
                 else:
                     if logger:
                         logger.info("Agent requested session end | turn: %s", turn)
                     _checkpoint_boundary()
-                    _emit("status_change", {"status": "stopped", "reason": "agent_requested_end"})
+                    _emit(
+                        "status_change",
+                        {"status": "stopped", "reason": "agent_requested_end"},
+                    )
                     return
-
-            _action_fired = False
-            _delegated = False
 
             # --- RAG ---
             query_str = detect_rag(msg)
@@ -408,19 +878,52 @@ def run_session_sync(
                     )
                     if memory_manager is not None:
                         memory_manager.add_message("system", err)
-                    _emit("error", {
-                        "code": "RAG_ERROR",
-                        "message": str(rag_exc),
-                        "fatal": False,
-                    }, turn=turn)
+                    _emit(
+                        "error",
+                        {
+                            "code": "RAG_ERROR",
+                            "message": str(rag_exc),
+                            "fatal": False,
+                        },
+                        turn=turn,
+                    )
 
             # --- Delegation ---
             cmd = detect_delegation(msg)
             if cmd and cmd in current_agent.commands:
-                _action_fired = True
                 target_name = current_agent.commands[cmd].target_agent
                 new_agent = agent_system.get_agent(target_name)
+                if new_agent is not None:
+                    try:
+                        transferred_items = transfer_on_delegation(
+                            work_items,
+                            current_agent.name,
+                            target_name,
+                            turn=turn,
+                            evaluator_agent_name=evaluator_agent_name,
+                        )
+                    except WorkItemError as exc:
+                        feedback = (
+                            f"Delegation refused: work-item transfer failed: {exc}"
+                        )
+                        history.append({"role": "system", "content": feedback})
+                        if memory_manager is not None:
+                            memory_manager.add_message("system", feedback)
+                        _emit(
+                            "system_message",
+                            {"content": feedback, "category": "Work item"},
+                            turn=turn,
+                        )
+                        new_agent = None
+                    else:
+                        for transferred_item in transferred_items:
+                            _emit(
+                                "work_item_changed",
+                                {"item": transferred_item},
+                                turn=turn,
+                            )
                 if new_agent:
+                    _action_fired = True
                     if logger:
                         logger.info(
                             "Agent switch: %s -> %s | command: %s | turn: %s",
@@ -429,16 +932,22 @@ def run_session_sync(
                             cmd,
                             turn,
                         )
-                    _emit("agent_switch", {
-                        "from_agent": current_agent.name,
-                        "to_agent": target_name,
-                        "command": cmd,
-                        "reason": None,
-                    }, turn=turn)
-                    history.append({
-                        "role": "assistant",
-                        "content": f"Routing to **{target_name}** (command `{cmd}`)"
-                    })
+                    _emit(
+                        "agent_switch",
+                        {
+                            "from_agent": current_agent.name,
+                            "to_agent": target_name,
+                            "command": cmd,
+                            "reason": None,
+                        },
+                        turn=turn,
+                    )
+                    history.append(
+                        {
+                            "role": "assistant",
+                            "content": f"Routing to **{target_name}** (command `{cmd}`)",
+                        }
+                    )
                     if memory_manager is not None:
                         memory_manager.add_message(
                             "assistant",
@@ -449,6 +958,7 @@ def run_session_sync(
                         from caribou.execution.report_generation import (
                             _generate_agent_report,
                         )
+
                         agent_slice = history[current_agent_history_start:]
                         agent_report = _generate_agent_report(
                             console,
@@ -457,24 +967,26 @@ def run_session_sync(
                             agent_name=current_agent.name,
                             history_slice=agent_slice,
                         )
-                        if agent_report:
-                            report_memory.add_report(current_agent.name, agent_report)
-                            if logger:
-                                logger.info(
-                                    "Agent report generated for %s | length: %s chars",
-                                    current_agent.name, len(agent_report),
-                                )
-                        report_memory.update_agent_prompt(new_agent.get_full_prompt(None))
+                        report_memory.add_report(current_agent.name, agent_report)
+                        if logger:
+                            logger.info(
+                                "Agent report generated for %s | length: %s chars",
+                                current_agent.name,
+                                len(agent_report),
+                            )
+                        report_memory.update_agent_prompt(_agent_prompt(new_agent))
                         current_agent_history_start = len(history)
                     switch_history_start = len(history)
-                    refreshed_agent_prompt = new_agent.get_full_prompt(None) + "\n\n" + analysis_context
+                    refreshed_agent_prompt = (
+                        _agent_prompt(new_agent) + "\n\n" + analysis_context
+                    )
                     _emit(
                         "system_message",
                         {"content": refreshed_agent_prompt, "category": "Agent prompt"},
                         turn=turn,
                     )
                     _apply_agent_switch(
-                        new_agent_prompt=new_agent.get_full_prompt(None),
+                        new_agent_prompt=_agent_prompt(new_agent),
                         analysis_context=analysis_context,
                         history=history,
                         memory_manager=memory_manager,
@@ -511,16 +1023,21 @@ def run_session_sync(
                             code.count("\n") + 1,
                         )
 
-                    _emit("code_submitted", {
-                        "action_id": f"{session_id}:{turn}:{idx}",
-                        "agent_name": current_agent.name,
-                        "source": code,
-                        "block_index": idx,
-                        "total_blocks": len(code_blocks),
-                    }, turn=turn)
+                    action_id = make_action_id(session_id, turn, idx)
+                    _emit(
+                        "code_submitted",
+                        {
+                            "action_id": action_id,
+                            "agent_name": current_agent.name,
+                            "source": code,
+                            "block_index": idx,
+                            "total_blocks": len(code_blocks),
+                        },
+                        turn=turn,
+                    )
 
                     ledger_entry = {
-                        "action_id": f"{session_id}:{turn}:{idx}",
+                        "action_id": action_id,
                         "turn": turn,
                         "agent_name": current_agent.name,
                         "source": code,
@@ -539,15 +1056,19 @@ def run_session_sync(
                             "stderr": str(exc),
                             "duration_ms": duration_ms,
                         }
-                        _emit("code_result", {
-                            "action_id": ledger_entry["action_id"],
-                            "agent_name": current_agent.name,
-                            "stdout": "",
-                            "stderr": str(exc),
-                            "success": False,
-                            "duration_ms": duration_ms,
-                            "block_index": idx,
-                        }, turn=turn)
+                        _emit(
+                            "code_result",
+                            {
+                                "action_id": ledger_entry["action_id"],
+                                "agent_name": current_agent.name,
+                                "stdout": "",
+                                "stderr": str(exc),
+                                "success": False,
+                                "duration_ms": duration_ms,
+                                "block_index": idx,
+                            },
+                            turn=turn,
+                        )
                         _checkpoint_boundary()
                         raise
                     duration_ms = int((time.time() - t0) * 1000)
@@ -564,15 +1085,19 @@ def run_session_sync(
                             success,
                         )
 
-                    _emit("code_result", {
-                        "action_id": ledger_entry["action_id"],
-                        "agent_name": current_agent.name,
-                        "stdout": exec_result.get("stdout", ""),
-                        "stderr": exec_result.get("stderr", ""),
-                        "success": success,
-                        "duration_ms": duration_ms,
-                        "block_index": idx,
-                    }, turn=turn)
+                    _emit(
+                        "code_result",
+                        {
+                            "action_id": ledger_entry["action_id"],
+                            "agent_name": current_agent.name,
+                            "stdout": exec_result.get("stdout", ""),
+                            "stderr": exec_result.get("stderr", ""),
+                            "success": success,
+                            "duration_ms": duration_ms,
+                            "block_index": idx,
+                        },
+                        turn=turn,
+                    )
                     ledger_entry["recorded_result"] = {
                         "success": success,
                         "stdout": exec_result.get("stdout", ""),
@@ -580,7 +1105,7 @@ def run_session_sync(
                         "duration_ms": duration_ms,
                     }
 
-                    _scan_new_artifacts(turn)
+                    _scan_new_artifacts(turn, action_id)
 
                     feedback = format_execute_response(exec_result, output_dir)
                     action_space.add_action(
@@ -619,20 +1144,28 @@ def run_session_sync(
             # Track / escalate stuck-loop conditions in auto mode.
             if is_auto and consecutive_failures >= MAX_CONSECUTIVE_EXEC_FAILURES:
                 _checkpoint_boundary()
-                _emit("status_change", {
-                    "status": "stopped",
-                    "reason": f"stuck: {consecutive_failures} consecutive code failures",
-                }, turn=turn)
+                _emit(
+                    "status_change",
+                    {
+                        "status": "stopped",
+                        "reason": f"stuck: {consecutive_failures} consecutive code failures",
+                    },
+                    turn=turn,
+                )
                 return
 
             if is_auto and not _action_fired:
                 consecutive_no_action += 1
                 if consecutive_no_action >= MAX_CONSECUTIVE_NO_ACTION:
                     _checkpoint_boundary()
-                    _emit("status_change", {
-                        "status": "stopped",
-                        "reason": f"stuck: {consecutive_no_action} consecutive no-action turns",
-                    }, turn=turn)
+                    _emit(
+                        "status_change",
+                        {
+                            "status": "stopped",
+                            "reason": f"stuck: {consecutive_no_action} consecutive no-action turns",
+                        },
+                        turn=turn,
+                    )
                     return
                 no_action_msg = (
                     "[SYSTEM] No action was recognised in your last message. "
@@ -655,9 +1188,39 @@ def run_session_sync(
             _checkpoint_boundary()
 
             if is_auto:
-                history.append({"role": "user", "content": "Please continue with the next step."})
+                history.append(
+                    {"role": "user", "content": "Please continue with the next step."}
+                )
                 if memory_manager is not None:
-                    memory_manager.add_message("user", "Please continue with the next step.")
+                    memory_manager.add_message(
+                        "user", "Please continue with the next step."
+                    )
+                continue
+
+            # Interactive mode: after opening a work item, let the agent keep going
+            # for one extra turn instead of stopping to wait for the user.
+            # `not is_auto` is explicit here (rather than relying on the
+            # `if is_auto: ... continue` above always firing first in auto
+            # mode) because that ordering is incidental, not a contract —
+            # work_items is no longer `None` in auto mode, so nothing else
+            # here still depends on is_auto to disable this branch.
+            if not is_auto and _opened_work_item and auto_continue_budget > 0:
+                auto_continue_budget -= 1
+                history.append(
+                    {"role": "user", "content": "Please continue with the next step."}
+                )
+                if memory_manager is not None:
+                    memory_manager.add_message(
+                        "user", "Please continue with the next step."
+                    )
+                _emit(
+                    "system_message",
+                    {
+                        "content": "Continuing automatically after opening a work item.",
+                        "category": "Runner guidance",
+                    },
+                    turn=turn,
+                )
                 continue
 
             # --- Interactive: wait for next user message ---
@@ -667,18 +1230,22 @@ def run_session_sync(
     except Exception as exc:
         if logger:
             logger.error("Runner error: %s", exc, exc_info=True)
-        _emit("error", {
-            "code": "RUNNER_ERROR",
-            "message": str(exc),
-            "traceback": traceback.format_exc(limit=8),
-            "fatal": True,
-        })
+        _emit(
+            "error",
+            {
+                "code": "RUNNER_ERROR",
+                "message": str(exc),
+                "traceback": traceback.format_exc(limit=8),
+                "fatal": True,
+            },
+        )
         _emit("status_change", {"status": "error", "reason": str(exc)})
 
 
 # ---------------------------------------------------------------------------
 # Async wrapper
 # ---------------------------------------------------------------------------
+
 
 async def run_session_async(
     *,
@@ -697,12 +1264,19 @@ async def run_session_async(
     stop_flag: threading.Event,
     cancel_response_flag: Optional[threading.Event] = None,
     user_input_queue: Optional[queue.Queue] = None,
+    control_message_queue: Optional[queue.Queue] = None,
     logger: Optional[logging.Logger] = None,
     memory_manager: Any = None,
     report_memory: Any = None,
     checkpoint_callback: Optional[Callable[[List[Dict], Dict[str, Any]], None]] = None,
     resume_state: Optional[Dict[str, Any]] = None,
     start_waiting: bool = False,
+    work_item_store: Optional["WorkItemStore"] = None,
+    phase: str = "execution",
+    brief_policy: Optional["BriefPolicy"] = None,
+    brief_decision_queue: Optional[queue.Queue] = None,
+    brief: Optional[Dict[str, Any]] = None,
+    known_artifacts: Optional[Dict[str, int]] = None,
 ) -> None:
     """
     Runs run_session_sync in a thread so it doesn't block the event loop.
@@ -710,9 +1284,25 @@ async def run_session_async(
     loop.call_soon_threadsafe() internally if needed.
     """
     loop = asyncio.get_running_loop()
+    # event_callback runs on the loop, where asyncio would only log what it
+    # raises. Hold the first failure and raise it in the runner thread on its
+    # next emit, so the runner's fatal RUNNER_ERROR path reports it.
+    callback_failures: List[BaseException] = []
+
+    def _deliver(event: Dict) -> None:
+        try:
+            event_callback(event)
+        except BaseException as exc:
+            callback_failures.append(exc)
+            raise
 
     def _emit(event: Dict) -> None:
-        loop.call_soon_threadsafe(event_callback, event)
+        if callback_failures:
+            failure = callback_failures.pop(0)
+            raise RuntimeError(
+                f"Session event handling failed: {failure}"
+            ) from failure
+        loop.call_soon_threadsafe(_deliver, event)
 
     await asyncio.to_thread(
         run_session_sync,
@@ -731,10 +1321,23 @@ async def run_session_async(
         stop_flag=stop_flag,
         cancel_response_flag=cancel_response_flag,
         user_input_queue=user_input_queue,
+        control_message_queue=control_message_queue,
         logger=logger,
         memory_manager=memory_manager,
         report_memory=report_memory,
         checkpoint_callback=checkpoint_callback,
         resume_state=resume_state,
         start_waiting=start_waiting,
+        work_item_store=work_item_store,
+        phase=phase,
+        brief_policy=brief_policy,
+        brief_decision_queue=brief_decision_queue,
+        brief=brief,
+        known_artifacts=known_artifacts,
     )
+    # Deliveries queued before the thread finished have run by now (the
+    # loop runs call_soon_threadsafe callbacks in order); surface any failure
+    # that came after the runner's last emit.
+    if callback_failures:
+        failure = callback_failures.pop(0)
+        raise RuntimeError(f"Session event handling failed: {failure}") from failure

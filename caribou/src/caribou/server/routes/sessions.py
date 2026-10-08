@@ -7,14 +7,23 @@ from typing import List
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 from caribou.core.python_environments import PythonEnvironmentError
+from caribou.execution.evaluation import EvaluationContextTooLarge
+from caribou.execution.work_items import WorkItemNotFound
 from caribou.server.models import (
     ArtifactRecord,
+    BriefDecisionRequest,
     CodeEventRecord,
+    EvaluationResult,
+    EvaluatorModelState,
+    EvaluatorModelUpdateRequest,
     MessageRecord,
     SessionCreateRequest,
     SessionForkRequest,
     SessionResumeRequest,
     SessionResponse,
+    WorkItemDetail,
+    WorkItemReviewResult,
+    WorkItemSummary,
 )
 from caribou.server.session_manager import session_manager
 
@@ -68,9 +77,7 @@ async def retry_recovery(
         raise _lifecycle_error(exc) from exc
 
 
-@router.post(
-    "/{session_id}/recovery/accept-partial", response_model=SessionResponse
-)
+@router.post("/{session_id}/recovery/accept-partial", response_model=SessionResponse)
 async def accept_partial_recovery(session_id: str) -> SessionResponse:
     try:
         return await session_manager.accept_partial_recovery(session_id)
@@ -168,6 +175,79 @@ async def get_code_events(session_id: str) -> List[CodeEventRecord]:
     return s.code_events
 
 
+@router.get("/{session_id}/brief")
+async def get_brief_state(session_id: str) -> dict:
+    """The session's current phase and frozen brief (null until accepted)."""
+    try:
+        return session_manager.get_brief_state(session_id)
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+
+
+@router.post("/{session_id}/brief/decision", status_code=204)
+async def submit_brief_decision(
+    session_id: str, request: BriefDecisionRequest
+) -> None:
+    """Accept, reject, or edit the agent's current brief draft during the
+    briefing phase (WS-5). The running session's briefing loop is blocked
+    waiting on this decision — see `_Session.brief_decision_queue`."""
+    try:
+        session_manager.submit_brief_decision(
+            session_id,
+            decision=request.decision,
+            reason=request.reason,
+            brief=request.brief,
+        )
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/{session_id}/work-items", response_model=List[WorkItemSummary])
+async def get_work_items(session_id: str) -> List[WorkItemSummary]:
+    try:
+        return [
+            WorkItemSummary.model_validate(item)
+            for item in session_manager.list_work_items(session_id)
+        ]
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+
+
+@router.get("/{session_id}/work-items/{item_id}", response_model=WorkItemDetail)
+async def get_work_item(session_id: str, item_id: int) -> WorkItemDetail:
+    try:
+        return WorkItemDetail.model_validate(
+            session_manager.read_work_item(session_id, item_id)
+        )
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+    except WorkItemNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post(
+    "/{session_id}/work-items/{item_id}/review",
+    response_model=WorkItemReviewResult,
+)
+async def review_work_item(session_id: str, item_id: int) -> WorkItemReviewResult:
+    try:
+        return WorkItemReviewResult.model_validate(
+            await session_manager.review_work_item(session_id, item_id)
+        )
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+    except WorkItemNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"Evaluator provider failed: {exc}") from exc
+
+
 @router.get("/{session_id}/memory")
 async def get_memory_state(session_id: str) -> dict:
     """Return the current memory state and context breakdown of the session."""
@@ -176,3 +256,44 @@ async def get_memory_state(session_id: str) -> dict:
         raise HTTPException(404, "Session not found")
     state = session_manager.get_context_breakdown(session_id)
     return state
+
+
+@router.post("/{session_id}/evaluate", response_model=EvaluationResult)
+async def evaluate_session(session_id: str) -> EvaluationResult:
+    """Send this session's full transcript to an evaluator agent for review."""
+    s = session_manager.get_session(session_id)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    if s.evaluator_llm_client is None or s.agent_system is None:
+        raise HTTPException(
+            400,
+            "Session is not running — start (or restart) the run before evaluating it.",
+        )
+    try:
+        return await session_manager.evaluate_session(session_id)
+    except EvaluationContextTooLarge as exc:
+        raise HTTPException(413, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/{session_id}/evaluator-model", response_model=EvaluatorModelState)
+async def get_evaluator_model(session_id: str) -> EvaluatorModelState:
+    try:
+        return session_manager.get_evaluator_model(session_id)
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+
+
+@router.patch("/{session_id}/evaluator-model", response_model=EvaluatorModelState)
+async def update_evaluator_model(
+    session_id: str, body: EvaluatorModelUpdateRequest
+) -> EvaluatorModelState:
+    try:
+        return await session_manager.update_evaluator_model(session_id, body)
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc

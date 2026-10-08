@@ -159,7 +159,19 @@ export class DashboardComponent implements OnInit {
     memory_working_history_size: 4,
     memory_summarization_threshold: 20,
     memory_chunk_size: 10,
+    evaluator_model: { mode: 'inherit_worker' },
   };
+
+  // Separate from `form.brief_mode`: the wizard needs a fourth state
+  // ("use whatever the blueprint says") that has no representation as a
+  // SessionCreateRequest value — that field is undefined/omitted for it,
+  // not a fourth enum member on the wire.
+  briefModeChoice: 'blueprint' | 'off' | 'context' | 'seed_item' = 'blueprint';
+
+  onBriefModeChange(choice: 'blueprint' | 'off' | 'context' | 'seed_item'): void {
+    this.briefModeChoice = choice;
+    this.form.brief_mode = choice === 'blueprint' ? undefined : choice;
+  }
 
   availableBackends = computed(() =>
     this.configSvc
@@ -249,6 +261,8 @@ export class DashboardComponent implements OnInit {
     this.form.memory_working_history_size = 4;
     this.form.memory_summarization_threshold = 20;
     this.form.memory_chunk_size = 10;
+    this.briefModeChoice = 'blueprint';
+    this.form.brief_mode = undefined;
     this.applyOllamaDefaultModel();
   }
 
@@ -323,6 +337,12 @@ export class DashboardComponent implements OnInit {
     }
     if (this.form.llm_backend === 'openrouter' && !this.form.model_name) {
       return 'Select an OpenRouter model before creating a session.';
+    }
+    if (
+      this.form.evaluator_model?.mode === 'explicit' &&
+      (!this.form.evaluator_model.llm_backend || !this.form.evaluator_model.model_name)
+    ) {
+      return 'Select an evaluator backend and enter an exact evaluator model identifier.';
     }
     if (this.datasetSource() === 'hpc' && !this.hpcDataset()) {
       return 'Validate the HPC dataset path before creating a session.';

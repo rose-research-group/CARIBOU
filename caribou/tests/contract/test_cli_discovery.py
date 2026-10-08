@@ -336,9 +336,10 @@ def test_schema_discovery_returns_strict_experiment_spec(tmp_path: Path) -> None
         "state": "available",
     }
     schema = payload["data"]["schema"]
-    assert schema["properties"]["schema_version"]["const"] == (
-        "caribou.experiment_spec.v1"
-    )
+    assert schema["properties"]["schema_version"]["enum"] == [
+        "caribou.experiment_spec.v1",
+        "caribou.experiment_spec.v2",
+    ]
     assert schema["additionalProperties"] is False
 
 

@@ -308,6 +308,14 @@ class ConditionSpec(DomainModel):
     parameters: Dict[StrictStr, JsonValue] = Field(default_factory=dict)
 
 
+class ExperimentEvaluatorSpec(DomainModel):
+    """One frozen evaluator shared by every condition in an experiment."""
+
+    agent_name: NonEmptyStr
+    agent: ContentReference
+    model: ModelSpec
+
+
 class BudgetCounter(DomainModel):
     unit: NonEmptyStr
     limit: Optional[NonNegativeNumber] = None
@@ -391,7 +399,9 @@ class BudgetBreach(DomainModel):
 
 
 class ExperimentSpec(DomainModel):
-    schema_version: Literal["caribou.experiment_spec.v1"] = "caribou.experiment_spec.v1"
+    schema_version: Literal[
+        "caribou.experiment_spec.v1", "caribou.experiment_spec.v2"
+    ] = "caribou.experiment_spec.v1"
     spec_id: SpecId = Field(default_factory=lambda: new_id("spec"))
     spec_version: PositiveInt = 1
     title: NonEmptyStr
@@ -404,6 +414,14 @@ class ExperimentSpec(DomainModel):
     code: CodeIdentity
     inputs: List[ContentReference]
     conditions: List[ConditionSpec]
+    evaluator: Optional[ExperimentEvaluatorSpec] = None
+    parent_spec_id: Optional[SpecId] = None
+    model_change_reason: Optional[
+        Annotated[
+            StrictStr,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
+        ]
+    ] = None
     repetitions: PositiveInt
     execution: ExecutionSpec
     budget: BudgetAllocation
@@ -415,6 +433,20 @@ class ExperimentSpec(DomainModel):
 
     @model_validator(mode="after")
     def validate_unique_keys(self) -> "ExperimentSpec":
+        if (
+            self.schema_version == "caribou.experiment_spec.v2"
+            and self.evaluator is None
+        ):
+            raise ValueError("experiment spec v2 requires one global evaluator")
+        if self.schema_version == "caribou.experiment_spec.v1" and any(
+            value is not None
+            for value in (self.evaluator, self.parent_spec_id, self.model_change_reason)
+        ):
+            raise ValueError("experiment spec v1 cannot declare v2 evaluator lineage")
+        if self.model_change_reason is not None and self.parent_spec_id is None:
+            raise ValueError("model change reason requires a parent specification")
+        if self.parent_spec_id == self.spec_id:
+            raise ValueError("experiment spec cannot derive from itself")
         if not self.inputs:
             raise ValueError("experiment spec requires at least one input")
         if not self.conditions:
@@ -684,6 +716,34 @@ class HeartbeatPayload(DomainModel):
     message: Optional[NonEmptyStr] = None
 
 
+class WorkItemChangedPayload(DomainModel):
+    """A work-item mutation, carrying the full committed item snapshot.
+
+    ``item_id``, ``status`` and ``owner`` are promoted for querying; they must
+    agree with the snapshot so the two can never disagree in the journal.
+    """
+
+    item_id: NonNegativeInt
+    status: NonEmptyStr
+    owner: NonEmptyStr
+    item: Dict[StrictStr, JsonValue]
+
+    @model_validator(mode="after")
+    def validate_snapshot_agreement(self) -> "WorkItemChangedPayload":
+        for field_name, snapshot_key in (
+            ("item_id", "id"),
+            ("status", "status"),
+            ("owner", "owner"),
+        ):
+            if snapshot_key not in self.item:
+                raise ValueError(f"work item snapshot is missing {snapshot_key!r}")
+            if self.item[snapshot_key] != getattr(self, field_name):
+                raise ValueError(
+                    f"work item {field_name} does not match snapshot {snapshot_key!r}"
+                )
+        return self
+
+
 EventPayload = Union[
     StateTransitionPayload,
     MessagePayload,
@@ -698,6 +758,7 @@ EventPayload = Union[
     BudgetRecordedPayload,
     FailureRecordedPayload,
     HeartbeatPayload,
+    WorkItemChangedPayload,
 ]
 
 
@@ -733,6 +794,7 @@ class Event(DomainModel):
             EventType.budget_recorded: BudgetRecordedPayload,
             EventType.failure_recorded: FailureRecordedPayload,
             EventType.heartbeat: HeartbeatPayload,
+            EventType.work_item_changed: WorkItemChangedPayload,
         }
         if not isinstance(self.payload, expected[self.event_type]):
             raise ValueError(

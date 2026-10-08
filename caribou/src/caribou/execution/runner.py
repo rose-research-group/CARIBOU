@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TypedDict, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, cast
 
 from rich.console import Console
 from rich.prompt import Prompt
@@ -34,17 +34,46 @@ try:
         detect_delegation,
         detect_end_session,
         detect_rag,
-        _extract_artifacts_from_msg,
+        extract_labeled_block,
         _count_code_blocks,
         _code_preview,
     )
+    from caribou.execution.event_ids import make_action_id
     from caribou.execution.path_utils import _init_paths, get_default_runs_dir
     from caribou.execution.report_generation import (
         AgentReportMemory,
         _write_session_report,
         _generate_agent_report,
     )
-    from caribou.execution.ui_helpers import _render_todos
+    from caribou.execution.user_commands import (
+        USER_COMMANDS,
+        UserCommandContext,
+        dispatch_user_command,
+    )
+    from caribou.execution.evaluation import EvaluatorRuntime
+    from caribou.execution.work_items import (
+        WorkItemError,
+        WorkItemPolicy,
+        WorkItemStore,
+        parse_work_item_command,
+        render_work_item_prompt,
+    )
+    from caribou.execution.work_item_runtime import (
+        apply_command as apply_work_item_command,
+        end_session_block,
+        freeze_brief,
+        render_brief_pin,
+        render_work_item_state,
+        stall_report,
+        transfer_on_delegation,
+    )
+    from caribou.execution.session_brief import (
+        BriefParseError,
+        BriefPolicy,
+        SessionBrief,
+        parse_brief_block,
+        render_briefing_prompt,
+    )
 except ImportError as e:
     print(f"Failed to import a required CARIBOU module: {e}", file=sys.stderr)
     sys.exit(1)
@@ -182,6 +211,8 @@ _UNSUCCESSFUL_END_REASONS = frozenset(
         "stuck_no_action",
         "stuck_code_failures",
         "timeout",
+        "briefing_declined",
+        "work_item_stalled",
     }
 )
 
@@ -479,6 +510,123 @@ class SandboxManager:
         raise NotImplementedError
 
 
+def _run_briefing_phase(
+    *,
+    console: Console,
+    llm_client: object,
+    model_name: str,
+    history: List[Dict[str, str]],
+    driver_agent: Agent,
+    llm_attempt_callback: Optional[LlmAttemptCallback] = None,
+    llm_retry_attempts: int = _LLM_RETRY_ATTEMPTS,
+    llm_retry_base_delay: float = _LLM_RETRY_BASE_DELAY,
+    llm_retry_max_delay: float = _LLM_RETRY_MAX_DELAY,
+    max_output_tokens: Optional[int] = None,
+) -> Tuple[Optional[SessionBrief], bool]:
+    """Run the interactive briefing conversation (WS-5.3) until the human
+    accepts a brief or ends the session. Interactive/CLI only — auto mode
+    never calls this (see the docstring on `run_agent_session`'s
+    `brief_policy` parameter).
+
+    Mutates `history` in place, appending every turn exactly like the main
+    turn loop does. Not resumable: a crash mid-briefing loses the
+    conversation and the session must be started over — briefing runs
+    entirely before any checkpoint boundary exists, so
+    `AgentSessionCheckpointState` is untouched by this function.
+
+    Returns `(brief, ended)`: `brief` is the accepted `SessionBrief`, or
+    `None` if the session was ended during briefing instead (`ended=True` in
+    that case — the caller must stop, not fall through to execution).
+    """
+    console.print(
+        "[bold cyan]Briefing phase — describe what you want before any work "
+        "starts. The agent will propose a brief for you to accept, reject, "
+        "or edit.[/bold cyan]"
+    )
+    while True:
+        user_input = Prompt.ask("\n[bold]You[/bold]", default="").strip()
+        if user_input.lower() in {"exit", "quit"}:
+            console.print("[bold yellow]Ending session during briefing.[/bold yellow]")
+            return None, True
+        if user_input:
+            history.append({"role": "user", "content": user_input})
+            display(console, "user", user_input)
+
+        msg = _call_llm_with_retry(
+            console=console,
+            llm_client=llm_client,
+            model_name=model_name,
+            messages=history,
+            turn=0,
+            agent_name=driver_agent.name,
+            llm_attempt_callback=llm_attempt_callback,
+            retry_attempts=llm_retry_attempts,
+            retry_base_delay=llm_retry_base_delay,
+            retry_max_delay=llm_retry_max_delay,
+            max_output_tokens=max_output_tokens,
+        )
+        if msg is None:
+            console.print(
+                "[red]Briefing LLM call failed after retries. Ending session.[/red]"
+            )
+            return None, True
+        history.append({"role": "assistant", "content": msg})
+        display(console, f"assistant ({driver_agent.name})", msg)
+
+        if detect_end_session(msg):
+            console.print(
+                "[yellow]Agent requested end_session during briefing.[/yellow]"
+            )
+            return None, True
+
+        block = extract_labeled_block(msg, "brief")
+        if block is None:
+            continue
+
+        try:
+            draft = parse_brief_block(block, created_by=driver_agent.name)
+        except BriefParseError as exc:
+            feedback = f"[SYSTEM] {exc.feedback}"
+            history.append({"role": "system", "content": feedback})
+            display(console, "system", feedback)
+            continue
+
+        console.print("\n[bold]Proposed brief:[/bold]")
+        console.print(render_brief_pin(draft))
+        choice = Prompt.ask(
+            "Accept this brief?",
+            choices=["accept", "reject", "edit"],
+            default="accept",
+        )
+        if choice == "accept":
+            return draft, False
+        if choice == "reject":
+            reason = Prompt.ask(
+                "Why? (sent back to the agent to revise)",
+                default="Please revise and re-propose.",
+            )
+            feedback = f"[SYSTEM] Brief rejected by the human: {reason}"
+            history.append({"role": "system", "content": feedback})
+            display(console, "system", feedback)
+            continue
+        # edit: the human supplies corrected JSON directly, bypassing the
+        # agent for this round — the harness still validates it the same way.
+        console.print("Paste corrected JSON for the brief block:")
+        edited_raw = Prompt.ask("JSON")
+        try:
+            edited = parse_brief_block(edited_raw, created_by="human")
+        except BriefParseError as exc:
+            console.print(f"[red]{exc.feedback}[/red]")
+            history.append(
+                {
+                    "role": "system",
+                    "content": f"[SYSTEM] Human edit was invalid: {exc.feedback}",
+                }
+            )
+            continue
+        return edited, False
+
+
 # --- Core Runner Functions ---
 def run_agent_session(
     *,
@@ -512,9 +660,22 @@ def run_agent_session(
     llm_retry_base_delay: float = _LLM_RETRY_BASE_DELAY,
     llm_retry_max_delay: float = _LLM_RETRY_MAX_DELAY,
     max_output_tokens: int | None = None,
+    evaluator_runtime: Optional[EvaluatorRuntime] = None,
+    brief_policy: Optional["BriefPolicy"] = None,
+    brief: Optional["SessionBrief"] = None,
 ) -> AgentSessionResult:
     """
     Main driver for agent execution sessions, passing output_dir for benchmark saving.
+
+    `brief_policy`/`brief` (WS-5): if `brief` is already supplied (a
+    pre-authored, frozen brief — the auto-mode `--brief <path>` case), it is
+    frozen immediately and no briefing conversation runs, regardless of
+    `brief_policy`. Otherwise, if `brief_policy.enabled` and this is an
+    interactive run resuming from nothing (`resume_state is None`), a
+    briefing conversation runs before the first execution turn (WS-5.3); see
+    `_run_briefing_phase`. In every other case (auto with no `--brief`,
+    `brief_policy` disabled, or resuming a session already past briefing),
+    execution starts immediately with no brief, exactly as before WS-5.
     """
     if durable_run_id is not None and not durable_run_id.strip():
         raise ValueError("durable_run_id must be non-empty when provided")
@@ -528,6 +689,13 @@ def run_agent_session(
         or max_output_tokens < 1
     ):
         raise ValueError("max_output_tokens must be a positive integer")
+    if evaluator_runtime is None:
+        evaluator_runtime = EvaluatorRuntime(
+            llm_client=llm_client,
+            model_name=model_name,
+            provider="worker-provider",
+            selection={"mode": "inherit_worker"},
+        )
     if (should_checkpoint is None) != (checkpoint_callback is None):
         raise ValueError(
             "should_checkpoint and checkpoint_callback must be supplied together"
@@ -548,6 +716,71 @@ def run_agent_session(
         output_dir if output_dir else (default_runs_dir / "session_notes" / run_id)
     )
     artifacts = SessionArtifacts(run_id=run_id, base_dir=artifacts_dir)
+    work_item_policy = getattr(agent_system, "work_item_policy", WorkItemPolicy())
+    evaluator_agent_name = getattr(agent_system, "evaluator_agent_name", None)
+    # Work items are constructed in both interactive and auto runs; `is_auto`
+    # only gates human-confirmation points elsewhere (end_session prompts),
+    # not whether work-item state exists. Auto runs need ambient state (WS-2)
+    # and stall detection (WS-4) at least as much as interactive ones, since
+    # there's no human watching to notice an abandoned item.
+    work_items = WorkItemStore(
+        artifacts_dir / "work-items",
+        session_id=run_id,
+        policy=work_item_policy,
+        origin_run_id=run_id,
+    )
+    frozen_brief: Optional["SessionBrief"] = brief
+    ended_during_briefing = False
+    should_run_briefing = (
+        frozen_brief is None
+        and brief_policy is not None
+        and brief_policy.enabled
+        and not is_auto
+        and resume_state is None
+        and len(history) > 1
+    )
+    if len(history) > 1:
+        if should_run_briefing:
+            briefing_appendix = render_briefing_prompt()
+            if briefing_appendix not in history[1].get("content", ""):
+                history[1]["content"] = (
+                    history[1].get("content", "") + briefing_appendix
+                )
+            frozen_brief, ended_during_briefing = _run_briefing_phase(
+                console=console,
+                llm_client=llm_client,
+                model_name=model_name,
+                history=history,
+                driver_agent=driver_agent,
+                llm_attempt_callback=llm_attempt_callback,
+                llm_retry_attempts=llm_retry_attempts,
+                llm_retry_base_delay=llm_retry_base_delay,
+                llm_retry_max_delay=llm_retry_max_delay,
+                max_output_tokens=max_output_tokens,
+            )
+        if not ended_during_briefing:
+            prompt_appendix = render_work_item_prompt(work_item_policy)
+            if prompt_appendix not in history[1].get("content", ""):
+                history[1]["content"] = (
+                    history[1].get("content", "") + prompt_appendix
+                )
+    if frozen_brief is not None and not ended_during_briefing:
+        seed_item = freeze_brief(
+            frozen_brief,
+            brief_path=artifacts_dir / "brief.json",
+            store=work_items,
+            brief_mode=(brief_policy.mode if brief_policy is not None else "context"),
+            owner=driver_agent.name,
+            turn=0,
+        )
+        history.append(
+            {"role": "system", "content": render_brief_pin(frozen_brief)}
+        )
+        if seed_item is not None:
+            console.print(
+                f"[green]Seeded work item {seed_item['id']}: "
+                f"{seed_item['title']}[/green]"
+            )
 
     if agent_report_memory and compress_memory:
         console.print(
@@ -646,6 +879,9 @@ def run_agent_session(
 
     session_end_reason = "completed"
     last_code_snippet: str | None = None
+    # At most one automatic "continue" per user message, consumed after the agent
+    # opens a work item so it can proceed with the work instead of stopping.
+    auto_continue_budget = 1
 
     def checkpoint_at_completed_turn() -> bool:
         if should_checkpoint is None or not should_checkpoint():
@@ -673,7 +909,23 @@ def run_agent_session(
         )
         return True
 
+    if not is_auto:
+        try:
+            import readline
+
+            def _complete_user_command(text: str, state: int) -> Optional[str]:
+                options = [name for name in USER_COMMANDS if name.startswith(text)]
+                return options[state] if state < len(options) else None
+
+            readline.set_completer(_complete_user_command)
+            readline.parse_and_bind("tab: complete")
+        except ImportError:
+            pass  # readline isn't available on this platform; no tab-completion.
+
     while True:
+        if ended_during_briefing:
+            session_end_reason = "briefing_declined"
+            break
         stop_reason = session_stop_reason()
         if stop_reason is not None:
             session_end_reason = stop_reason
@@ -710,6 +962,48 @@ def run_agent_session(
             if "content" in cleaned_msg and isinstance(cleaned_msg["content"], str):
                 cleaned_msg["content"] = cleaned_msg["content"].rstrip()
             cleaned_context.append(cleaned_msg)
+
+        # Ambient work-item state (WS-2): a view recomputed from the store
+        # each turn, appended after context assembly so every memory
+        # strategy sees current state without memory-subsystem changes.
+        # `frozen_brief` is None when no brief was accepted (briefing is
+        # opt-in); the state block then simply carries no goal line.
+        state_block = render_work_item_state(
+            work_items,
+            current_agent.name,
+            brief_goal=(
+                frozen_brief.deliverable if frozen_brief is not None else None
+            ),
+        )
+        if state_block:
+            cleaned_context.append({"role": "system", "content": state_block})
+
+        # Item-level stall detection (WS-4): surface a stuck item by id
+        # rather than only tripping the turn-count breakers, which halt the
+        # run without saying which item stalled it.
+        stalled = stall_report(
+            work_items,
+            current_agent.name,
+            turn=turn,
+            stall_turns=work_item_policy.stall_turns,
+        )
+        if stalled is not None:
+            if stalled["idle_turns"] >= work_item_policy.stall_halt_turns:
+                halt_note = (
+                    f"Halted: work item {stalled['item_id']} "
+                    f"('{stalled['title']}') stalled for {stalled['idle_turns']} turns."
+                )
+                work_items.note(stalled["item_id"], "runner", turn, halt_note)
+                console.print(f"[bold red]{halt_note}[/bold red]")
+                session_end_reason = "work_item_stalled"
+                break
+            nudge = (
+                f"[SYSTEM] Work item {stalled['item_id']} "
+                f"('{stalled['title']}') has had no status change for "
+                f"{stalled['idle_turns']} turns. Close it, transfer it, or "
+                "explain why it is still open."
+            )
+            cleaned_context.append({"role": "system", "content": nudge})
 
         try:
             request_timeout_seconds = (
@@ -770,41 +1064,72 @@ def run_agent_session(
         if blocks_found:
             code_block_count += blocks_found
 
-        # --- Artifact extraction (notes, TODOs) ---
-        extracted_notes, extracted_todos = _extract_artifacts_from_msg(msg)
-        if extracted_notes:
-            for note in extracted_notes:
-                artifacts.add_note(note, current_agent.name, turn)
-                note_msg = (
-                    f"Captured note (turn {turn}, agent {current_agent.name}): {note}"
-                )
-                history.append({"role": "system", "content": note_msg})
-                if memory_manager:
-                    memory_manager.add_message("system", note_msg)
+        # Track whether any substantive action fires this turn.
+        _action_fired = False
+        _delegated = False
+        _opened_work_item = False
+
+        # --- Enforced work-item commands ---
+        work_command = parse_work_item_command(msg)
+        work_result = apply_work_item_command(
+            work_items, msg, owner=current_agent.name, turn=turn
+        )
+        if work_result is not None:
+            _action_fired = True
+            if (
+                work_command is not None
+                and work_command.name == "open_work_item"
+                and work_result.success
+            ):
+                _opened_work_item = True
+            work_feedback = "[SYSTEM] " + work_result.feedback
+            history.append({"role": "system", "content": work_feedback})
+            if memory_manager:
+                memory_manager.add_message("system", work_feedback)
             action_space.add_action(
-                "note_logged", f"Logged {len(extracted_notes)} note(s).", status="ok"
+                "work_item_command",
+                work_feedback,
+                status="ok" if work_result.success else "error",
             )
-        if extracted_todos:
-            for todo_text in extracted_todos:
-                item = artifacts.add_todo(todo_text, current_agent.name, turn)
-                todo_msg = (
-                    f"TODO added (#{item.id}) by {current_agent.name}: {item.text}"
+            if work_result.changed_item is not None:
+                _emit_runner_event(
+                    event_callback,
+                    event_type="work_item_changed",
+                    run_id=run_id,
+                    turn=turn,
+                    agent_name=current_agent.name,
+                    payload={"item": work_result.changed_item},
                 )
-                history.append({"role": "system", "content": todo_msg})
-                if memory_manager:
-                    memory_manager.add_message("system", todo_msg)
-            action_space.add_action(
-                "todo_logged", f"Logged {len(extracted_todos)} TODO(s).", status="ok"
-            )
 
         # --- End session handling ---
         # Only end session if there's no delegation command also present
         # (prevents premature exit when LLM outputs both delegation and end_session)
         has_delegation = detect_delegation(msg) is not None
+        end_session_refused = False
+        if detect_end_session(msg):
+            blocking = end_session_block(work_items, current_agent.name)
+            if blocking:
+                end_session_refused = True
+                blocked_feedback = (
+                    "[SYSTEM] end_session refused. Current owner "
+                    f"{current_agent.name} still owns non-Done work items: "
+                    + ", ".join(
+                        f"{item['id']} ({item['status']}, owner={item['owner']})"
+                        for item in blocking
+                    )
+                    + ". Close or transfer them before ending the session."
+                )
+                history.append({"role": "system", "content": blocked_feedback})
+                if memory_manager:
+                    memory_manager.add_message("system", blocked_feedback)
+                action_space.add_action(
+                    "end_session_refused", blocked_feedback, status="error"
+                )
         if (
             detect_end_session(msg)
             and _count_code_blocks(msg) == 0
             and not has_delegation
+            and not end_session_refused
         ):
             if is_auto:
                 console.print(
@@ -824,10 +1149,6 @@ def run_agent_session(
                     )
                     session_end_reason = "agent_finished"
                     break
-
-        # Track whether any substantive action fires this turn (for loop-detection feedback)
-        _action_fired = False
-        _delegated = False
 
         # --- RAG handling ---
         query_from_re = detect_rag(msg)
@@ -965,13 +1286,49 @@ def run_agent_session(
                 session_end_reason = stop_reason
                 break
 
+        # Agent delegation command (e.g. "delegate_to_coder"), emitted by the
+        # LLM's own generated message and matched against the blueprint's
+        # Agent.commands. Unrelated to the human-typed REPL commands (/todo,
+        # /evaluate, ...) dispatched later in the interactive prompt loop via
+        # caribou.execution.user_commands — no human input is involved here.
         cmd = detect_delegation(msg)
         if cmd and cmd in current_agent.commands:
-            _action_fired = True
             target_agent_name = current_agent.commands[cmd].target_agent
             new_agent = agent_system.get_agent(target_agent_name)
+            previous_agent_name = current_agent.name
+            if new_agent is not None:
+                try:
+                    transferred_items = transfer_on_delegation(
+                        work_items,
+                        previous_agent_name,
+                        target_agent_name,
+                        turn=turn,
+                        evaluator_agent_name=evaluator_agent_name,
+                    )
+                except WorkItemError as exc:
+                    transfer_feedback = (
+                        f"[SYSTEM] Delegation refused because work-item transfer "
+                        f"failed: {exc}"
+                    )
+                    history.append({"role": "system", "content": transfer_feedback})
+                    if memory_manager:
+                        memory_manager.add_message("system", transfer_feedback)
+                    action_space.add_action(
+                        "work_item_transfer", transfer_feedback, status="error"
+                    )
+                    new_agent = None
+                else:
+                    for transferred_item in transferred_items:
+                        _emit_runner_event(
+                            event_callback,
+                            event_type="work_item_changed",
+                            run_id=run_id,
+                            turn=turn,
+                            agent_name=previous_agent_name,
+                            payload={"item": transferred_item},
+                        )
             if new_agent:
-                previous_agent_name = current_agent.name
+                _action_fired = True
                 if report_memory:
                     agent_history_slice = history[current_agent_history_start:]
                     agent_report = _generate_agent_report(
@@ -981,19 +1338,18 @@ def run_agent_session(
                         agent_name=current_agent.name,
                         history_slice=agent_history_slice,
                     )
-                    if agent_report:
-                        report_memory.add_report(current_agent.name, agent_report)
-                        history.append(
-                            {
-                                "role": "system",
-                                "content": f"Agent report from {current_agent.name}:\n{agent_report}",
-                            }
-                        )
+                    report_memory.add_report(current_agent.name, agent_report)
+                    history.append(
+                        {
+                            "role": "system",
+                            "content": f"Agent report from {current_agent.name}:\n{agent_report}",
+                        }
+                    )
                     current_agent_history_start = len(history)
                 routing_message = f"🔄 Routing to '{target_agent_name}' via {cmd}"
                 current_agent = new_agent
                 # Global policy lives in the pinned first system message; skip re-embedding here.
-                system_prompt = current_agent.get_full_prompt(None)
+                system_prompt = current_agent.get_full_prompt(None, work_item_policy)
                 prompt_with_context = system_prompt + "\n\n" + analysis_context
                 console.print(f"[yellow]{routing_message}[/yellow]")
                 history.append(
@@ -1083,7 +1439,7 @@ def run_agent_session(
                     break
                 last_code_snippet = code
                 console.print("[cyan]Executing code in sandbox…[/cyan]")
-                action_id = f"{run_id}:turn:{turn}:block:{idx}"
+                action_id = make_action_id(run_id, turn, idx)
                 _emit_runner_event(
                     event_callback,
                     event_type="code_submitted",
@@ -1368,99 +1724,67 @@ def run_agent_session(
             )
             continue
 
+        # Interactive mode: after opening a work item, let the agent keep going
+        # for one extra turn instead of stopping to wait for the user.
+        if not is_auto and _opened_work_item and auto_continue_budget > 0:
+            auto_continue_budget -= 1
+            history.append(
+                {"role": "user", "content": "Please continue with the next step."}
+            )
+            if memory_manager:
+                memory_manager.add_message(
+                    "user", "Please continue with the next step."
+                )
+            continue
+
         # Interactive mode: prompt user for next action
         while True:
             stop_reason = session_stop_reason()
             if stop_reason is not None:
                 session_end_reason = stop_reason
                 break
-            prompt_text = "\n[bold]Next message ('benchmark' to run selected benchmark, 'exit' to quit)[/bold]"
+            prompt_text = (
+                "\n[bold]Next message ('/help' for commands, 'exit' to quit)[/bold]"
+            )
             try:
                 user_input = Prompt.ask(prompt_text, default="").strip()
             except (EOFError, KeyboardInterrupt):
                 user_input = "exit"
 
-            if user_input.lower() in {"exit", "quit"}:
+            if user_input.lower() in {"exit", "quit", "/exit", "/quit"}:
                 console.print("[bold yellow]Exiting session.[/bold yellow]")
                 session_end_reason = "user_exit"
                 break
 
-            # --- Quick commands for TODO management ---
-            if user_input.lower().startswith("/todo"):
-                todo_text = user_input[len("/todo") :].strip()
-                if todo_text:
-                    todo_item = artifacts.add_todo(todo_text, "user", turn)
-                    todo_message = (
-                        f"TODO added (#{todo_item.id}) by user: {todo_item.text}"
-                    )
-                    history.append({"role": "system", "content": todo_message})
-                    if memory_manager:
-                        memory_manager.add_message("system", todo_message)
-                    console.print(
-                        f"[green]Added TODO #[/green]{todo_item.id}: {todo_item.text}"
-                    )
-                else:
-                    console.print("[yellow]Usage: /todo <task>[/yellow]")
+            # --- User-typed REPL commands (not agent delegation, see comment
+            # above the detect_delegation() call earlier in this function) ---
+            command_ctx = UserCommandContext(
+                console=console,
+                run_id=run_id,
+                turn=turn,
+                history=history,
+                artifacts=artifacts,
+                agent_system=agent_system,
+                current_agent=current_agent,
+                llm_client=llm_client,
+                model_name=model_name,
+                memory_manager=memory_manager,
+                report_memory=report_memory,
+                benchmark_modules=benchmark_modules,
+                sandbox_manager=sandbox_manager,
+                output_dir=output_dir,
+                evaluator_runtime=evaluator_runtime,
+                work_items=cast(WorkItemStore, work_items),
+            )
+            if dispatch_user_command(user_input, command_ctx):
                 continue
-
-            if user_input.lower().startswith("/done"):
-                parts = user_input.split()
-                if len(parts) >= 2 and parts[1].isdigit():
-                    todo_id = int(parts[1])
-                    completed_item = artifacts.complete_todo(todo_id)
-                    if completed_item:
-                        todo_message = f"TODO completed (#{completed_item.id}) by user"
-                        history.append({"role": "system", "content": todo_message})
-                        if memory_manager:
-                            memory_manager.add_message("system", todo_message)
-                        console.print(f"[green]Marked TODO #[/green]{todo_id} as done")
-                    else:
-                        console.print(
-                            f"[yellow]No TODO found with id {todo_id}[/yellow]"
-                        )
-                else:
-                    console.print("[yellow]Usage: /done <id>[/yellow]")
-                continue
-
-            if user_input.lower() in {"/todos", "todos"}:
-                todo_items = [
-                    {
-                        "id": t.id,
-                        "text": t.text,
-                        "status": t.status,
-                        "added_by": t.added_by,
-                        "turn": t.turn,
-                    }
-                    for t in artifacts.list_todos()
-                ]
-                _render_todos(console, todo_items)
-                continue
-
-            if user_input.lower() == "benchmark":
-                if benchmark_modules:
-                    bench_output_dir = (
-                        output_dir if output_dir else get_default_runs_dir()
-                    )
-                    for bm_module in benchmark_modules:
-                        run_benchmark(
-                            console,
-                            sandbox_manager,
-                            bm_module,
-                            is_auto=False,
-                            output_dir=bench_output_dir,
-                        )
-                    continue
-                else:
-                    console.print(
-                        "[yellow]No benchmark modules were specified at startup.[/yellow]"
-                    )
-                    continue
 
             if user_input:
                 if memory_manager:
                     memory_manager.add_message("user", user_input)
                 history.append({"role": "user", "content": user_input})
                 display(console, "user", user_input)
+                auto_continue_budget = 1
             break
 
         # if we broke out of the inner prompt loop due to exit, stop the session
@@ -1478,6 +1802,10 @@ def run_agent_session(
             "driver_agent": driver_agent.name,
             "model": model_name,
             "model_parameters": dict(model_parameters or {}),
+            "evaluator_model": evaluator_runtime.model_name,
+            "evaluator_provider": evaluator_runtime.provider,
+            "evaluator_model_revision": evaluator_runtime.revision,
+            "evaluator_selection": dict(evaluator_runtime.selection),
             "agent_turns": turns_completed,
             "code_blocks_produced": code_block_count,
             "code_exec_attempts": code_exec_attempts,
