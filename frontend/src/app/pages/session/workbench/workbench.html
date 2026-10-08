@@ -122,6 +122,49 @@
           <div class="thumb"><app-artifact-card [artifact]="plot" /></div>
         }
 
+        <section class="act" aria-label="Message the agent about this block">
+          <div class="act-head">
+            <div class="lbl">Message the agent about this block</div>
+            <button type="button" class="btn btn-ghost btn-xs" [class.on]="ticketForm()?.origin === 'block'"
+              [attr.aria-expanded]="ticketForm()?.origin === 'block'" (click)="openTicket(b)">
+              <app-icon name="plus" [size]="12" /> Open ticket
+            </button>
+          </div>
+          @if (ticketForm()?.origin === 'block') {
+            <ng-container *ngTemplateOutlet="ticketTpl" />
+          }
+          <textarea class="act-input" rows="3"
+            [value]="composerText()" (input)="composerText.set($any($event.target).value)"
+            [disabled]="!canSend()"
+            [placeholder]="canSend() ? 'Ask about, or steer, this step…' : 'The agent is busy; you can write once it is idle.'"
+            aria-label="Message about this block"></textarea>
+          @if (references().length > 0) {
+            <div class="refs">
+              <span class="dim">Referenced:</span>
+              @for (r of references(); track referenceKey(r)) {
+                <button type="button" class="ref-chip" (click)="toggleReference(r)"
+                  [attr.aria-label]="'Remove reference ' + (r.kind === 'code' ? r.actionId : r.path)">
+                  {{ r.kind }} <span class="mono">{{ r.kind === 'code' ? r.actionId : r.path }}</span>
+                  <span aria-hidden="true">×</span>
+                </button>
+              }
+            </div>
+          } @else {
+            <p class="dim act-hint">Tick "reference" on code or artifact rows below to point the agent at them.</p>
+          }
+          <div class="act-foot">
+            @if (composerError(); as err) {
+              <span class="act-err" role="alert">{{ err }}</span>
+            } @else if (composerNotice(); as note) {
+              <span class="act-ok" role="status">{{ note }}</span>
+            }
+            <button type="button" class="btn btn-primary btn-xs"
+              [disabled]="!canSend() || !composerText().trim()" (click)="sendBlockMessage(b)">
+              <app-icon name="send" [size]="12" /> Send
+            </button>
+          </div>
+        </section>
+
         @if (b.work_item_id !== null) {
           <div class="disc" [class.on]="openSections().has('workitem')">
             <button type="button" class="dh" [attr.aria-expanded]="openSections().has('workitem')"
@@ -137,6 +180,74 @@
                     <dt>Status</dt><dd>{{ w.status }}</dd>
                     <dt>Owner</dt><dd>{{ w.owner }}</dd>
                   </dl>
+                  @if (w.anchor; as anchor) {
+                    <p class="anchor dim">{{ anchorLabel(anchor) }}</p>
+                  }
+
+                  <div class="wi-actions">
+                    @if (canHumanReview(w)) {
+                      <button type="button" class="btn btn-ghost btn-xs" [class.on]="reviewForm() === 'approve'"
+                        [attr.aria-expanded]="reviewForm() === 'approve'"
+                        [disabled]="reviewPending() !== null" (click)="openReviewForm('approve')">✓ Approve</button>
+                      <button type="button" class="btn btn-ghost btn-xs" [class.on]="reviewForm() === 'reject'"
+                        [attr.aria-expanded]="reviewForm() === 'reject'"
+                        [disabled]="reviewPending() !== null" (click)="openReviewForm('reject')">✗ Request changes</button>
+                    }
+                    <button type="button" class="btn btn-ghost btn-xs"
+                      [disabled]="!canRunReview(w) || reviewPending() !== null" (click)="runReview(b, w)"
+                      [title]="canRunReview(w) ? 'Ask the evaluator to review this work item' : 'Available for In review or Done items once the session can evaluate'">
+                      @if (reviewPending() === 'evaluator') {
+                        <app-icon name="loader" [size]="12" class="spin" /> Reviewing…
+                      } @else { Run review }
+                    </button>
+                  </div>
+                  @if (!canHumanReview(w)) {
+                    <p class="dim act-hint">
+                      @if (qcMode() === 'optional') { Approve and Request changes open once the item is Done. }
+                      @else if (qcMode() === 'required') { Approve and Request changes open once the item is In review. }
+                      @else { Approve and Request changes open once the item is In review or Done. }
+                    </p>
+                  }
+                  @if (reviewForm() === 'approve') {
+                    <div class="act-form">
+                      <textarea class="act-input" rows="2" [value]="reviewText()"
+                        (input)="reviewText.set($any($event.target).value)"
+                        placeholder="Note (optional)" aria-label="Approval note"></textarea>
+                      <div class="act-foot">
+                        <button type="button" class="btn btn-ghost btn-xs" (click)="reviewForm.set(null)"
+                          [disabled]="reviewPending() !== null">Cancel</button>
+                        <button type="button" class="btn btn-primary btn-xs" (click)="approve(b, w)"
+                          [disabled]="reviewPending() !== null">
+                          {{ reviewPending() === 'approve' ? 'Approving…' : 'Approve #' + w.id }}
+                        </button>
+                      </div>
+                    </div>
+                  } @else if (reviewForm() === 'reject') {
+                    <div class="act-form">
+                      <textarea class="act-input" rows="3" [value]="reviewText()"
+                        (input)="reviewText.set($any($event.target).value)"
+                        placeholder="What needs to change? (required)" aria-label="Reason for changes"></textarea>
+                      @if (!canSend()) {
+                        <p class="dim act-hint">The agent is busy. Sending back also messages the agent, so wait until it is idle.</p>
+                      }
+                      <div class="act-foot">
+                        <button type="button" class="btn btn-ghost btn-xs" (click)="reviewForm.set(null)"
+                          [disabled]="reviewPending() !== null">Cancel</button>
+                        <button type="button" class="btn btn-primary btn-xs" (click)="requestChanges(b, w)"
+                          [disabled]="reviewPending() !== null || !reviewText().trim() || !canSend()">
+                          {{ reviewPending() === 'reject' ? 'Sending back…' : 'Send back #' + w.id }}
+                        </button>
+                      </div>
+                    </div>
+                  }
+                  @if (blueprintError(); as err) {
+                    <p class="act-err" role="alert">{{ err }}. QC mode unknown.</p>
+                  }
+                  @if (reviewError(); as err) {
+                    <p class="act-err" role="alert">{{ err }}</p>
+                  } @else if (reviewNotice(); as note) {
+                    <p class="act-ok" role="status">{{ note }}</p>
+                  }
                   @if (w.completion_summary) {
                     <div class="lbl sub">Completion summary</div>
                     <p class="summary">{{ w.completion_summary }}</p>
@@ -179,29 +290,35 @@
               }
               @for (a of actions(); track a.actionId) {
                 <div class="row" [class.failed-row]="a.failed">
-                  @if (a.codeEvent; as ev) {
-                    <button type="button" class="row-head" [attr.aria-expanded]="openRows().has(a.actionId)"
-                      (click)="toggleRow(a.actionId)">
-                      <span class="ch" aria-hidden="true">▶</span>
-                      <span>{{ a.position }}.</span>
-                      <span class="row-status" [class.failed]="a.failed">
-                        <span aria-hidden="true">{{ a.failed ? '✗' : ev.result ? '✓' : '▶' }}</span>
-                        {{ a.failed ? 'failed' : ev.result ? 'ok' : 'running' }}
-                      </span>
-                      <span class="dim">turn {{ a.turn }} · {{ ev.submitted.agent_name }}@if (ev.result) { · {{ ev.result.duration_ms }}ms}</span>
-                    </button>
-                    @if (openRows().has(a.actionId)) {
-                      <div appCodeCard [codeEvent]="ev" (copySource)="copySource.emit($event)"></div>
+                  <div class="row-line">
+                    @if (a.codeEvent; as ev) {
+                      <button type="button" class="row-head" [attr.aria-expanded]="openRows().has(a.actionId)"
+                        (click)="toggleRow(a.actionId)">
+                        <span class="ch" aria-hidden="true">▶</span>
+                        <span>{{ a.position }}.</span>
+                        <span class="row-status" [class.failed]="a.failed">
+                          <span aria-hidden="true">{{ a.failed ? '✗' : ev.result ? '✓' : '▶' }}</span>
+                          {{ a.failed ? 'failed' : ev.result ? 'ok' : 'running' }}
+                        </span>
+                        <span class="dim">turn {{ a.turn }} · {{ ev.submitted.agent_name }}@if (ev.result) { · {{ ev.result.duration_ms }}ms}</span>
+                      </button>
+                    } @else {
+                      <div class="row-head static">
+                        <span>{{ a.position }}.</span>
+                        @if (a.failed) {
+                          <span class="row-status failed"><span aria-hidden="true">✗</span> failed</span>
+                        }
+                        <span class="mono dim">{{ a.actionId }}</span>
+                        <span class="dim">no code record in this view</span>
+                      </div>
                     }
-                  } @else {
-                    <div class="row-head static">
-                      <span>{{ a.position }}.</span>
-                      @if (a.failed) {
-                        <span class="row-status failed"><span aria-hidden="true">✗</span> failed</span>
-                      }
-                      <span class="mono dim">{{ a.actionId }}</span>
-                      <span class="dim">no code record in this view</span>
-                    </div>
+                    <ng-container *ngTemplateOutlet="rowTools; context: { ref: { kind: 'code', actionId: a.actionId }, block: b }" />
+                  </div>
+                  @if (ticketForm()?.origin === 'code:' + a.actionId) {
+                    <ng-container *ngTemplateOutlet="ticketTpl" />
+                  }
+                  @if (a.codeEvent && openRows().has(a.actionId)) {
+                    <div appCodeCard [codeEvent]="a.codeEvent" (copySource)="copySource.emit($event)"></div>
                   }
                 </div>
               } @empty {
@@ -220,21 +337,27 @@
             <div class="db">
               @for (e of artifactEntries(); track e.path) {
                 <div class="row">
-                  @if (e.artifact; as art) {
-                    <button type="button" class="row-head" [attr.aria-expanded]="openRows().has('art:' + e.path)"
-                      (click)="toggleRow('art:' + e.path)">
-                      <span class="ch" aria-hidden="true">▶</span>
-                      <span class="mono">{{ e.path }}</span>
-                      <span class="dim">{{ art.type }}</span>
-                    </button>
-                    @if (openRows().has('art:' + e.path)) {
-                      <app-artifact-card [artifact]="art" />
+                  <div class="row-line">
+                    @if (e.artifact; as art) {
+                      <button type="button" class="row-head" [attr.aria-expanded]="openRows().has('art:' + e.path)"
+                        (click)="toggleRow('art:' + e.path)">
+                        <span class="ch" aria-hidden="true">▶</span>
+                        <span class="mono">{{ e.path }}</span>
+                        <span class="dim">{{ art.type }}</span>
+                      </button>
+                    } @else {
+                      <div class="row-head static">
+                        <span class="mono">{{ e.path }}</span>
+                        <span class="dim">not in the artifact list yet</span>
+                      </div>
                     }
-                  } @else {
-                    <div class="row-head static">
-                      <span class="mono">{{ e.path }}</span>
-                      <span class="dim">not in the artifact list yet</span>
-                    </div>
+                    <ng-container *ngTemplateOutlet="rowTools; context: { ref: { kind: 'artifact', path: e.path }, block: b }" />
+                  </div>
+                  @if (ticketForm()?.origin === 'artifact:' + e.path) {
+                    <ng-container *ngTemplateOutlet="ticketTpl" />
+                  }
+                  @if (e.artifact && openRows().has('art:' + e.path)) {
+                    <app-artifact-card [artifact]="e.artifact" />
                   }
                 </div>
               } @empty {
@@ -259,3 +382,59 @@
     </aside>
   }
 </div>
+
+<!-- Reference checkbox + ticket button on a code or artifact row. -->
+<ng-template #rowTools let-ref="ref" let-block="block">
+  <span class="row-tools">
+    <label class="ref-check" [title]="'Reference this ' + ref.kind + ' in the message to the agent'">
+      <input type="checkbox" [checked]="isReferenced(ref)" (change)="toggleReference(ref)" />
+      reference
+    </label>
+    <button type="button" class="tool-btn"
+      [class.on]="ticketForm()?.origin === referenceKey(ref)"
+      [attr.aria-expanded]="ticketForm()?.origin === referenceKey(ref)"
+      [title]="'Open a ticket about this ' + ref.kind"
+      (click)="openTicket(block, ref.kind === 'code' ? { actionId: ref.actionId } : { path: ref.path })">
+      ticket
+    </button>
+  </span>
+</ng-template>
+
+<!-- The "Open ticket" form, rendered where it was opened. -->
+<ng-template #ticketTpl>
+  @if (ticketForm(); as form) {
+    <form class="act-form ticket" (submit)="$event.preventDefault(); submitTicket()" aria-label="Open ticket">
+      <div class="lbl">Open ticket</div>
+      <p class="anchor dim">{{ anchorLabel(form.anchor) }}</p>
+      <input class="act-input" type="text" [value]="ticketTitle()"
+        (input)="ticketTitle.set($any($event.target).value)" placeholder="Title" aria-label="Ticket title" />
+      <textarea class="act-input" rows="3" [value]="ticketBody()"
+        (input)="ticketBody.set($any($event.target).value)" placeholder="What should be done?"
+        aria-label="Ticket body"></textarea>
+      <label class="owner">
+        <span class="dim">Owner</span>
+        @if (blueprintError(); as err) {
+          <span class="act-err" role="alert">{{ err }}. No agents to choose from.</span>
+        } @else if (agentNames().length === 0) {
+          <span class="dim" role="status">Loading agents…</span>
+        } @else {
+          <select [value]="ticketOwner()" (change)="ticketOwner.set($any($event.target).value)" aria-label="Ticket owner">
+            <option value="" disabled [selected]="ticketOwner() === ''">Choose an agent</option>
+            @for (name of agentNames(); track name) {
+              <option [value]="name" [selected]="ticketOwner() === name">{{ name }}</option>
+            }
+          </select>
+        }
+      </label>
+      @if (ticketError(); as err) {
+        <p class="act-err" role="alert">Could not open the ticket: {{ err }}</p>
+      }
+      <div class="act-foot">
+        <button type="button" class="btn btn-ghost btn-xs" (click)="closeTicket()" [disabled]="ticketPending()">Cancel</button>
+        <button type="submit" class="btn btn-primary btn-xs" [disabled]="!canSubmitTicket()">
+          {{ ticketPending() ? 'Opening…' : 'Open ticket' }}
+        </button>
+      </div>
+    </form>
+  }
+</ng-template>

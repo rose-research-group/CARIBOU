@@ -453,7 +453,8 @@
     </main>
 
     @if (view() === 'workbench') {
-      <app-workbench role="main" aria-label="Workbench" (copySource)="copyToClipboard($event)" />
+      <app-workbench role="main" aria-label="Workbench" [canSend]="canSendMessage()"
+        (copySource)="copyToClipboard($event)" (sendMessage)="sendBlockMessage($event)" />
     }
 
     <!-- Sidebar -->
@@ -511,6 +512,9 @@
                 {{ workItemReviewing() ? 'Reviewing…' : 'Review' }}
               </button>
             </div>
+            @if (item.anchor; as anchor) {
+              <p class="work-item-meta">{{ anchorLabel(anchor) }}</p>
+            }
             <p>{{ item.body }}</p>
             @if (item.completion_summary) {
               <p><strong>Completion:</strong> {{ item.completion_summary }}</p>
@@ -751,7 +755,7 @@
         [value]="userInput()"
         (input)="userInput.set($any($event.target).value)"
         (keydown)="onKeyDown($event)"
-        [disabled]="isError() || isStopped() || isRunning() || waitingForAgent() || (session()?.mode === 'auto' && status() !== 'idle') || isInitializing() || isRecovering()"
+        [disabled]="!canSendMessage()"
         [attr.aria-label]="'Message input'"
         placeholder="{{
           isError()          ? 'Session ended with an error — see error log' :
@@ -773,7 +777,7 @@
         <button
           class="btn btn-primary send-btn"
           (click)="sendMessage()"
-          [disabled]="!userInput().trim() || isError() || isStopped() || isRunning() || waitingForAgent() || isInitializing() || isRecovering()"
+          [disabled]="!userInput().trim() || !canSendMessage()"
           aria-label="Send message">
           <app-icon name="send" />
           <span>Send</span>

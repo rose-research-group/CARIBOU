@@ -6,6 +6,7 @@ import {
   SessionForkRequest, SessionResumeRequest,
   EvaluatorModelState, EvaluatorModelUpdateRequest,
   WorkItemDetail, WorkItemReviewResult, WorkItemSummary, SessionBriefFields,
+  WorkItemCreateRequest, HumanReviewRequest,
 } from '../models/session.model';
 import { BlocksResponse } from '../models/block.model';
 
@@ -101,6 +102,19 @@ export class SessionService {
     return this.http.post<WorkItemReviewResult>(
       `api/sessions/${id}/work-items/${itemId}/review`,
       {},
+    );
+  }
+
+  /** Open a ticket as the user. Its `work_item_changed` event updates the store. */
+  createWorkItem(id: string, request: WorkItemCreateRequest): Observable<WorkItemDetail> {
+    return this.http.post<WorkItemDetail>(`api/sessions/${id}/work-items`, request);
+  }
+
+  /** Record the user's approve/reject. Its `work_item_changed` event updates the store. */
+  humanReviewWorkItem(id: string, itemId: number, request: HumanReviewRequest): Observable<WorkItemDetail> {
+    return this.http.post<WorkItemDetail>(
+      `api/sessions/${id}/work-items/${itemId}/human-review`,
+      request,
     );
   }
 

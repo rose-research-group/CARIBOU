@@ -310,7 +310,7 @@ button.rail { cursor: pointer; &:hover { color: var(--primary); } }
   min-width: 0;
   &.failed-row { border-color: var(--error-border); border-left: 3px solid var(--error); background: var(--error-bg); }
   /* Code and artifact cards keep their own styling inside the row. */
-  > :not(.row-head) { margin: 0 8px 8px; }
+  > :not(.row-line) { margin: 0 8px 8px; }
 }
 .row-head {
   display: flex;
@@ -331,6 +331,141 @@ button.rail { cursor: pointer; &:hover { color: var(--primary); } }
   .mono { overflow-wrap: anywhere; }
 }
 .row-status { font-weight: 600; color: var(--success); &.failed { color: var(--error); } }
+
+/* Row head plus its tools (reference checkbox, ticket), side by side. */
+.row-line {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  > .row-head { flex: 1; min-width: 0; width: auto; }
+}
+.row-tools {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 8px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.ref-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  input { margin: 0; accent-color: var(--primary); }
+  &:hover { color: var(--text); }
+}
+.tool-btn {
+  font: inherit;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  padding: 0 7px;
+  cursor: pointer;
+  &:hover, &.on { color: var(--primary-dark); border-color: var(--primary); }
+}
+
+/* ── Tier 1 actions: composer, work item actions, ticket form ── */
+.act {
+  margin-top: 12px;
+  padding: 10px 11px;
+  background: var(--bg);
+  border: 1px solid var(--border-light);
+  border-left: 3px solid var(--cividis-warm);
+  border-radius: 8px;
+}
+.act-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.act-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-top: 6px;
+  resize: vertical;
+  &:focus { outline: 2px solid var(--primary); outline-offset: 0; border-color: var(--primary); }
+  &:disabled { background: var(--surface); color: var(--text-muted); cursor: not-allowed; }
+}
+.act-hint { font-size: 0.75rem; margin: 6px 0 0; }
+.act-foot {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  > span { flex: 1; min-width: 0; }
+}
+.act-err { color: var(--error); font-size: 0.78rem; margin: 6px 0 0; overflow-wrap: anywhere; }
+.act-ok { color: var(--success); font-size: 0.78rem; margin: 6px 0 0; }
+.act-foot .act-err, .act-foot .act-ok { margin: 0; }
+.act-form {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-light);
+  border-radius: 7px;
+  &.ticket { border-left: 3px solid var(--primary); background: var(--primary-bg); }
+}
+.btn.on { color: var(--primary-dark); border-color: var(--primary); background: var(--primary-bg); }
+.refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 0.75rem;
+}
+.ref-chip {
+  font: inherit;
+  font-size: 0.72rem;
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  max-width: 100%;
+  background: var(--primary-bg);
+  border: 1px solid var(--cividis-warm);
+  border-radius: 999px;
+  padding: 0 8px;
+  color: var(--primary-dark);
+  cursor: pointer;
+  .mono { overflow-wrap: anywhere; font-size: 0.7rem; }
+  &:hover { border-color: var(--error); }
+}
+.wi-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.anchor { font-size: 0.78rem; margin: 4px 0 0; overflow-wrap: anywhere; }
+.owner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 0.8rem;
+  select {
+    font: inherit;
+    font-size: 0.8rem;
+    flex: 1;
+    min-width: 0;
+    padding: 3px 6px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+  }
+}
 
 .spin { animation: wb-spin 1s linear infinite; }
 @keyframes wb-spin { to { transform: rotate(360deg); } }

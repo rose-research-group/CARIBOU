@@ -358,7 +358,8 @@ export interface WorkItemSummary {
 
 export interface WorkItemDetail extends WorkItemSummary {
   schema_version: string;
-  run_id: string;
+  session_id: string;
+  origin_run_id: string;
   body: string;
   completion_summary: string | null;
   closed_turn: number | null;
@@ -367,6 +368,31 @@ export interface WorkItemDetail extends WorkItemSummary {
   reviews: WorkItemReview[];
   opening_commit: string | null;
   latest_commit: string | null;
+  /** Where a human-opened ticket came from; null for agent-opened items (and v2 items). */
+  anchor: WorkItemAnchor | null;
+}
+
+/** The workbench location a ticket was opened from. At least one field is non-null. */
+export interface WorkItemAnchor {
+  block_id: string | null;
+  action_id: string | null;
+  artifact_path: string | null;
+}
+
+/** `POST /api/sessions/{id}/work-items`: a ticket opened by the user. */
+export interface WorkItemCreateRequest {
+  title: string;
+  body: string;
+  /** An agent in the session's blueprint. */
+  owner: string;
+  anchor: WorkItemAnchor | null;
+}
+
+/** `POST /api/sessions/{id}/work-items/{n}/human-review`. */
+export interface HumanReviewRequest {
+  verdict: 'approve' | 'reject';
+  /** Optional note for approve; required (non-empty) for reject. */
+  assessment: string;
 }
 
 export interface WorkItemTransition {

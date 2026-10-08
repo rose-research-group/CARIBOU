@@ -29,6 +29,7 @@ import { TooltipDirective } from '../../shared/directives/tooltip.directive';
 import { navigateTabToSession, reserveNewTab } from '../../core/utils/app-navigation';
 import { WorkbenchComponent } from './workbench/workbench';
 import { SessionView, ViewToggleComponent } from './workbench/view-toggle';
+import { anchorLabel } from './workbench/block-actions';
 
 const COMPACT_AFTER_ITEMS = 40;
 const VISIBLE_RECENT_ITEMS = 20;
@@ -56,6 +57,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   @ViewChild('chatPanel') chatPanel!: ElementRef<HTMLElement>;
   @ViewChild('messageInput') messageInput!: ElementRef<HTMLTextAreaElement>;
   readonly COMPACT_AFTER_ITEMS = COMPACT_AFTER_ITEMS;
+  readonly anchorLabel = anchorLabel;
 
   private route = inject(ActivatedRoute);
   private router = inject(Router);
@@ -150,6 +152,9 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   isError = computed(() => this.status() === 'error');
   isInitializing = computed(() => this.status() === 'initializing');
   isRecovering = computed(() => this.status() === 'recovering');
+  // Whether the session takes a user message now: the chat input and the
+  // workbench's block composer both use this.
+  canSendMessage = computed(() => this.status() === 'idle' && !this.waitingForAgent());
   developerMode = computed(() => this.prefsSvc.prefs().developerMode);
   recoveryStages = [
     'Safe checkpoint',
@@ -484,15 +489,32 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   sendMessage(): void {
     const content = this.userInput().trim();
     if (!content) return;
-    const s = this.session();
-    if (!s || s.status !== 'idle' || this.waitingForAgent()) return;
+    if (!this.canSendMessage()) return;
+    this.submitUserMessage(content);
+    this.userInput.set('');
+  }
 
-    if (s.status === 'idle' && s.current_turn === 0 && s.mode === 'interactive') {
+  /**
+   * A block-scoped message from the workbench. It goes through the same path
+   * as a typed message, so it shows in the chat. The workbench only emits
+   * while `canSendMessage()` holds, so a refusal here is a bug: raise it.
+   */
+  sendBlockMessage(content: string): void {
+    if (!this.canSendMessage()) {
+      throw new Error('The session cannot take a message right now.');
+    }
+    this.submitUserMessage(content);
+  }
+
+  /** The one send path for user messages (chat input and workbench). */
+  private submitUserMessage(content: string): void {
+    const s = this.session();
+    if (!s) throw new Error('No session to send a message to.');
+    if (s.current_turn === 0 && s.mode === 'interactive') {
       this.stream.startRun(content);
     } else {
       this.stream.sendUserMessage(content);
     }
-    this.userInput.set('');
     this.pushHistory(content);
     this.store.sendUserMessage(s.id, s.current_turn + 1, content);
     this.shouldScrollToBottom = true;

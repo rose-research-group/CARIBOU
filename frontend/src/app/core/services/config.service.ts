@@ -11,6 +11,7 @@ import {
   PythonEnvironmentCandidate,
   ServerStatus,
 } from '../models/session.model';
+import { BlueprintContent } from '../models/blueprint.model';
 
 @Injectable({ providedIn: 'root' })
 export class ConfigService {
@@ -72,6 +73,11 @@ export class ConfigService {
     return this.http
       .get<AgentBlueprint[]>('api/config/blueprints')
       .pipe(tap((b) => this.blueprints.set(b)));
+  }
+
+  /** One blueprint's full content (agents, work-item policy). */
+  getBlueprintContent(name: string): Observable<BlueprintContent> {
+    return this.http.get<BlueprintContent>(`api/config/blueprints/${encodeURIComponent(name)}`);
   }
 
   getBackends(): Observable<LLMBackend[]> {
