@@ -716,6 +716,34 @@ class HeartbeatPayload(DomainModel):
     message: Optional[NonEmptyStr] = None
 
 
+class WorkItemChangedPayload(DomainModel):
+    """A work-item mutation, carrying the full committed item snapshot.
+
+    ``item_id``, ``status`` and ``owner`` are promoted for querying; they must
+    agree with the snapshot so the two can never disagree in the journal.
+    """
+
+    item_id: NonNegativeInt
+    status: NonEmptyStr
+    owner: NonEmptyStr
+    item: Dict[StrictStr, JsonValue]
+
+    @model_validator(mode="after")
+    def validate_snapshot_agreement(self) -> "WorkItemChangedPayload":
+        for field_name, snapshot_key in (
+            ("item_id", "id"),
+            ("status", "status"),
+            ("owner", "owner"),
+        ):
+            if snapshot_key not in self.item:
+                raise ValueError(f"work item snapshot is missing {snapshot_key!r}")
+            if self.item[snapshot_key] != getattr(self, field_name):
+                raise ValueError(
+                    f"work item {field_name} does not match snapshot {snapshot_key!r}"
+                )
+        return self
+
+
 EventPayload = Union[
     StateTransitionPayload,
     MessagePayload,
@@ -730,6 +758,7 @@ EventPayload = Union[
     BudgetRecordedPayload,
     FailureRecordedPayload,
     HeartbeatPayload,
+    WorkItemChangedPayload,
 ]
 
 
@@ -765,6 +794,7 @@ class Event(DomainModel):
             EventType.budget_recorded: BudgetRecordedPayload,
             EventType.failure_recorded: FailureRecordedPayload,
             EventType.heartbeat: HeartbeatPayload,
+            EventType.work_item_changed: WorkItemChangedPayload,
         }
         if not isinstance(self.payload, expected[self.event_type]):
             raise ValueError(

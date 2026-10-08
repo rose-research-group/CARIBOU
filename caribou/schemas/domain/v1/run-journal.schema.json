@@ -852,6 +852,9 @@
             },
             {
               "$ref": "#/$defs/HeartbeatPayload"
+            },
+            {
+              "$ref": "#/$defs/WorkItemChangedPayload"
             }
           ],
           "title": "Payload"
@@ -917,7 +920,8 @@
         "checkpoint_created",
         "budget_recorded",
         "failure_recorded",
-        "heartbeat"
+        "heartbeat",
+        "work_item_changed"
       ],
       "title": "EventType",
       "type": "string"
@@ -1793,6 +1797,42 @@
       ],
       "title": "TopologyKind",
       "type": "string"
+    },
+    "WorkItemChangedPayload": {
+      "additionalProperties": false,
+      "description": "A work-item mutation, carrying the full committed item snapshot.\n\n``item_id``, ``status`` and ``owner`` are promoted for querying; they must\nagree with the snapshot so the two can never disagree in the journal.",
+      "properties": {
+        "item": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Item",
+          "type": "object"
+        },
+        "item_id": {
+          "minimum": 0,
+          "title": "Item Id",
+          "type": "integer"
+        },
+        "owner": {
+          "minLength": 1,
+          "title": "Owner",
+          "type": "string"
+        },
+        "status": {
+          "minLength": 1,
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_id",
+        "status",
+        "owner",
+        "item"
+      ],
+      "title": "WorkItemChangedPayload",
+      "type": "object"
     }
   },
   "$id": "https://caribou.dev/schemas/domain/v1/run-journal.schema.json",
