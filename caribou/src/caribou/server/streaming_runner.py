@@ -1284,9 +1284,25 @@ async def run_session_async(
     loop.call_soon_threadsafe() internally if needed.
     """
     loop = asyncio.get_running_loop()
+    # event_callback runs on the loop, where asyncio would only log what it
+    # raises. Hold the first failure and raise it in the runner thread on its
+    # next emit, so the runner's fatal RUNNER_ERROR path reports it.
+    callback_failures: List[BaseException] = []
+
+    def _deliver(event: Dict) -> None:
+        try:
+            event_callback(event)
+        except BaseException as exc:
+            callback_failures.append(exc)
+            raise
 
     def _emit(event: Dict) -> None:
-        loop.call_soon_threadsafe(event_callback, event)
+        if callback_failures:
+            failure = callback_failures.pop(0)
+            raise RuntimeError(
+                f"Session event handling failed: {failure}"
+            ) from failure
+        loop.call_soon_threadsafe(_deliver, event)
 
     await asyncio.to_thread(
         run_session_sync,
@@ -1319,3 +1335,9 @@ async def run_session_async(
         brief=brief,
         known_artifacts=known_artifacts,
     )
+    # Deliveries queued before the thread finished have run by now (the
+    # loop runs call_soon_threadsafe callbacks in order); surface any failure
+    # that came after the runner's last emit.
+    if callback_failures:
+        failure = callback_failures.pop(0)
+        raise RuntimeError(f"Session event handling failed: {failure}") from failure
