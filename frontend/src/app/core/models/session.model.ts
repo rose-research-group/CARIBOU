@@ -75,6 +75,19 @@ export interface Session {
   brief_mode: 'off' | 'context' | 'seed_item' | null;
   phase: 'briefing' | 'execution';
   brief: SessionBriefFields | null;
+  /** Messages queued while the agent was busy, in delivery order. */
+  message_queue: QueuedMessage[];
+}
+
+/** A user message waiting on the server for the agent to become ready. */
+export interface QueuedMessage {
+  /** uuid4 hex. */
+  id: string;
+  content: string;
+  /** The workbench block the message focuses, or null for a chat message. */
+  block_id: string | null;
+  /** ISO 8601. */
+  created_at: string;
 }
 
 export interface SessionBriefFields {

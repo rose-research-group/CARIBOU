@@ -1,0 +1,33 @@
+@let items = queue();
+<div class="queue-shell" [class.open]="items.length > 0" [attr.aria-hidden]="items.length === 0">
+  <div class="queue-clip">
+    <section class="queue-bar" aria-label="Queued messages">
+      <div class="queue-head" role="status">
+        <app-icon name="clock" [size]="12" aria-hidden="true" />
+        Queued ({{ items.length }}) · sends when the agent is ready
+      </div>
+      <ol class="queue-list">
+        @for (item of items; track item.id) {
+          <li class="queue-item">
+            <span class="preview" [title]="item.content">{{ item.content }}</span>
+            @if (item.block_id) {
+              <span class="block-tag">re: {{ item.block_id }}</span>
+            }
+            <button type="button" class="remove"
+              [disabled]="pendingRemovals().has(item.id)"
+              [attr.aria-busy]="pendingRemovals().has(item.id)"
+              [title]="pendingRemovals().has(item.id) ? 'Removing…' : 'Remove queued message'"
+              aria-label="Remove queued message"
+              (click)="remove.emit(item.id)">
+              @if (pendingRemovals().has(item.id)) {
+                <app-icon name="loader" [size]="12" class="spin" />
+              } @else {
+                <span aria-hidden="true">✕</span>
+              }
+            </button>
+          </li>
+        }
+      </ol>
+    </section>
+  </div>
+</div>

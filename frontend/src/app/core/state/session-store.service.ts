@@ -5,21 +5,24 @@ import { AgentStreamService } from '../services/agent-stream.service';
 import { SessionCacheService } from '../services/session-cache.service';
 import { dedupeArtifactsByPath } from '../utils/artifacts';
 import {
-  Artifact, Message, SessionBriefFields, WorkItemDetail, WorkItemSummary,
+  Artifact, Message, QueuedMessage, SessionBriefFields, WorkItemDetail, WorkItemSummary,
 } from '../models/session.model';
 import { Block } from '../models/block.model';
 import {
   AgentEvent, AgentEventEnvelope, AgentSwitchData, BlockChangedData, BriefDraftData,
-  CodeResultData, CodeSubmittedData, ErrorData, MessageCompleteData,
+  CodeResultData, CodeSubmittedData, ErrorData, MessageCompleteData, MessageQueueChangedData,
   RecoveryCompletedData, StatusChangeData, SystemMessageData, WorkItemChangedData,
 } from '../models/events.model';
 import { ApplyOutcome, ChatItem, ErrorRecord, StatusEntry } from './session-state.model';
 import {
   addRecovery, appendCodeSubmitted, appendDelegation, appendStatus, attachCodeResult,
   errorRecordFrom, mergeBlockSnapshot, mergeServerMessages, pendingUserMessage,
-  systemMessageFrom, upsertBlock, upsertMessage, upsertWorkItem, withPendingCode,
-  withoutPendingCode,
+  prunePendingRemovals, replaceMessageQueue, systemMessageFrom, upsertBlock, upsertMessage,
+  upsertWorkItem, withPendingCode, withoutPendingCode,
 } from './reducers';
+import {
+  ActivityMark, NO_ACTIVITY, parseServerTime, reduceActivityMark,
+} from '../../pages/session/workbench/activity';
 
 const CACHE_STALE_MS = 5 * 60 * 1000;
 
@@ -70,6 +73,17 @@ export class SessionStore {
   private _workItemDetails = signal<Map<number, WorkItemDetail>>(new Map());
   private _workItemDetailErrors = signal<Map<number, string>>(new Map());
   private workItemDetailsRequested = new Set<number>();
+  // Messages the server holds until the agent is ready (`message_queue_changed`
+  // is the source of truth), and the ids whose removal was asked for but not
+  // yet confirmed by one.
+  private _messageQueue = signal<QueuedMessage[]>([]);
+  private _pendingRemovals = signal<Set<string>>(new Set());
+  // The workbench's working indicator: the latest notable event of the turn,
+  // when the agent started working (ms), and the block a message sent from
+  // this page focuses (null for chat messages and once the agent is idle).
+  private _activityMark = signal<ActivityMark>(NO_ACTIVITY);
+  private _workingSince = signal<number | null>(null);
+  private _inFlightBlockId = signal<string | null>(null);
 
   readonly chatItems = this._chatItems.asReadonly();
   readonly artifacts = this._artifacts.asReadonly();
@@ -94,6 +108,13 @@ export class SessionStore {
   readonly blocksError = this._blocksError.asReadonly();
   readonly workItemDetails = this._workItemDetails.asReadonly();
   readonly workItemDetailErrors = this._workItemDetailErrors.asReadonly();
+  /** Queued user messages, in delivery order. */
+  readonly messageQueue = this._messageQueue.asReadonly();
+  /** Queued message ids with a removal request in flight. */
+  readonly pendingRemovals = this._pendingRemovals.asReadonly();
+  readonly activityMark = this._activityMark.asReadonly();
+  readonly workingSince = this._workingSince.asReadonly();
+  readonly inFlightBlockId = this._inFlightBlockId.asReadonly();
   /** The accepted (frozen) brief: on the Session record once briefing is over. */
   readonly frozenBrief = computed(() => {
     const s = this.sessionSvc.currentSession();
@@ -152,6 +173,7 @@ export class SessionStore {
   apply(event: AgentEvent): ApplyOutcome {
     const outcome: ApplyOutcome = { scroll: false, nonFatalError: null, status: null };
     const replayed = event.seq <= this.hydratedSeq;
+    this._activityMark.update(mark => reduceActivityMark(mark, event));
     switch (event.type) {
       case 'message_complete': {
         const d = event.data as MessageCompleteData;
@@ -224,6 +246,10 @@ export class SessionStore {
       }
       case 'error': {
         this._waitingForAgent.set(false);
+        // A removal the server refused (e.g. QUEUED_MESSAGE_GONE) is settled;
+        // the error itself is recorded below like any other.
+        this._pendingRemovals.set(new Set());
+        this._inFlightBlockId.set(null);
         if (replayed) break;
         const ev = event as AgentEventEnvelope<ErrorData>;
         const record = errorRecordFrom(ev);
@@ -238,6 +264,11 @@ export class SessionStore {
         if (d.status === 'idle' || d.status === 'stopped' || d.status === 'error') {
           this._waitingForAgent.set(false);
           this._cancellingResponse.set(false);
+          this._workingSince.set(null);
+          this._inFlightBlockId.set(null);
+        } else if (this._workingSince() === null &&
+            (d.status === 'running' || d.status === 'initializing' || d.status === 'recovering')) {
+          this._workingSince.set(parseServerTime(event.timestamp));
         }
         outcome.status = d.status;
         if (replayed) break;
@@ -261,6 +292,11 @@ export class SessionStore {
         this._blocksRecorded.set(true);
         break;
       }
+      case 'message_queue_changed': {
+        const d = event.data as MessageQueueChangedData;
+        this.setMessageQueue(d.queue);
+        break;
+      }
       // token / recovery_progress are reduced by AgentStreamService and the
       // Session record; metrics_result and pong carry no page state.
     }
@@ -277,6 +313,27 @@ export class SessionStore {
     if (merged === null) return false;
     this._chatItems.set(merged);
     return true;
+  }
+
+  /**
+   * The queue from the session record on load. Call it before the stream
+   * connects: replayed `message_queue_changed` events then supersede it.
+   */
+  hydrateMessageQueue(queue: QueuedMessage[]): void {
+    if (!Array.isArray(queue)) {
+      throw new Error('The session record has no message_queue list.');
+    }
+    this.setMessageQueue(queue);
+  }
+
+  /** Mark a queued message's removal as sent; the server's next queue settles it. */
+  markRemovalPending(id: string): void {
+    this._pendingRemovals.update(ids => new Set(ids).add(id));
+  }
+
+  private setMessageQueue(queue: QueuedMessage[]): void {
+    this._messageQueue.update(current => replaceMessageQueue(current, queue));
+    this._pendingRemovals.update(ids => prunePendingRemovals(ids, queue));
   }
 
   refreshArtifacts(): void {
@@ -326,9 +383,14 @@ export class SessionStore {
     this._selectedWorkItem.set(item);
   }
 
-  /** Show the user's message optimistically and wait for the agent. */
-  sendUserMessage(sessionId: string, turn: number, content: string): void {
+  /**
+   * Show the user's message optimistically and wait for the agent. `blockId`
+   * is the workbench block the message focuses, if any.
+   */
+  sendUserMessage(sessionId: string, turn: number, content: string, blockId: string | null = null): void {
     this._waitingForAgent.set(true);
+    this._inFlightBlockId.set(blockId);
+    if (this._workingSince() === null) this._workingSince.set(Date.now());
     this._chatItems.update(items => [...items, pendingUserMessage(sessionId, turn, content)]);
   }
 

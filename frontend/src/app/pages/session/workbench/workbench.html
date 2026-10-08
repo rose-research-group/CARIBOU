@@ -1,4 +1,4 @@
-<div class="wb" [class.has-panel]="selected() || missingId()">
+<div class="wb" [class.has-panel]="selected() || gateBlock() || missingId()">
   <div class="wb-center">
     @if (brief(); as b) {
       <section class="wb-goal" aria-label="Goal">
@@ -35,51 +35,106 @@
         </p>
       } @else if (blocksRecorded() === false) {
         <p class="wb-state">This session was recorded before blocks existed. Switch to Chat to see its history.</p>
-      } @else if (blocks().length === 0) {
+      } @else if (blocks().length === 0 && !working()) {
         <p class="wb-state">No code has run yet.</p>
       } @else {
-        <div class="flow" [style.grid-template-columns]="gridColumns()">
+        <div class="flow" [class.branch-view]="isBranchView()" [style.grid-template-columns]="gridColumns()">
           <button type="button" class="rail" [class.on]="plotsOpen()" style="grid-row: 1; grid-column: 1"
             [attr.aria-expanded]="plotsOpen()" (click)="plotsOpen.set(!plotsOpen())"
             [title]="plotsOpen() ? 'Fold the plots row' : 'Unfold the plots row'">
             <span class="ch" aria-hidden="true">▶</span>Plots ({{ plotCount() }})
           </button>
-          <span class="rail fixed" style="grid-row: 2; grid-column: 1">Steps</span>
 
-          @for (b of blocks(); track b.block_id; let i = $index) {
-            @if (plotsOpen()) {
-              @if (plotFor(b); as plot) {
-                <button type="button" class="rd" [class.sel]="selectedId() === b.block_id"
-                  [style.grid-column]="i + 2" style="grid-row: 1"
-                  [attr.aria-label]="'Plot ' + plot.filename + ' from ' + b.title"
-                  (click)="select(b)">
-                  <span class="t">{{ plot.filename }}</span>
-                  <img [src]="previewUrl(plot)" [alt]="plot.filename" loading="lazy" />
-                </button>
+          @if (isBranchView()) {
+            <span class="rail fixed parent-rail" style="grid-row: 2; grid-column: 1" [title]="parentRowLabel()">{{ parentRowLabel() }}</span>
+            @if (branchFlow(); as flow) {
+              @if (flow.ok) {
+                @for (c of flow.parent; track c.block.block_id) {
+                  <button type="button" class="blk pblk s-{{ c.block.status }}" [class.replaced]="c.replaced"
+                    [attr.data-parent-block-id]="c.block.block_id"
+                    [class.implicit]="c.block.implicit" [class.hl]="highlightedParentId() === c.block.block_id"
+                    [style.grid-column]="c.column + 1" style="grid-row: 2"
+                    [attr.aria-label]="c.block.block_id + ' ' + c.block.title + ' in the parent session' + (c.replaced ? ', replaced by this branch' : '') + '. Opens the parent workbench.'"
+                    (click)="openParentBlock(c.block)">
+                    <span class="n">
+                      <span class="glyph" aria-hidden="true">{{ STATUS_GLYPH[c.block.status] }}</span>
+                      <span class="title">{{ c.block.title }}</span>
+                    </span>
+                    <span class="tag">{{ STATUS_LABEL[c.block.status] }}@if (c.replaced) {<span class="inh"> · replaced</span>}</span>
+                    <span class="m">{{ c.block.block_id }} · {{ turnSpan(c.block) }}</span>
+                  </button>
+                }
+                <div class="fork" [style.grid-column]="flow.forkColumn + 1" style="grid-row: 3" aria-hidden="true">
+                  <span class="fork-line"></span>
+                  <span class="fork-label">{{ forkLabel() }}</span>
+                </div>
               } @else {
-                <span class="rd-none" [style.grid-column]="i + 2" style="grid-row: 1">no plot</span>
+                <p class="wb-state error parent-error" role="alert" style="grid-row: 2; grid-column: 2 / -1">
+                  Parent flow unavailable: {{ flow.error }}
+                </p>
+              }
+            } @else {
+              <p class="wb-state parent-error" role="status" style="grid-row: 2; grid-column: 2 / -1">
+                <app-icon name="loader" [size]="14" class="spin" /> Loading the parent flow…
+              </p>
+            }
+          }
+
+          <span class="rail fixed" [style.grid-row]="stepRow()" style="grid-column: 1">{{ isBranchView() ? 'This branch' : 'Steps' }}</span>
+
+          @for (c of cells(); track c.block.block_id) {
+            @let b = c.block;
+            @if (plotsOpen()) {
+              @if (plotsFor(b).length > 0) {
+                <div class="rd" [class.sel]="selectedId() === b.block_id"
+                  [style.grid-column]="c.column + 1" style="grid-row: 1">
+                  <app-plot-carousel [plots]="plotsFor(b)" [resetKey]="b.block_id" [compact]="true"
+                    [label]="'Plots from ' + b.title" />
+                </div>
+              } @else {
+                <span class="rd-none" [style.grid-column]="c.column + 1" style="grid-row: 1">no plot</span>
               }
             }
-            <button type="button" class="blk s-{{ b.status }}"
-              [class.implicit]="b.implicit" [class.inherited]="isInherited(b)" [class.sel]="selectedId() === b.block_id"
-              [class.last]="i === blocks().length - 1"
-              [style.grid-column]="i + 2" style="grid-row: 2"
-              [attr.aria-pressed]="selectedId() === b.block_id"
-              (click)="select(b)">
-              <span class="n">
-                <span class="glyph" aria-hidden="true">{{ STATUS_GLYPH[b.status] }}</span>
-                <span class="title">{{ b.title }}</span>
-              </span>
-              <span class="tag">{{ STATUS_LABEL[b.status] }}@if (isInherited(b)) {<span class="inh"> · inherited</span>}</span>
-              <span class="wi">{{ workItemLabel(b) }}</span>
-              <span class="m">{{ b.agents.join(', ') }}</span>
-              <span class="m">{{ turnSpan(b) }}</span>
-              <span class="m">
-                {{ plural(b.action_ids.length, 'action') }}@if (b.failed_action_ids.length > 0) {<span class="failed"> · {{ b.failed_action_ids.length }} failed</span>} · {{ plural(b.artifact_paths.length, 'artifact') }}
-              </span>
+            @let gate = gateFor(b);
+            <div class="step" [attr.data-block-id]="b.block_id" [style.grid-column]="c.column + 1" [style.grid-row]="stepRow()"
+              [class.plain-next]="!gate && continuesAfter(c)">
+              <button type="button" class="blk s-{{ b.status }}"
+                [class.implicit]="b.implicit" [class.inherited]="isInherited(b)" [class.sel]="selectedId() === b.block_id"
+                [attr.aria-pressed]="selectedId() === b.block_id"
+                (click)="select(b)">
+                <span class="n">
+                  <span class="glyph" aria-hidden="true">{{ STATUS_GLYPH[b.status] }}</span>
+                  <span class="title">{{ b.title }}</span>
+                </span>
+                <span class="tag">{{ STATUS_LABEL[b.status] }}@if (isInherited(b)) {<span class="inh"> · inherited</span>}</span>
+                <span class="wi">{{ workItemLabel(b) }}</span>
+                <span class="m">{{ b.agents.join(', ') }}</span>
+                <span class="m">{{ turnSpan(b) }}</span>
+                <span class="m">
+                  {{ plural(b.action_ids.length, 'action') }}@if (b.failed_action_ids.length > 0) {<span class="failed"> · {{ b.failed_action_ids.length }} failed</span>} · {{ plural(b.artifact_paths.length, 'artifact') }}
+                </span>
+                @if (inFlightBlockId() === b.block_id) {
+                  <span class="on-block">
+                    <app-ghost-card variant="inline" [agent]="currentAgent()" [activity]="activity()" [since]="workingSince()" />
+                  </span>
+                }
+              </button>
+              @if (gate) {
+                <app-gate-node [block]="b" [gate]="gate" [selected]="selectedGateId() === b.block_id"
+                  [continues]="continuesAfter(c)" [retryNext]="retryNext(c, gate)" [inherited]="isInherited(b)"
+                  (pick)="selectGate(b)" />
+              }
+            </div>
+          }
+          @if (working()) {
+            <button type="button" class="ghost" [style.grid-column]="ghostColumn() + 1" [style.grid-row]="stepRow()"
+              [class.inert]="!lastCell()" [attr.aria-disabled]="!lastCell()"
+              [title]="lastCell() ? 'Select the latest step' : 'The agent is working; no step has been recorded yet'"
+              (click)="selectLatest()">
+              <app-ghost-card [agent]="currentAgent()" [activity]="activity()" [since]="workingSince()" [queued]="queuedCount()" />
             </button>
           }
-          <app-paths-row [firstRow]="3" />
+          <app-paths-row [firstRow]="stepRow() + 1" />
         </div>
         <p class="hint">Select a step for its work item, code and artifacts. Fold the plots and paths rows from their labels.</p>
       }
@@ -102,6 +157,11 @@
         </button>
       </div>
       <div class="ibody">
+        @if (inFlightBlockId() === b.block_id) {
+          <div class="inflight">
+            <app-ghost-card variant="inline" [agent]="currentAgent()" [activity]="activity()" [since]="workingSince()" />
+          </div>
+        }
         @if (isInherited(b)) {
           <p class="inherited-note" role="note">
             <strong>Inherited.</strong> This step is {{ inheritedLabel(b) }}. It is read-only in this branch.
@@ -125,8 +185,10 @@
           </div>
         }
 
-        @if (selectedPlot(); as plot) {
-          <div class="thumb"><app-artifact-card [artifact]="plot" /></div>
+        @if (selectedPlots().length > 0) {
+          <div class="thumb">
+            <app-plot-carousel [plots]="selectedPlots()" [resetKey]="b.block_id" [label]="'Plots from ' + b.title" />
+          </div>
         }
 
         @if (!isInherited(b)) {
@@ -143,8 +205,10 @@
           }
           <textarea class="act-input" rows="3"
             [value]="composerText()" (input)="composerText.set($any($event.target).value)"
-            [disabled]="!canSend()"
-            [placeholder]="canSend() ? 'Ask about, or steer, this step…' : unavailableReason()"
+            [disabled]="!canWrite()"
+            [placeholder]="canSend() ? 'Ask about, or steer, this step…' :
+              canQueue() ? 'The agent is busy; your message is queued and sent when it is ready…' :
+              unavailableReason()"
             aria-label="Message about this block"></textarea>
           @if (references().length > 0) {
             <div class="refs">
@@ -167,8 +231,12 @@
               <span class="act-ok" role="status">{{ note }}</span>
             }
             <button type="button" class="btn btn-primary btn-xs"
-              [disabled]="!canSend() || !composerText().trim()" (click)="sendBlockMessage(b)">
-              <app-icon name="send" [size]="12" /> Send
+              [disabled]="!canWrite() || !composerText().trim()" (click)="sendBlockMessage(b)">
+              @if (canSend()) {
+                <app-icon name="send" [size]="12" /> Send
+              } @else {
+                <app-icon name="clock" [size]="12" /> Queue
+              }
             </button>
           </div>
         </section>
@@ -197,91 +265,16 @@
                     <p class="anchor dim">{{ anchorLabel(anchor) }}</p>
                   }
 
-                  @if (!isInherited(b)) {
-                  <div class="wi-actions">
-                    @if (canHumanReview(w)) {
-                      <button type="button" class="btn btn-ghost btn-xs" [class.on]="reviewForm() === 'approve'"
-                        [attr.aria-expanded]="reviewForm() === 'approve'"
-                        [disabled]="reviewPending() !== null" (click)="openReviewForm('approve')">✓ Approve</button>
-                      <button type="button" class="btn btn-ghost btn-xs" [class.on]="reviewForm() === 'reject'"
-                        [attr.aria-expanded]="reviewForm() === 'reject'"
-                        [disabled]="reviewPending() !== null" (click)="openReviewForm('reject')">✗ Request changes</button>
-                    }
-                    <button type="button" class="btn btn-ghost btn-xs"
-                      [disabled]="!canRunReview(w) || reviewPending() !== null" (click)="runReview(b, w)"
-                      [title]="canRunReview(w) ? 'Ask the evaluator to review this work item' : 'Available for In review or Done items once the session can evaluate'">
-                      @if (reviewPending() === 'evaluator') {
-                        <app-icon name="loader" [size]="12" class="spin" /> Reviewing…
-                      } @else { Run review }
-                    </button>
-                  </div>
-                  @if (!canHumanReview(w)) {
-                    <p class="dim act-hint">
-                      @if (qcMode() === 'optional') { Approve and Request changes open once the item is Done. }
-                      @else if (qcMode() === 'required') { Approve and Request changes open once the item is In review. }
-                      @else { Approve and Request changes open once the item is In review or Done. }
+                  @if (gateFor(b); as g) {
+                    <p class="gate-line">
+                      <span class="gate-chip g-{{ g.state }}" aria-hidden="true">{{ gateGlyph(g) }}</span>
+                      Review gate: {{ GATE_LABEL[g.state] }}@if (g.note) {<span class="dim"> · {{ g.note }}</span>}
+                      <button type="button" class="link-btn" (click)="openGate(b)">Open gate</button>
                     </p>
-                  }
-                  @if (reviewForm() === 'approve') {
-                    <div class="act-form">
-                      <textarea class="act-input" rows="2" [value]="reviewText()"
-                        (input)="reviewText.set($any($event.target).value)"
-                        placeholder="Note (optional)" aria-label="Approval note"></textarea>
-                      <div class="act-foot">
-                        <button type="button" class="btn btn-ghost btn-xs" (click)="reviewForm.set(null)"
-                          [disabled]="reviewPending() !== null">Cancel</button>
-                        <button type="button" class="btn btn-primary btn-xs" (click)="approve(b, w)"
-                          [disabled]="reviewPending() !== null">
-                          {{ reviewPending() === 'approve' ? 'Approving…' : 'Approve #' + w.id }}
-                        </button>
-                      </div>
-                    </div>
-                  } @else if (reviewForm() === 'reject') {
-                    <div class="act-form">
-                      <textarea class="act-input" rows="3" [value]="reviewText()"
-                        (input)="reviewText.set($any($event.target).value)"
-                        placeholder="What needs to change? (required)" aria-label="Reason for changes"></textarea>
-                      @if (!canSend()) {
-                        <p class="dim act-hint">The agent is busy. Sending back also messages the agent, so wait until it is idle.</p>
-                      }
-                      <div class="act-foot">
-                        <button type="button" class="btn btn-ghost btn-xs" (click)="reviewForm.set(null)"
-                          [disabled]="reviewPending() !== null">Cancel</button>
-                        <button type="button" class="btn btn-primary btn-xs" (click)="requestChanges(b, w)"
-                          [disabled]="reviewPending() !== null || !reviewText().trim() || !canSend()">
-                          {{ reviewPending() === 'reject' ? 'Sending back…' : 'Send back #' + w.id }}
-                        </button>
-                      </div>
-                    </div>
-                  }
-                  }
-                  @if (blueprintError(); as err) {
-                    <p class="act-err" role="alert">{{ err }}. QC mode unknown.</p>
-                  }
-                  @if (reviewError(); as err) {
-                    <p class="act-err" role="alert">{{ err }}</p>
-                  } @else if (reviewNotice(); as note) {
-                    <p class="act-ok" role="status">{{ note }}</p>
                   }
                   @if (w.completion_summary) {
                     <div class="lbl sub">Completion summary</div>
                     <p class="summary">{{ w.completion_summary }}</p>
-                  }
-                  <div class="lbl sub">Reviews ({{ w.reviews.length }})</div>
-                  @for (r of w.reviews; track $index) {
-                    <div class="review" [class.reject]="r.verdict === 'reject'" [class.approve]="r.verdict === 'approve'">
-                      <div class="review-head">
-                        <span class="verdict">
-                          <span aria-hidden="true">{{ r.verdict === 'approve' ? '✓' : r.verdict === 'reject' ? '✗' : '·' }}</span>
-                          {{ r.verdict ?? 'no verdict' }}
-                        </span>
-                        <span class="dim">{{ r.evaluator }} · turn {{ r.turn }}</span>
-                      </div>
-                      @if (r.assessment) { <p>{{ r.assessment }}</p> }
-                      @if (r.error) { <p class="failed">{{ r.error }}</p> }
-                    </div>
-                  } @empty {
-                    <p class="dim">No reviews yet.</p>
                   }
                 } @else if (workItemError(); as err) {
                   <p class="failed" role="alert">Could not load work item #{{ b.work_item_id }}: {{ err }}</p>
@@ -386,6 +379,139 @@
             </div>
           }
         </div>
+      </div>
+    </aside>
+  } @else if (gateBlock(); as b) {
+    <aside class="insp" aria-label="Selected review gate">
+      <div class="ihead">
+        <div>
+          <div class="lbl">Review gate</div>
+          <h3>{{ b.title }}</h3>
+          @if (selectedGate(); as g) {
+            <span class="status-tag gate-tag g-{{ g.state }}">
+              <span class="gate-chip g-{{ g.state }}" aria-hidden="true">{{ gateGlyph(g) }}</span> {{ GATE_LABEL[g.state] }}
+            </span>
+          }
+        </div>
+        <button type="button" class="btn btn-ghost btn-xs" aria-label="Close gate details" title="Close"
+          (click)="closePanel()">
+          <app-icon name="x" />
+        </button>
+      </div>
+      <div class="ibody">
+        @if (isInherited(b)) {
+          <p class="inherited-note" role="note">
+            <strong>Inherited.</strong> This gate belongs to a step {{ inheritedLabel(b) }}. It is read-only in this branch.
+          </p>
+        }
+        <dl class="kv">
+          <dt>Gates</dt>
+          <dd><button type="button" class="link-btn mono" (click)="select(b)">{{ b.block_id }}</button> · {{ turnSpan(b) }}</dd>
+          <dt>Work item</dt><dd>{{ workItemLabel(b) }}</dd>
+          <dt>QC mode</dt><dd>{{ qcMode() ?? 'unknown' }}</dd>
+          @if (selectedGate(); as g) {
+            @if (g.note) { <dt>Note</dt><dd>{{ g.note }}</dd> }
+            @if (g.nextAttempt; as n) {
+              <dt>Next attempt</dt>
+              <dd><button type="button" class="link-btn mono" (click)="select(n)">{{ n.block_id }}</button> (attempt {{ n.attempt }})</dd>
+            }
+            <dt>Downstream</dt>
+            <dd>{{ qcMode() === 'required' ? (g.open ? 'open: approved' : 'closed until approved') : 'informational (optional QC)' }}</dd>
+          }
+        </dl>
+        @if (workItem(); as w) {
+          <p class="wi-title">#{{ w.id }} {{ w.title }}</p>
+          <p class="dim">{{ w.status }} · owner {{ w.owner }}</p>
+                  @if (selectedGate()?.nextAttempt; as n) {
+                    <p class="dim act-hint">A later attempt ({{ n.block_id }}) exists; review the item from its gate.</p>
+                  }
+                  @if (!isInherited(b) && !selectedGate()?.nextAttempt) {
+                  <div class="wi-actions">
+                    @if (canHumanReview(w)) {
+                      <button type="button" class="btn btn-ghost btn-xs" [class.on]="reviewForm() === 'approve'"
+                        [attr.aria-expanded]="reviewForm() === 'approve'"
+                        [disabled]="reviewPending() !== null" (click)="openReviewForm('approve')">✓ Approve</button>
+                      <button type="button" class="btn btn-ghost btn-xs" [class.on]="reviewForm() === 'reject'"
+                        [attr.aria-expanded]="reviewForm() === 'reject'"
+                        [disabled]="reviewPending() !== null" (click)="openReviewForm('reject')">✗ Request changes</button>
+                    }
+                    <button type="button" class="btn btn-ghost btn-xs"
+                      [disabled]="!canRunReview(w) || reviewPending() !== null" (click)="runReview(b, w)"
+                      [title]="canRunReview(w) ? 'Ask the evaluator to review this work item' : 'Available for In review or Done items once the session can evaluate'">
+                      @if (reviewPending() === 'evaluator') {
+                        <app-icon name="loader" [size]="12" class="spin" /> Reviewing…
+                      } @else { Run review }
+                    </button>
+                  </div>
+                  @if (!canHumanReview(w)) {
+                    <p class="dim act-hint">
+                      @if (qcMode() === 'optional') { Approve and Request changes open once the item is Done. }
+                      @else if (qcMode() === 'required') { Approve and Request changes open once the item is In review. }
+                      @else { Approve and Request changes open once the item is In review or Done. }
+                    </p>
+                  }
+                  @if (reviewForm() === 'approve') {
+                    <div class="act-form">
+                      <textarea class="act-input" rows="2" [value]="reviewText()"
+                        (input)="reviewText.set($any($event.target).value)"
+                        placeholder="Note (optional)" aria-label="Approval note"></textarea>
+                      <div class="act-foot">
+                        <button type="button" class="btn btn-ghost btn-xs" (click)="reviewForm.set(null)"
+                          [disabled]="reviewPending() !== null">Cancel</button>
+                        <button type="button" class="btn btn-primary btn-xs" (click)="approve(b, w)"
+                          [disabled]="reviewPending() !== null">
+                          {{ reviewPending() === 'approve' ? 'Approving…' : 'Approve #' + w.id }}
+                        </button>
+                      </div>
+                    </div>
+                  } @else if (reviewForm() === 'reject') {
+                    <div class="act-form">
+                      <textarea class="act-input" rows="3" [value]="reviewText()"
+                        (input)="reviewText.set($any($event.target).value)"
+                        placeholder="What needs to change? (required)" aria-label="Reason for changes"></textarea>
+                      @if (!canSend()) {
+                        <p class="dim act-hint">The agent is busy. Sending back also messages the agent, so wait until it is idle.</p>
+                      }
+                      <div class="act-foot">
+                        <button type="button" class="btn btn-ghost btn-xs" (click)="reviewForm.set(null)"
+                          [disabled]="reviewPending() !== null">Cancel</button>
+                        <button type="button" class="btn btn-primary btn-xs" (click)="requestChanges(b, w)"
+                          [disabled]="reviewPending() !== null || !reviewText().trim() || !canSend()">
+                          {{ reviewPending() === 'reject' ? 'Sending back…' : 'Send back #' + w.id }}
+                        </button>
+                      </div>
+                    </div>
+                  }
+                  }
+                  @if (blueprintError(); as err) {
+                    <p class="act-err" role="alert">{{ err }}. QC mode unknown.</p>
+                  }
+                  @if (reviewError(); as err) {
+                    <p class="act-err" role="alert">{{ err }}</p>
+                  } @else if (reviewNotice(); as note) {
+                    <p class="act-ok" role="status">{{ note }}</p>
+                  }
+                  <div class="lbl sub">Reviews ({{ w.reviews.length }})</div>
+                  @for (r of w.reviews; track $index) {
+                    <div class="review" [class.reject]="r.verdict === 'reject'" [class.approve]="r.verdict === 'approve'">
+                      <div class="review-head">
+                        <span class="verdict">
+                          <span aria-hidden="true">{{ r.verdict === 'approve' ? '✓' : r.verdict === 'reject' ? '✗' : '·' }}</span>
+                          {{ r.verdict ?? 'no verdict' }}
+                        </span>
+                        <span class="dim">{{ r.evaluator }} · turn {{ r.turn }}</span>
+                      </div>
+                      @if (r.assessment) { <p>{{ r.assessment }}</p> }
+                      @if (r.error) { <p class="failed">{{ r.error }}</p> }
+                    </div>
+                  } @empty {
+                    <p class="dim">No reviews yet.</p>
+                  }
+        } @else if (workItemError(); as err) {
+          <p class="failed" role="alert">Could not load work item #{{ b.work_item_id }}: {{ err }}</p>
+        } @else {
+          <p class="dim" role="status">Loading work item…</p>
+        }
       </div>
     </aside>
   } @else if (missingId(); as id) {

@@ -1,0 +1,13 @@
+<div class="split" #root [style.grid-template-columns]="columns()" [class.dragging]="dragging()">
+  <section class="pane"><ng-content select="[paneStart]" /></section>
+  <div class="divider" role="separator" tabindex="0" aria-orientation="vertical"
+    aria-label="Resize the chat and workbench panes"
+    [attr.aria-valuenow]="percent()" [attr.aria-valuemin]="min" [attr.aria-valuemax]="max"
+    [attr.aria-valuetext]="'Chat ' + percent() + '%'"
+    title="Drag, or focus and use the arrow keys, to resize"
+    (pointerdown)="onPointerDown($event)" (pointermove)="onPointerMove($event)"
+    (pointerup)="onPointerUp($event)" (pointercancel)="onPointerUp($event)"
+    (keydown)="onKeydown($event)"></div>
+  <section class="pane"><ng-content select="[paneEnd]" /></section>
+  <div class="drawer" [hidden]="!drawerOpen()"><ng-content select="[paneDrawer]" /></div>
+</div>

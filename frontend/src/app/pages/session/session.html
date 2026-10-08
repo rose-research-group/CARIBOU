@@ -28,7 +28,14 @@
       </span>
     </div>
     <div class="header-right">
-      <app-view-toggle [view]="view()" (viewChange)="setView($event)" />
+      <app-view-toggle [view]="view()" [splitAvailable]="splitAvailable()" (viewChange)="setView($event)" />
+      @if (view() === 'split') {
+        <button type="button" class="btn btn-ghost btn-xs" [attr.aria-expanded]="splitDetailsOpen()"
+          (click)="splitDetailsOpen.set(!splitDetailsOpen())"
+          [title]="splitDetailsOpen() ? 'Hide the session details' : 'Show the session details: errors, work items, artifacts, status'">
+          Details@if (errorLog().length > 0) { · {{ errorLog().length }} error{{ errorLog().length === 1 ? '' : 's' }} }
+        </button>
+      }
       <div class="header-metrics" *ngIf="session() as s">
         <span class="metric" title="Turn progress">
           <span class="metric-label">Turn</span>
@@ -190,7 +197,22 @@
   }
 
   <div class="session-body">
-
+    @if (view() === 'split') {
+      <app-split-pane [drawerOpen]="splitDetailsOpen()">
+        <div paneStart style="display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0">
+          <ng-container *ngTemplateOutlet="chatTpl" />
+          <ng-container *ngTemplateOutlet="composerTpl" />
+        </div>
+        <div paneEnd style="display: flex; flex: 1; min-height: 0; min-width: 0">
+          <app-workbench role="main" aria-label="Workbench" [canSend]="canSendNow()" [canQueue]="canQueue()"
+            [scrollSelectionIntoView]="true"
+            (copySource)="copyToClipboard($event)" (sendMessage)="sendBlockMessage($event)" />
+        </div>
+        <div paneDrawer style="display: flex; min-height: 0">
+          <ng-container *ngTemplateOutlet="sidebarTpl" />
+        </div>
+      </app-split-pane>
+    } @else {
     <!-- Timeline -->
     @if (view() === 'chat' && showTimeline() && turnAnchors().length > 0) {
       <nav class="timeline" aria-label="Turn timeline">
@@ -206,10 +228,27 @@
       </nav>
     }
 
+    <ng-container *ngTemplateOutlet="chatTpl" />
+
+    @if (view() === 'workbench') {
+      <app-workbench role="main" aria-label="Workbench" [canSend]="canSendNow()" [canQueue]="canQueue()"
+        (copySource)="copyToClipboard($event)" (sendMessage)="sendBlockMessage($event)" />
+    }
+
+    <ng-container *ngTemplateOutlet="sidebarTpl" />
+    }
+  </div>
+
+  @if (view() !== 'split') {
+    <ng-container *ngTemplateOutlet="composerTpl" />
+  }
+
+  <ng-template #chatTpl>
     <!-- Chat panel -->
     <!-- The chat stays mounted (hidden) in the workbench view so its scroll
-         position and element refs survive a toggle. -->
-    <main class="chat-panel" #chatPanel (scroll)="onScroll($event)" [hidden]="view() !== 'chat'">
+         position and element refs survive a toggle. Rendered from one
+         template by both the chat/workbench layout and the split view. -->
+    <main class="chat-panel" #chatPanel (scroll)="onScroll($event)" [hidden]="view() === 'workbench'">
       <!-- Briefing phase (WS-5): a distinct pre-execution interview. The
            conversation itself renders in the normal chat below; this
            banner + draft card are the confirmation gate on top of it. -->
@@ -344,7 +383,11 @@
           }
           @if (item.kind === 'code' && item.codeEvent) {
             <div appCodeCard [codeEvent]="item.codeEvent" [attr.data-turn]="item.turn"
+              [attr.data-action-id]="item.codeEvent.submitted.action_id ?? null"
               [artifacts]="codeArtifacts(item.codeEvent.submitted.action_id)"
+              [style.box-shadow]="isLinkedCode(item) ? '0 0 0 2px var(--primary)' : null"
+              [style.border-radius]="isLinkedCode(item) ? '8px' : null"
+              (click)="selectBlockForCode(item)"
               (copySource)="copyToClipboard($event)"></div>
           }
           @if (item.kind === 'error' && item.error) {
@@ -456,12 +499,9 @@
         </button>
       }
     </main>
+  </ng-template>
 
-    @if (view() === 'workbench') {
-      <app-workbench role="main" aria-label="Workbench" [canSend]="canSendMessage()"
-        (copySource)="copyToClipboard($event)" (sendMessage)="sendBlockMessage($event)" />
-    }
-
+  <ng-template #sidebarTpl>
     <!-- Sidebar -->
     <aside class="sidebar" aria-label="Session sidebar">
 
@@ -749,7 +789,13 @@
         }
       </section>
     </aside>
-  </div>
+  </ng-template>
+
+  <!-- The queue bar and the input bar: under the chat pane in the split view,
+       full width otherwise. -->
+  <ng-template #composerTpl>
+  <app-queue-bar [queue]="messageQueue()" [pendingRemovals]="pendingRemovals()"
+    (remove)="unqueueMessage($event)" />
 
   <!-- Input bar -->
   <footer class="input-bar">
@@ -760,11 +806,12 @@
         [value]="userInput()"
         (input)="userInput.set($any($event.target).value)"
         (keydown)="onKeyDown($event)"
-        [disabled]="!canSendMessage()"
+        [disabled]="!canWriteMessage()"
         [attr.aria-label]="'Message input'"
         placeholder="{{
           isError()          ? 'Session ended with an error — see error log' :
           isStopped()        ? 'Session ended — start a new session to continue' :
+          canQueue()         ? 'Agent is busy — Enter queues your message for when it is ready' :
           isInitializing()   ? 'Initializing sandbox…' :
           waitingForAgent()  ? 'Waiting for agent response…' :
           session()?.mode === 'auto' && isRunning() ? 'Agent is running automatically…' :
@@ -772,17 +819,27 @@
         }}"
         rows="2">
       </textarea>
+      @if (canQueue()) {
+        <button
+          class="btn btn-primary send-btn"
+          (click)="sendMessage()"
+          [disabled]="!userInput().trim()"
+          aria-label="Queue message">
+          <app-icon name="clock" />
+          <span>Queue</span>
+        </button>
+      }
       @if (isRunning() && session()?.mode === 'interactive') {
         <button class="btn btn-ghost send-btn" (click)="cancelResponse()"
           [disabled]="cancellingResponse()" aria-label="Cancel current response">
           <app-icon name="stop" />
           <span>{{ cancellingResponse() ? 'Cancelling…' : 'Cancel response' }}</span>
         </button>
-      } @else {
+      } @else if (!canQueue()) {
         <button
           class="btn btn-primary send-btn"
           (click)="sendMessage()"
-          [disabled]="!userInput().trim() || !canSendMessage()"
+          [disabled]="!userInput().trim() || !canSendNow()"
           aria-label="Send message">
           <app-icon name="send" />
           <span>Send</span>
@@ -791,7 +848,7 @@
           <button
             class="btn btn-ghost send-btn"
             (click)="continueSession()"
-            [disabled]="isError() || isStopped() || isRunning() || waitingForAgent() || isInitializing()"
+            [disabled]="!canSendNow()" [title]="messageQueue().length > 0 ? 'Queued messages go first; remove them to continue now' : ''"
             aria-label="Send continue">
             <app-icon name="play" />
             <span>Continue</span>
@@ -799,6 +856,7 @@
         }
       }
   </footer>
+  </ng-template>
 
   <!-- Shortcut help modal -->
   @if (showShortcutHelp()) {
@@ -806,7 +864,7 @@
       <div class="shortcut-dialog" (click)="$event.stopPropagation()">
         <h3>Keyboard Shortcuts</h3>
         <dl>
-          <dt>Enter</dt><dd>Send message</dd>
+          <dt>Enter</dt><dd>Send message (queues it while the agent is busy)</dd>
           <dt>Shift + Enter</dt><dd>Newline</dd>
           <dt>
             <app-icon name="arrow-up" [size]="12" /> /

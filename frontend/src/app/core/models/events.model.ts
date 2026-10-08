@@ -1,4 +1,4 @@
-import { Artifact, Message, WorkItemDetail, SessionBriefFields } from './session.model';
+import { Artifact, Message, QueuedMessage, WorkItemDetail, SessionBriefFields } from './session.model';
 import { Block } from './block.model';
 
 export interface AgentEventEnvelope<T = unknown> {
@@ -28,6 +28,7 @@ export type AgentEventType =
   | 'brief_accepted'
   | 'phase_change'
   | 'block_changed'
+  | 'message_queue_changed'
   | 'error'
   | 'pong';
 
@@ -134,6 +135,11 @@ export interface BlockChangedData {
   block: Block;
 }
 
+/** The full current message queue, emitted on every change; the latest wins. */
+export interface MessageQueueChangedData {
+  queue: QueuedMessage[];
+}
+
 export type AgentEvent =
   | AgentEventEnvelope<TokenEventData>
   | AgentEventEnvelope<MessageCompleteData>
@@ -150,5 +156,6 @@ export type AgentEvent =
   | AgentEventEnvelope<BriefAcceptedData>
   | AgentEventEnvelope<PhaseChangeData>
   | AgentEventEnvelope<BlockChangedData>
+  | AgentEventEnvelope<MessageQueueChangedData>
   | AgentEventEnvelope<ErrorData>
   | AgentEventEnvelope<{}>;

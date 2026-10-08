@@ -88,8 +88,9 @@
 }
 
 .flow {
+  --wb-gap: 44px;
   display: grid;
-  gap: 8px 22px;
+  gap: 8px var(--wb-gap);
   overflow-x: auto;
   padding: 4px 3px 10px;
   align-items: stretch;
@@ -134,15 +135,6 @@ button.rail { cursor: pointer; &:hover { color: var(--primary); } }
   &:hover { border-color: var(--primary); }
   &:focus-visible { outline: 2px solid var(--primary-dark); outline-offset: 2px; }
 
-  /* Connector to the next step. */
-  &:not(.last)::after {
-    content: "";
-    position: absolute;
-    top: 50%;
-    right: -23px;
-    width: 22px;
-    border-top: 1.5px solid var(--border);
-  }
 
   .n { font-weight: 600; display: flex; align-items: flex-start; gap: 6px; line-height: 1.3; }
   .title { overflow-wrap: anywhere; }
@@ -182,27 +174,12 @@ button.rail { cursor: pointer; &:hover { color: var(--primary); } }
 
 /* Plots row */
 .rd {
-  font: inherit;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 6px 7px;
-  text-align: left;
-  cursor: pointer;
+  padding: 5px;
   min-width: 0;
-  &:hover { border-color: var(--primary); }
   &.sel { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
-  &:focus-visible { outline: 2px solid var(--primary-dark); outline-offset: 2px; }
-  .t {
-    display: block;
-    font-size: 0.7rem;
-    font-weight: 600;
-    color: var(--text-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  img { display: block; width: 100%; height: 84px; object-fit: contain; margin-top: 3px; }
 }
 .rd-none {
   align-self: center;
@@ -514,4 +491,83 @@ button.rail { cursor: pointer; &:hover { color: var(--primary); } }
   color: var(--text-muted);
   font-size: 0.8rem;
   overflow-wrap: anywhere;
+}
+
+/* ── Step cell: the block, its gate in the gap, and the connector ── */
+.step { position: relative; display: grid; min-width: 0; > .blk { height: 100%; } }
+.step.plain-next::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  width: var(--wb-gap);
+  border-top: 1.5px solid var(--border);
+}
+.on-block { margin-top: 5px; padding-top: 5px; border-top: 1px dashed currentColor; }
+.inflight { margin-bottom: 10px; padding: 7px 9px; border: 1px dashed var(--primary); border-radius: 7px; }
+
+/* Ghost card: the agent is working; the next step lands here. */
+.ghost {
+  font: inherit;
+  text-align: left;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1.5px dashed var(--primary);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--primary-bg) 55%, transparent);
+  cursor: pointer;
+  &.inert { cursor: default; }
+  &:focus-visible { outline: 2px solid var(--primary-dark); outline-offset: 2px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ghost { animation: wb-ghost 2s ease-in-out infinite; }
+}
+@keyframes wb-ghost { 50% { opacity: 0.6; } }
+
+/* ── Branch view: parent row, fork connector ── */
+.parent-rail { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.pblk { padding: 6px 9px; .m { opacity: 0.75; } }
+.pblk.replaced { opacity: 0.45; border-style: dashed; }
+.pblk.hl { box-shadow: 0 0 0 2px var(--primary); opacity: 1; }
+.parent-error { margin: 0; padding: 0.5rem 0.75rem; }
+.fork { position: relative; min-height: 30px; display: flex; align-items: center; }
+.fork-line {
+  position: absolute;
+  left: 18px;
+  top: -8px;
+  bottom: -8px;
+  width: 14px;
+  border-left: 1.5px solid var(--primary);
+  border-bottom: 1.5px solid var(--primary);
+  border-bottom-left-radius: 12px;
+}
+.fork-label { margin-left: 40px; font-size: 0.7rem; font-weight: 600; color: var(--primary-dark); white-space: nowrap; }
+
+/* ── Gate chip (panels) ── */
+.gate-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; font-size: 0.82rem; }
+.gate-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  font-size: 10px;
+  font-weight: 700;
+  &.g-awaiting { border-color: var(--wb-warn); color: var(--wb-warn); background: var(--wb-warn-bg); }
+  &.g-approved { border-color: var(--success); background: var(--success); color: #fff; }
+  &.g-changes { border-color: var(--error); background: var(--error-bg); color: var(--error); }
+  &.g-unavailable { border-color: var(--error); color: var(--error); }
+  &.g-reviewing { border-color: var(--primary); border-style: dotted; }
+}
+.gate-tag { color: var(--text); }
+.link-btn {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: var(--primary);
+  text-decoration: underline;
+  cursor: pointer;
 }

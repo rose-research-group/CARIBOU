@@ -1,0 +1,91 @@
+:host { display: block; min-width: 0; }
+
+.carousel {
+  min-width: 0;
+  border-radius: 8px;
+  &:focus-visible { outline: 2px solid var(--primary-dark); outline-offset: 2px; }
+}
+
+/* Native horizontal scroll, one slide per view, snapping to each. */
+.track {
+  display: flex;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+}
+
+.slide {
+  flex: 0 0 100%;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 6px;
+  cursor: zoom-in;
+  &:hover { border-color: var(--primary); }
+  &:focus-visible { outline: 2px solid var(--primary-dark); outline-offset: -2px; }
+  img { display: block; width: 100%; height: 220px; object-fit: contain; user-select: none; }
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  min-width: 0;
+}
+
+.caption {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pos {
+  flex: none;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.nav {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  &:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+  &:disabled { opacity: 0.4; cursor: default; }
+  &:focus-visible { outline: 2px solid var(--primary-dark); outline-offset: 1px; }
+}
+
+.compact {
+  .slide { padding: 3px; img { height: 84px; } }
+  .caption { font-size: 0.68rem; }
+  .nav { width: 22px; height: 22px; }
+}
+
+/* Phone width: the slide takes the full width and the controls stay
+   large enough to tap. */
+@media (max-width: 600px) {
+  .carousel:not(.compact) .slide img { height: 60vw; max-height: 320px; }
+  .nav { width: 34px; height: 34px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .track { scroll-behavior: auto; }
+}

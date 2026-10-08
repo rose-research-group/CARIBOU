@@ -4,7 +4,7 @@
  * nothing changes (so a signal update is a no-op). No Angular, no I/O: these
  * are the unit-testable core of SessionStore.
  */
-import { Message, WorkItemSummary } from '../models/session.model';
+import { Message, QueuedMessage, WorkItemSummary } from '../models/session.model';
 import { Block } from '../models/block.model';
 import {
   AgentEventEnvelope, AgentSwitchData, CodeSubmittedData, CodeResultData,
@@ -196,4 +196,25 @@ export function mergeBlockSnapshot(blocks: Block[], snapshot: Block[]): Block[] 
     if (!live || live.updated_at < block.updated_at) byId.set(block.block_id, block);
   }
   return [...byId.values()].sort((a, b) => a.index - b.index);
+}
+
+/**
+ * The queue from a `message_queue_changed` event: the event carries the full
+ * queue, so it replaces the current one. An identical queue (same ids, content
+ * and block focus, in order) keeps the current reference.
+ */
+export function replaceMessageQueue(queue: QueuedMessage[], next: QueuedMessage[]): QueuedMessage[] {
+  const same = queue.length === next.length && queue.every((item, i) =>
+    item.id === next[i].id && item.content === next[i].content && item.block_id === next[i].block_id);
+  return same ? queue : next;
+}
+
+/**
+ * Removal requests still waiting on the server: once the queue no longer
+ * holds an id, its removal is settled (removed, or already delivered).
+ */
+export function prunePendingRemovals(pending: Set<string>, queue: QueuedMessage[]): Set<string> {
+  const ids = new Set(queue.map(item => item.id));
+  const next = new Set([...pending].filter(id => ids.has(id)));
+  return next.size === pending.size ? pending : next;
 }

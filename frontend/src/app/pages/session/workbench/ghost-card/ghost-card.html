@@ -1,0 +1,9 @@
+<span class="gc" aria-live="polite">
+  <span class="head">
+    <span class="dot" aria-hidden="true"></span>
+    <span class="agent">{{ agent() || 'Agent' }}</span>
+    @if (elapsed(); as t) { <span class="time" aria-hidden="true">{{ t }}</span> }
+  </span>
+  <span class="act">{{ activity() }}</span>
+  @if (queued() > 0) { <span class="queued">{{ queued() }} queued</span> }
+</span>

@@ -1,6 +1,6 @@
 /**
  * Pure helpers that join a block record to the rest of the session state:
- * its code actions (chat code items), its artifacts and its first plot. No
+ * its code actions (chat code items), its artifacts and its plots. No
  * Angular, no I/O. The block record is the source of truth: `action_ids` and
  * `artifact_paths` decide membership, the store's lists only supply detail.
  */
@@ -73,12 +73,16 @@ export function blockArtifacts(block: Block, artifacts: Artifact[]): BlockArtifa
   return block.artifact_paths.map(path => ({ path, artifact: byPath.get(path) ?? null }));
 }
 
-/** The first of the block's artifacts that is a plot, or null. */
-export function firstPlot(block: Block, artifacts: Artifact[]): Artifact | null {
+/**
+ * The block's plot artifacts in `artifact_paths` order. A path whose
+ * artifact is not in the list yet is left out until it arrives.
+ */
+export function blockPlots(block: Block, artifacts: Artifact[]): Artifact[] {
+  const plots: Artifact[] = [];
   for (const entry of blockArtifacts(block, artifacts)) {
-    if (entry.artifact?.type === 'plot') return entry.artifact;
+    if (entry.artifact?.type === 'plot') plots.push(entry.artifact);
   }
-  return null;
+  return plots;
 }
 
 /** `#block:<block_id>` → the block id, or null for any other fragment. */

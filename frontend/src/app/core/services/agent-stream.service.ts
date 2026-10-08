@@ -117,7 +117,7 @@ export class AgentStreamService implements OnDestroy {
     this.nextRetryAt.set(null);
   }
 
-  send(msg: { type: string; content?: string; block_id?: string }): void {
+  send(msg: { type: string; content?: string; block_id?: string; id?: string }): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
     }
@@ -207,9 +207,11 @@ export class AgentStreamService implements OnDestroy {
         }
         return;
       }
-      const session = this.sessionSvc.currentSession();
-      const dead = session?.status === 'stopped' || session?.status === 'error';
-      if (!dead && this.retries < MAX_RETRIES) {
+      // The server keeps the socket open after the session stops or errors
+      // (a later resume streams on it), so a close is always a dropped
+      // connection, whatever the session's status: reconnect. "Session
+      // ended" comes from the session status, never from the socket.
+      if (this.retries < MAX_RETRIES) {
         const delay = Math.min(1000 * 2 ** this.retries, 16000);
         this.retries++;
         this.connectionState.set('reconnecting');

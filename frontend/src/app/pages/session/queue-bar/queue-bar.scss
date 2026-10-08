@@ -1,0 +1,96 @@
+:host { display: block; flex-shrink: 0; }
+
+/* Height animates through a 0fr → 1fr grid row, so the bar slides open
+   without a measured height and the chat above shrinks smoothly. */
+.queue-shell {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.18s ease, opacity 0.18s ease;
+  &.open { grid-template-rows: 1fr; opacity: 1; }
+}
+.queue-clip { min-height: 0; overflow: hidden; }
+
+.queue-bar {
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  padding: 0.45rem 1.25rem 0.5rem;
+}
+
+.queue-head {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 0.35rem;
+}
+
+.queue-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  max-height: 7.5rem;
+  overflow-y: auto;
+}
+
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  padding: 0.2rem 0.3rem 0.2rem 0.6rem;
+  font-size: 0.82rem;
+}
+
+.preview {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.block-tag {
+  flex-shrink: 0;
+  font-family: monospace;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  padding: 0 0.3rem;
+}
+
+.remove {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+  &:hover:not(:disabled) { background: var(--border-light); color: var(--text); }
+  &:focus-visible { outline: 2px solid var(--primary-dark); outline-offset: 1px; }
+  &:disabled { cursor: progress; opacity: 0.7; }
+}
+
+.spin { animation: qb-spin 1s linear infinite; }
+@keyframes qb-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .queue-shell { transition: none; }
+  .spin { animation: none; }
+}

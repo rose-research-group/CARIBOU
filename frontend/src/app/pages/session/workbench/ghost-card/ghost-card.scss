@@ -1,0 +1,37 @@
+:host { display: block; min-width: 0; }
+
+.gc { display: flex; flex-direction: column; gap: 2px; min-width: 0; text-align: left; }
+.head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cividis-yellow);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+.agent {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 0.82rem;
+  color: var(--primary-dark);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.time { flex: none; font-family: var(--mono, monospace); font-size: 0.68rem; color: var(--text-muted); }
+.act { font-size: 0.78rem; color: var(--text); overflow-wrap: anywhere; }
+.queued { font-size: 0.7rem; font-weight: 600; color: var(--text-muted); }
+
+:host(.inline) {
+  .gc { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 2px 8px; }
+  .head { flex: 0 1 auto; }
+  .agent { font-size: 0.72rem; }
+  .act { font-size: 0.72rem; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .dot { animation: gc-pulse 1.4s ease-in-out infinite; }
+}
+@keyframes gc-pulse { 50% { opacity: 0.35; transform: scale(0.8); } }

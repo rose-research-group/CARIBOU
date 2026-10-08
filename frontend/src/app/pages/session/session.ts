@@ -1,6 +1,6 @@
 import {
   Component, OnInit, OnDestroy, inject, signal, ViewChild,
-  ElementRef, AfterViewChecked, computed, HostListener, effect
+  ElementRef, AfterViewChecked, computed, HostListener, effect, afterNextRender, Injector, untracked,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
@@ -31,6 +31,10 @@ import { navigateTabToSession, reserveNewTab } from '../../core/utils/app-naviga
 import { BlockMessage, WorkbenchComponent } from './workbench/workbench';
 import { SessionView, ViewToggleComponent } from './workbench/view-toggle';
 import { anchorLabel } from './workbench/block-actions';
+import { QueueBarComponent } from './queue-bar/queue-bar';
+import { SplitPaneComponent } from './split-pane/split-pane';
+import { SPLIT_MIN_VIEWPORT_PX } from './split-pane/split-ratio';
+import { blockIdFromFragment } from './workbench/block-matching';
 import { BranchBannerComponent } from './branch-banner/branch-banner';
 
 const COMPACT_AFTER_ITEMS = 40;
@@ -48,6 +52,7 @@ type ArtifactFilter = 'all' | 'plot' | 'data' | 'other';
     CommonModule, FormsModule,
     MessageBubbleComponent, CodeCardComponent, ArtifactCardComponent, StatusIndicatorComponent,
     IconComponent, TooltipDirective, WorkbenchComponent, ViewToggleComponent, BranchBannerComponent,
+    QueueBarComponent, SplitPaneComponent,
   ],
   // One store per session page: a fresh page starts from empty state.
   providers: [SessionStore],
@@ -141,7 +146,32 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   // Both views render from the one store and the one WebSocket.
   private viewParam = toSignal(this.route.queryParamMap.pipe(map(p => p.get('view'))),
     { initialValue: this.route.snapshot.queryParamMap.get('view') });
-  view = computed<SessionView>(() => this.viewParam() === 'workbench' ? 'workbench' : 'chat');
+  // The split view needs a wide window; below it `?view=split` shows the chat
+  // (with a toast saying why, see the constructor).
+  private splitQuery = window.matchMedia(`(min-width: ${SPLIT_MIN_VIEWPORT_PX}px)`);
+  splitAvailable = signal(this.splitQuery.matches);
+  view = computed<SessionView>(() => {
+    const param = this.viewParam();
+    if (param === 'workbench') return 'workbench';
+    if (param === 'split') return this.splitAvailable() ? 'split' : 'chat';
+    return 'chat';
+  });
+  /** The sidebar as an overlay drawer in the split view. */
+  splitDetailsOpen = signal(false);
+  private injector = inject(Injector);
+  private fragment = toSignal(this.route.fragment, { initialValue: this.route.snapshot.fragment });
+  /** The workbench's selected block (`#block:<id>`). */
+  private selectedBlockId = computed(() => blockIdFromFragment(this.fragment()));
+  /** In the split view, the selected block's action ids (its code cards are highlighted). */
+  private linkedActionIds = computed(() => {
+    const id = this.selectedBlockId();
+    if (this.view() !== 'split' || id === null) return null;
+    const block = this.store.blocks().find(b => b.block_id === id);
+    return block ? new Set(block.action_ids) : null;
+  });
+  // A selection made by clicking a code card in the chat: don't scroll the chat.
+  private selectionFromChat: string | null = null;
+  private lastScrolledBlockId: string | null = null;
   // WS-5: the briefing conversation is a distinct phase, not a normal chat
   // turn — `briefPhase` gates the interview view (the draft is in the store).
   briefPhase = computed(() => this.session()?.phase === 'briefing');
@@ -154,9 +184,27 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   isError = computed(() => this.status() === 'error');
   isInitializing = computed(() => this.status() === 'initializing');
   isRecovering = computed(() => this.status() === 'recovering');
+  messageQueue = this.store.messageQueue;
+  pendingRemovals = this.store.pendingRemovals;
   // Whether the session takes a user message now: the chat input and the
   // workbench's block composer both use this.
-  canSendMessage = computed(() => this.status() === 'idle' && !this.waitingForAgent());
+  // The server sends a message straight through only when its queue is
+  // empty; with messages waiting, a new one joins the end of the queue.
+  canSendNow = computed(() =>
+    this.status() === 'idle' && !this.waitingForAgent() && this.messageQueue().length === 0);
+  // Whether a message sent now is queued on the server instead: an
+  // interactive session past its first turn whose agent is busy. The first
+  // turn's `run` message is never queued.
+  canQueue = computed(() => {
+    const s = this.session();
+    const status = this.status();
+    return !!s && s.mode === 'interactive' && s.current_turn > 0 &&
+      (status === 'running' || status === 'initializing' || status === 'recovering' ||
+        (status === 'idle' && this.messageQueue().length > 0));
+  });
+  /** The input takes text when a message can be sent now or queued. */
+  canWriteMessage = computed(() => this.canSendNow() || this.canQueue());
+
   developerMode = computed(() => this.prefsSvc.prefs().developerMode);
   recoveryStages = [
     'Safe checkpoint',
@@ -358,9 +406,56 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   constructor() {
     effect(() => {
       const param = this.viewParam();
-      if (param !== null && param !== 'workbench' && param !== 'chat') {
+      if (param !== null && param !== 'workbench' && param !== 'chat' && param !== 'split') {
         this.toasts.show({ kind: 'error', title: `Unknown view "${param}"`, detail: 'Showing the chat view.', ttlMs: 6000 });
       }
+    });
+    // Track the window width for the split view, and say when it falls back.
+    const onSplitQuery = (e: MediaQueryListEvent) => this.splitAvailable.set(e.matches);
+    this.splitQuery.addEventListener('change', onSplitQuery);
+    this.subs.add(() => this.splitQuery.removeEventListener('change', onSplitQuery));
+    effect(() => {
+      if (this.viewParam() === 'split' && !this.splitAvailable()) {
+        untracked(() => this.toasts.show({
+          kind: 'warn',
+          title: 'Split view unavailable',
+          detail: `Split view needs a window at least ${SPLIT_MIN_VIEWPORT_PX}px wide. Showing the chat view.`,
+          ttlMs: 8000,
+        }));
+      }
+    });
+    // Split view: selecting a block highlights its code cards in the chat and
+    // scrolls to the first one.
+    effect(() => {
+      // Only a change of selection scrolls: block_changed events while the
+      // block is selected must not pull the chat back to it.
+      const blockId = this.view() === 'split' ? this.selectedBlockId() : null;
+      if (blockId === null) {
+        this.lastScrolledBlockId = null;
+        return;
+      }
+      if (blockId === this.lastScrolledBlockId) return;
+      this.lastScrolledBlockId = blockId;
+      if (this.selectionFromChat === blockId) {
+        this.selectionFromChat = null;
+        return;
+      }
+      untracked(() => {
+        const ids = this.linkedActionIds();
+        if (ids === null || ids.size === 0) return;
+        const items = this.store.chatItems();
+        const first = items.findIndex(item =>
+          item.kind === 'code' && ids.has(item.codeEvent?.submitted.action_id ?? ''));
+        if (first < 0) return;
+        // The card may be in the collapsed older conversation: expand it first.
+        if (first < this.hiddenChatItemCount()) this.olderConversationExpanded.set(true);
+        const actionId = items[first].codeEvent!.submitted.action_id!;
+        afterNextRender(() => {
+          const card = this.chatPanel?.nativeElement.querySelector(`[data-action-id="${CSS.escape(actionId)}"]`);
+          if (!card) throw new Error(`Code card for action ${actionId} is not rendered.`);
+          card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, { injector: this.injector });
+      });
     });
     // Reactive tab-title notifications when session completes.
     effect(() => {
@@ -391,7 +486,9 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.store.attach(id);
 
     this.sessionSvc.getSession(id).subscribe({
-      next: () => {
+      next: session => {
+        // Before connecting, so replayed message_queue_changed events win.
+        this.store.hydrateMessageQueue(session.message_queue);
         // Validate the REST resource before opening a socket. Otherwise a stale
         // deep link briefly enters the WebSocket "expired" state before routing
         // back to the dashboard.
@@ -514,18 +611,18 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   sendMessage(): void {
     const content = this.userInput().trim();
     if (!content) return;
-    if (!this.canSendMessage()) return;
-    this.submitUserMessage(content);
+    if (!this.canWriteMessage()) return;
+    if (!this.submitUserMessage(content)) return;
     this.userInput.set('');
   }
 
   /**
    * A block-scoped message from the workbench. It goes through the same path
    * as a typed message, so it shows in the chat. The workbench only emits
-   * while `canSendMessage()` holds, so a refusal here is a bug: raise it.
+   * while it can send now or queue, so a refusal here is a bug: raise it.
    */
   sendBlockMessage(message: BlockMessage): void {
-    if (!this.canSendMessage()) {
+    if (!this.canWriteMessage()) {
       throw new Error('The session cannot take a message right now.');
     }
     this.submitUserMessage(message.content, message.blockId);
@@ -534,11 +631,33 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   /**
    * The one send path for user messages (chat input and workbench). A
    * workbench message carries its block's id, which focuses the agent's next
-   * code on that block; chat messages carry none.
+   * code on that block; chat messages carry none. Returns false when a
+   * message to be queued was not sent (no connection; a toast says so).
    */
-  private submitUserMessage(content: string, blockId?: string): void {
+  private submitUserMessage(content: string, blockId?: string): boolean {
     const s = this.session();
     if (!s) throw new Error('No session to send a message to.');
+    if (!this.canSendNow()) {
+      if (!this.canQueue()) {
+        throw new Error('The session cannot take or queue a message right now.');
+      }
+      // The agent is busy: the server queues this user_message and delivers it
+      // when the agent is ready. Its message_queue_changed event shows it in
+      // the queue bar; it reaches the chat only once delivered. Nothing else
+      // would show a send dropped on a closed socket, so refuse it visibly.
+      if (this.stream.connectionState() !== 'open') {
+        this.toasts.show({
+          kind: 'error',
+          title: 'Message not queued',
+          detail: 'Not connected to the server. Your text is kept; try again once the connection is back.',
+          ttlMs: 8000,
+        });
+        return false;
+      }
+      this.stream.sendUserMessage(content, blockId);
+      this.pushHistory(content);
+      return true;
+    }
     if (s.current_turn === 0 && s.mode === 'interactive') {
       // A 'run' message has no block focus; no block exists before the first turn.
       if (blockId !== undefined) {
@@ -549,18 +668,72 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
       this.stream.sendUserMessage(content, blockId);
     }
     this.pushHistory(content);
-    this.store.sendUserMessage(s.id, s.current_turn + 1, content);
+    this.store.sendUserMessage(s.id, s.current_turn + 1, content, blockId ?? null);
     this.shouldScrollToBottom = true;
+    return true;
   }
 
   continueSession(): void {
     const s = this.session();
-    if (!s || s.status !== 'idle' || this.waitingForAgent()) return;
+    if (!s || !this.canSendNow()) return;
     const content = 'Please continue with the next step.';
     this.stream.sendUserMessage(content);
     this.pushHistory('Continue');
     this.store.sendUserMessage(s.id, s.current_turn + 1, content);
     this.shouldScrollToBottom = true;
+  }
+
+  /** Split view: whether a chat code card belongs to the selected block. */
+  isLinkedCode(item: ChatItem): boolean {
+    const actionId = item.codeEvent?.submitted.action_id;
+    return !!actionId && (this.linkedActionIds()?.has(actionId) ?? false);
+  }
+
+  /**
+   * Split view: a click on a chat code card (or a plot in it) selects its
+   * block in the workbench pane, matched by the card's block_id, else by
+   * the block whose action_ids hold its action_id.
+   */
+  selectBlockForCode(item: ChatItem): void {
+    if (this.view() !== 'split') return;
+    const submitted = item.codeEvent?.submitted;
+    if (!submitted) return;
+    const blocks = this.store.blocks();
+    const block = (submitted.block_id ? blocks.find(b => b.block_id === submitted.block_id) : undefined)
+      ?? (submitted.action_id ? blocks.find(b => b.action_ids.includes(submitted.action_id!)) : undefined);
+    if (!block) {
+      this.toasts.show({
+        kind: 'info',
+        title: 'No step for this code',
+        detail: 'This code is not part of a recorded workbench step.',
+        ttlMs: 4000,
+      });
+      return;
+    }
+    if (this.selectedBlockId() === block.block_id) return;
+    this.selectionFromChat = block.block_id;
+    this.router.navigate([], {
+      relativeTo: this.route,
+      queryParamsHandling: 'preserve',
+      fragment: `block:${block.block_id}`,
+      replaceUrl: true,
+    });
+  }
+
+  /** The queue bar's ✕: ask the server to drop a queued message. */
+  unqueueMessage(id: string): void {
+    if (this.pendingRemovals().has(id)) return;
+    if (this.stream.connectionState() !== 'open') {
+      this.toasts.show({
+        kind: 'error',
+        title: 'Could not remove the queued message',
+        detail: 'Not connected to the server. Try again once the connection is back.',
+        ttlMs: 6000,
+      });
+      return;
+    }
+    this.store.markRemovalPending(id);
+    this.stream.send({ type: 'unqueue_message', id });
   }
 
   stopSession(): void {
@@ -951,7 +1124,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   setView(view: SessionView): void {
     this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: { view: view === 'workbench' ? 'workbench' : null },
+      queryParams: { view: view === 'chat' ? null : view },
       queryParamsHandling: 'merge',
       preserveFragment: true,
     });

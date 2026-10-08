@@ -1,0 +1,44 @@
+:host { display: flex; flex: 1; min-width: 0; min-height: 0; }
+
+.split {
+  position: relative;
+  flex: 1;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  &.dragging { cursor: col-resize; user-select: none; }
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.divider {
+  position: relative;
+  cursor: col-resize;
+  background: var(--border);
+  touch-action: none;
+  &::after {
+    /* A wider grab area than the visible line. */
+    content: "";
+    position: absolute;
+    inset: 0 -5px;
+  }
+  &:hover, .dragging & { background: var(--primary); }
+  &:focus-visible { outline: 2px solid var(--primary-dark); outline-offset: 0; background: var(--primary); }
+}
+
+.drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  box-shadow: -6px 0 18px rgba(0, 20, 40, 0.18);
+}
+.drawer[hidden] { display: none; }

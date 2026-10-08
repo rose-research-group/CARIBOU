@@ -1,0 +1,35 @@
+@let shown = plot();
+<div class="carousel" [class.compact]="compact()" role="group" aria-roledescription="carousel"
+  [attr.aria-label]="label()" [attr.tabindex]="multiple() ? 0 : null" (keydown)="onKeydown($event)">
+  <div class="track" #track (scroll)="onScroll()">
+    @for (p of plots(); track p.id; let i = $index) {
+      <button type="button" class="slide"
+        [attr.aria-label]="(i + 1) + ' of ' + plots().length + ': ' + p.filename + ' (open full size)'"
+        [attr.aria-hidden]="i !== current()" [attr.tabindex]="i === current() ? 0 : -1"
+        (click)="lightboxOpen.set(true)">
+        <img [src]="previewUrl(p)" [alt]="p.filename" loading="lazy" draggable="false" />
+      </button>
+    }
+  </div>
+  <div class="bar">
+    @if (multiple()) {
+      <button type="button" class="nav" aria-label="Previous plot" title="Previous plot"
+        [disabled]="current() === 0" (click)="prev()">
+        <app-icon name="chevron-left" [size]="14" />
+      </button>
+    }
+    <span class="caption" [title]="shown.filename">{{ shown.filename }}</span>
+    @if (multiple()) {
+      <span class="pos" aria-live="polite">{{ position() }}</span>
+      <button type="button" class="nav" aria-label="Next plot" title="Next plot"
+        [disabled]="current() === plots().length - 1" (click)="next()">
+        <app-icon name="chevron-right" [size]="14" />
+      </button>
+    }
+  </div>
+</div>
+@if (lightboxOpen()) {
+  <app-artifact-lightbox [artifact]="shown" [position]="multiple() ? position() : null"
+    [hasPrev]="current() > 0" [hasNext]="current() < plots().length - 1"
+    (prev)="prev()" (next)="next()" (closed)="lightboxOpen.set(false)" />
+}

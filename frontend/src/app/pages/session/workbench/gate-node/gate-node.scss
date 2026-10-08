@@ -1,0 +1,74 @@
+/* Sits in the column gap to the right of its block (the workbench positions
+   the host); the host spans the gap so the connector halves meet the ring. */
+:host {
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  width: var(--wb-gap, 44px);
+  height: 22px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+
+.lead, .tail {
+  position: absolute;
+  top: 50%;
+  border-top: 1.5px solid var(--border);
+}
+.lead { left: 0; right: 50%; }
+.tail {
+  left: 50%;
+  right: 0;
+  &.closed { border-top-style: dashed; border-top-color: var(--text-muted); }
+  &.retry { border-top: 1px solid var(--error); }
+}
+
+.gate {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-muted);
+  background: var(--bg);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  &:hover { box-shadow: 0 0 0 2px var(--primary-bg); border-color: var(--primary); }
+  &:focus-visible { outline: 2px solid var(--primary-dark); outline-offset: 2px; }
+  &.sel { box-shadow: 0 0 0 2px var(--primary); }
+  &.inherited { opacity: 0.6; }
+}
+
+/* not ready: hollow muted ring, no glyph. */
+.g-not_ready { border-style: solid; border-color: var(--border); background: transparent; }
+.g-loading { border-style: dotted; }
+.g-unavailable { border-color: var(--error); color: var(--error); border-style: dotted; }
+/* awaiting review: amber ring with "?". */
+.g-awaiting { border-color: var(--wb-warn, #7A5C00); color: var(--wb-warn, #7A5C00); background: var(--wb-warn-bg, #FBF1D2); }
+/* approved: filled green with a check. */
+.g-approved { border-color: var(--success); background: var(--success); color: #fff; }
+/* changes requested: red with a cross. */
+.g-changes { border-color: var(--error); background: var(--error-bg); color: var(--error); }
+.g-reviewing { border-color: var(--primary); }
+
+.spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--primary);
+  border-right-color: transparent;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .spinner { animation: gate-spin 0.9s linear infinite; }
+}
+@keyframes gate-spin { to { transform: rotate(360deg); } }

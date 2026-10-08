@@ -1,0 +1,12 @@
+<span class="lead" aria-hidden="true"></span>
+@if (continues()) {
+  <span class="tail" [class.closed]="!gate().open" [class.retry]="retryNext()" aria-hidden="true"></span>
+}
+<button type="button" class="gate g-{{ gate().state }}" [class.sel]="selected()" [class.inherited]="inherited()"
+  [attr.aria-label]="label()" [attr.aria-pressed]="selected()" [title]="label()" (click)="pick.emit()">
+  @if (gate().state === 'reviewing') {
+    <span class="spinner" aria-hidden="true"></span>
+  } @else {
+    <span aria-hidden="true">{{ glyph() }}</span>
+  }
+</button>
