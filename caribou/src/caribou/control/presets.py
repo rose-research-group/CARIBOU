@@ -12,7 +12,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from caribou.config import get_caribou_slurm_partition
 from caribou.core.deepseek import (
     DEEPSEEK_MODEL_IDS,
     deepseek_profile_for_model,
@@ -46,7 +45,11 @@ from caribou.domain.models import (
 from caribou.domain.serialization import file_hash, sha256_bytes
 
 from .api import ControlError, ExitCode
-from .specs import ADAPTER_PARAMETER, CARIBOU_AGENT_ADAPTER
+from .specs import (
+    ADAPTER_PARAMETER,
+    CARIBOU_AGENT_ADAPTER,
+    configured_slurm_partition,
+)
 
 
 PresetProfile = Literal["fast", "thorough"]
@@ -496,7 +499,7 @@ class PresetResolver:
                     network_enabled=False,
                 ),
                 partition=(
-                    get_caribou_slurm_partition()
+                    configured_slurm_partition({"preset_id": preset_id})
                     if executor_kind == ExecutorKind.slurm
                     else None
                 ),

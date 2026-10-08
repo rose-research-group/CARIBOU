@@ -10,7 +10,7 @@ from typing import Optional
 from caribou.config import (
     ENV_FILE,
     InvalidSlurmPartitionError,
-    get_caribou_slurm_partition,
+    read_caribou_slurm_partition,
     validate_slurm_partition,
 )
 from caribou.core.control_access import resolve_control_access_token
@@ -70,7 +70,13 @@ def set_slurm_partition(
         ..., help="Slurm partition CARIBOU should submit and bind jobs on."
     ),
 ) -> None:
-    """Set the Slurm partition used for every CARIBOU Slurm execution."""
+    """Set the Slurm partition used for new CARIBOU Slurm submissions.
+
+    The value is written to the CARIBOU .env file. A 'caribou serve' process
+    that is already running must be restarted to pick it up; changing the
+    partition from the web Settings page applies it to the running server
+    immediately instead.
+    """
     try:
         validate_slurm_partition(partition)
     except InvalidSlurmPartitionError as exc:
@@ -82,16 +88,37 @@ def set_slurm_partition(
         f"[bold green]✅ Slurm partition set to '{partition}' in:[/bold green] {ENV_FILE}"
     )
     console.print(
-        "[dim]Runs already bound to the previous partition remain valid; "
-        "only new submissions use the updated partition. Restart 'caribou serve' "
-        "if it is already running.[/dim]"
+        "[dim]Jobs that were already submitted keep the partition they were "
+        "submitted on; only new submissions use the updated partition. Restart "
+        "'caribou serve' if it is already running, or change the partition from "
+        "the web Settings page to apply it to the running server.[/dim]"
     )
+    shell_value = os.environ.get("CARIBOU_SLURM_PARTITION")
+    if shell_value is not None and shell_value != partition:
+        console.print(
+            "[yellow]Warning: CARIBOU_SLURM_PARTITION is set to "
+            f"{shell_value!r} in the current environment, which takes precedence "
+            f"over {ENV_FILE}. Unset or update it for the new value to apply.[/yellow]"
+        )
 
 
 @config_app.command("show-slurm-partition")
 def show_slurm_partition() -> None:
     """Show the Slurm partition CARIBOU is currently configured to use."""
-    console.print(get_caribou_slurm_partition(), markup=False)
+    try:
+        partition = read_caribou_slurm_partition()
+    except InvalidSlurmPartitionError as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(1) from exc
+    if partition is None:
+        console.print(
+            "[bold red]Error:[/bold red] No Slurm partition is configured. "
+            "Set one with 'caribou config set-slurm-partition <partition>' "
+            "(written to "
+            f"{ENV_FILE}), or export CARIBOU_SLURM_PARTITION."
+        )
+        raise typer.Exit(1)
+    console.print(partition, markup=False)
 
 
 @config_app.command("set-openai-key")

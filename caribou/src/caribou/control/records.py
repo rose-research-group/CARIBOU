@@ -14,7 +14,7 @@ from pydantic import (
     model_validator,
 )
 
-from caribou.config import get_caribou_slurm_partition
+from caribou.config import validate_slurm_partition
 from caribou.domain.models import (
     Artifact,
     ContentHash,
@@ -70,7 +70,7 @@ class SlurmExecutionHandle(ControlRecord):
     )
     run_id: RunId
     job_id: NonEmptyStr
-    partition: NonEmptyStr = Field(default_factory=get_caribou_slurm_partition)
+    partition: NonEmptyStr
     account: Optional[NonEmptyStr] = None
     qos: Optional[NonEmptyStr] = None
     script_path: NonEmptyStr
@@ -87,10 +87,9 @@ class SlurmExecutionHandle(ControlRecord):
 
     @model_validator(mode="after")
     def validate_partition(self) -> "SlurmExecutionHandle":
-        if self.partition != get_caribou_slurm_partition():
-            raise ValueError(
-                f"Slurm execution handle must bind partition '{get_caribou_slurm_partition()}'"
-            )
+        # Shape check only: a record keeps the partition its job was submitted
+        # on, which may differ from the currently configured partition.
+        validate_slurm_partition(self.partition)
         return self
 
 
@@ -116,7 +115,7 @@ class SlurmAccounting(ControlRecord):
     )
     run_id: RunId
     job_id: NonEmptyStr
-    partition: NonEmptyStr = Field(default_factory=get_caribou_slurm_partition)
+    partition: NonEmptyStr
     state: NonEmptyStr
     terminal: StrictBool
     exit_code: Optional[NonEmptyStr] = None
@@ -140,10 +139,9 @@ class SlurmAccounting(ControlRecord):
 
     @model_validator(mode="after")
     def validate_partition(self) -> "SlurmAccounting":
-        if self.partition != get_caribou_slurm_partition():
-            raise ValueError(
-                f"Slurm accounting must record partition '{get_caribou_slurm_partition()}'"
-            )
+        # Shape check only: a record keeps the partition its job was submitted
+        # on, which may differ from the currently configured partition.
+        validate_slurm_partition(self.partition)
         return self
 
 

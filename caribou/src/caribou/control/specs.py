@@ -12,6 +12,11 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
+from caribou.config import (
+    InvalidSlurmPartitionError,
+    SlurmPartitionNotConfiguredError,
+    get_caribou_slurm_partition,
+)
 from caribou.domain.enums import (
     ExecutorKind,
     FailureCategory,
@@ -428,6 +433,44 @@ def _agent_smoke_delay(parameters: dict[str, Any]) -> float:
             exit_code=ExitCode.validation,
         )
     return delay
+
+
+def configured_slurm_partition(details: dict[str, Any] | None = None) -> str:
+    """Return the configured Slurm partition for new work, as a ControlError on failure."""
+    try:
+        return get_caribou_slurm_partition()
+    except (SlurmPartitionNotConfiguredError, InvalidSlurmPartitionError) as exc:
+        raise ControlError(
+            "SLURM_PARTITION_NOT_CONFIGURED",
+            str(exc),
+            exit_code=ExitCode.validation,
+            details=dict(details or {}),
+        ) from exc
+
+
+def require_configured_slurm_partition(
+    partition: str | None, *, subject: str, details: dict[str, Any] | None = None
+) -> None:
+    """Refuse new Slurm work whose partition differs from the configured one.
+
+    Only creating or submitting new work is checked against the current
+    configuration. Already-submitted jobs keep the partition recorded on their
+    run and scheduler handle, so status, recovery, cancellation, and
+    accounting keep working after the configured partition changes.
+    """
+    configured = configured_slurm_partition(details)
+    if partition != configured:
+        raise ControlError(
+            "SLURM_PARTITION_MISMATCH",
+            f"{subject} targets Slurm partition '{partition}', but the "
+            f"configured CARIBOU Slurm partition is '{configured}'",
+            exit_code=ExitCode.conflict,
+            details={
+                **(details or {}),
+                "partition": partition,
+                "configured_partition": configured,
+            },
+        )
 
 
 def validate_control_spec(

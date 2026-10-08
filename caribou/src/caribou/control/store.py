@@ -15,7 +15,7 @@ from typing import Iterator, Optional
 
 from pydantic import BaseModel
 
-from caribou.config import CARIBOU_HOME, get_caribou_slurm_partition
+from caribou.config import CARIBOU_HOME
 from caribou.domain.enums import (
     ArtifactType,
     CheckpointComponent,
@@ -87,6 +87,7 @@ from .specs import (
     AGENT_PATH_SMOKE_ADAPTER,
     CARIBOU_AGENT_ADAPTER,
     build_local_plan,
+    require_configured_slurm_partition,
     validate_control_spec,
 )
 
@@ -301,6 +302,15 @@ class ExperimentStore:
                 existing_runs = tuple(self.run(run_id) for run_id in existing.run_ids)
                 return Submission(experiment, existing_runs, plan, True)
 
+            if spec.execution.executor == ExecutorKind.slurm:
+                # New Slurm work must target the currently configured
+                # partition; idempotent replays above return the original
+                # submission unchanged.
+                require_configured_slurm_partition(
+                    spec.execution.partition,
+                    subject=f"experiment spec {spec.spec_id}",
+                    details={"spec_id": spec.spec_id},
+                )
             now = utc_now()
             experiment_id = new_id("exp")
             new_runs: list[Run] = []
@@ -2090,12 +2100,23 @@ class ExperimentStore:
         path = self.run_journal_path(handle.run_id)
         journal = read_run_journal(path)
         run = journal.run
-        if run.executor != ExecutorKind.slurm or run.partition != get_caribou_slurm_partition():
+        if run.executor != ExecutorKind.slurm:
             raise ControlError(
                 "RUN_NOT_SLURM",
-                f"scheduler identity can be bound only to a {get_caribou_slurm_partition()} Slurm run",
+                "scheduler identity can be bound only to a Slurm run",
                 exit_code=ExitCode.conflict,
                 details={"run_id": handle.run_id, "executor": run.executor.value},
+            )
+        if handle.partition != run.partition:
+            raise ControlError(
+                "SLURM_PARTITION_MISMATCH",
+                "the scheduler handle partition differs from the run's Slurm partition",
+                exit_code=ExitCode.integrity,
+                details={
+                    "run_id": handle.run_id,
+                    "run_partition": run.partition,
+                    "handle_partition": handle.partition,
+                },
             )
         if run.state not in {RunState.queued, RunState.cancelling}:
             raise ControlError(
@@ -2145,7 +2166,7 @@ class ExperimentStore:
             payload=HeartbeatPayload(
                 message=(
                     f"Slurm job {handle.job_id} bound on partition "
-                    f"{get_caribou_slurm_partition()} while held"
+                    f"{handle.partition} while held"
                 )
             ),
         )

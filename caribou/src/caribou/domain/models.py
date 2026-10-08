@@ -24,7 +24,7 @@ from pydantic import (
     model_validator,
 )
 
-from caribou.config import get_caribou_slurm_partition
+from caribou.config import InvalidSlurmPartitionError, validate_slurm_partition
 
 from .enums import (
     AggregateStatus,
@@ -246,6 +246,22 @@ class ContainerSpec(DomainModel):
     bind_mounts: Dict[NonEmptyStr, NonEmptyStr] = Field(default_factory=dict)
 
 
+def _require_recorded_slurm_partition(partition: Optional[str], subject: str) -> None:
+    """Check a stored Slurm partition is a safe identifier.
+
+    Only the shape is checked here, never the currently configured partition,
+    so records written under one partition still load after the configuration
+    changes. Matching against the configured partition happens where new work
+    is created or submitted.
+    """
+    if partition is None:
+        raise ValueError(f"{subject} requires a Slurm partition")
+    try:
+        validate_slurm_partition(partition)
+    except InvalidSlurmPartitionError as exc:
+        raise ValueError(f"{subject} has an invalid Slurm partition: {exc}") from exc
+
+
 class ExecutionSpec(DomainModel):
     executor: ExecutorKind
     resources: ResourceRequest
@@ -257,9 +273,9 @@ class ExecutionSpec(DomainModel):
 
     @model_validator(mode="after")
     def enforce_executor_contract(self) -> "ExecutionSpec":
-        if self.executor == ExecutorKind.slurm and self.partition != get_caribou_slurm_partition():
-            raise ValueError(
-                f"CARIBOU Slurm execution requires partition '{get_caribou_slurm_partition()}'"
+        if self.executor == ExecutorKind.slurm:
+            _require_recorded_slurm_partition(
+                self.partition, "CARIBOU Slurm execution"
             )
         if self.executor == ExecutorKind.local and any(
             value is not None for value in (self.partition, self.account, self.qos)
@@ -569,10 +585,7 @@ class Run(DomainModel):
             if self.started_at is None:
                 raise ValueError(f"{self.state.value} run requires started_at")
         if self.executor == ExecutorKind.slurm:
-            if self.partition != get_caribou_slurm_partition():
-                raise ValueError(
-                    f"CARIBOU Slurm run must resolve to partition '{get_caribou_slurm_partition()}'"
-                )
+            _require_recorded_slurm_partition(self.partition, "CARIBOU Slurm run")
         elif self.partition is not None or self.scheduler_job_id is not None:
             raise ValueError("local run cannot carry Slurm partition or job ID")
         if (self.resumed_from_run_id is None) != (self.resume_checkpoint_id is None):

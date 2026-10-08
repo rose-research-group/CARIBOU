@@ -9,6 +9,7 @@ import {
   OpenRouterCatalogue,
   OpenRouterEndpointsResponse,
   PythonEnvironmentCandidate,
+  ServerSettings,
   ServerStatus,
 } from '../models/session.model';
 
@@ -22,6 +23,7 @@ export class ConfigService {
   readonly ollamaModels = signal<OllamaModelsResponse | null>(null);
   readonly openRouterCatalogue = signal<OpenRouterCatalogue | null>(null);
   readonly pythonEnvironments = signal<PythonEnvironmentCandidate[]>([]);
+  readonly settings = signal<ServerSettings | null>(null);
 
   loadAll(): Observable<unknown> {
     return new Observable((obs) => {
@@ -62,6 +64,12 @@ export class ConfigService {
         },
       });
     });
+  }
+
+  getSettings(): Observable<ServerSettings> {
+    return this.http
+      .get<ServerSettings>('api/settings')
+      .pipe(tap((s) => this.settings.set(s)));
   }
 
   getStatus(): Observable<ServerStatus> {

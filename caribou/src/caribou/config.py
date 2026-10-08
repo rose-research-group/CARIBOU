@@ -3,7 +3,7 @@ import os
 import re
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 from platformdirs import PlatformDirs
 
 # Define app-specific identifiers for platformdirs
@@ -25,7 +25,7 @@ DEFAULT_BLUEPRINT_NAME = "caribou_fully_connected_v2.json"
 # Define the path to the environment file for storing secrets like API keys
 ENV_FILE = CARIBOU_HOME / ".env"
 
-_DEFAULT_SLURM_PARTITION = "peerd"
+SLURM_PARTITION_ENV_VAR = "CARIBOU_SLURM_PARTITION"
 
 # Slurm partition names are simple identifiers. This value is rendered
 # unescaped into generated `#SBATCH --partition=...` lines and `sbatch`
@@ -38,8 +38,21 @@ class InvalidSlurmPartitionError(ValueError):
     """Raised when a Slurm partition name fails the safe-identifier check."""
 
 
+class SlurmPartitionNotConfiguredError(RuntimeError):
+    """Raised when Slurm work is requested but no partition is configured."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "No Slurm partition is configured for CARIBOU. Run "
+            "`caribou config set-slurm-partition <name>` or set the "
+            f"{SLURM_PARTITION_ENV_VAR} environment variable."
+        )
+
+
 def validate_slurm_partition(partition: str) -> str:
-    if not SLURM_PARTITION_PATTERN.fullmatch(partition):
+    if not isinstance(partition, str) or not SLURM_PARTITION_PATTERN.fullmatch(
+        partition
+    ):
         raise InvalidSlurmPartitionError(
             "Slurm partition must be a plain identifier "
             "(letters, digits, '-', '_' only); "
@@ -48,20 +61,36 @@ def validate_slurm_partition(partition: str) -> str:
     return partition
 
 
-def get_caribou_slurm_partition() -> str:
-    """Return the Slurm partition CARIBOU is authorized to submit and bind jobs on.
+def read_caribou_slurm_partition() -> str | None:
+    """Return the configured Slurm partition, or None when none is configured.
 
-    Resolved from the CARIBOU_SLURM_PARTITION environment variable, or the
-    CARIBOU .env file, falling back to the historical default. A real
-    environment variable always wins over the .env file, matching how every
-    other CARIBOU secret/setting is resolved. Read fresh on every call (rather
-    than frozen at import time, like CARIBOU_HOME) so the control plane can
-    move clusters without a code change or process restart.
+    The CARIBOU_SLURM_PARTITION environment variable wins; otherwise the value
+    stored in the CARIBOU .env file (ENV_FILE) is used. There is no built-in
+    default. The .env file is parsed without exporting its keys into
+    os.environ, and is read fresh on every call (unlike CARIBOU_HOME, which is
+    frozen at import time) so a changed setting applies without a restart.
+    A configured value is validated and raises InvalidSlurmPartitionError if
+    it is not a plain identifier.
     """
-    load_dotenv(dotenv_path=ENV_FILE, override=False)
-    return validate_slurm_partition(
-        os.environ.get("CARIBOU_SLURM_PARTITION", _DEFAULT_SLURM_PARTITION)
-    )
+    if SLURM_PARTITION_ENV_VAR in os.environ:
+        partition = os.environ[SLURM_PARTITION_ENV_VAR]
+    else:
+        partition = dotenv_values(ENV_FILE).get(SLURM_PARTITION_ENV_VAR)
+        if partition is None:
+            return None
+    return validate_slurm_partition(partition)
+
+
+def get_caribou_slurm_partition() -> str:
+    """Return the configured Slurm partition that new Slurm work must target.
+
+    Resolved like read_caribou_slurm_partition(), but raises
+    SlurmPartitionNotConfiguredError when no partition is configured.
+    """
+    partition = read_caribou_slurm_partition()
+    if partition is None:
+        raise SlurmPartitionNotConfiguredError()
+    return partition
 
 
 def init_caribou_home():

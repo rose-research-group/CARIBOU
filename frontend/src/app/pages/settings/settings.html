@@ -10,6 +10,9 @@
   @if (loading()) {
     <p class="loading">Loading…</p>
   }
+  @if (loadError(); as e) {
+    <div class="save-result err">{{ e }}</div>
+  }
 
   <div class="settings-body local-preferences">
     <section class="card">
@@ -89,9 +92,11 @@
       <section class="card">
         <h2>Slurm</h2>
         <p class="section-desc">
-          The partition CARIBOU submits and binds Slurm jobs on. Existing runs already bound to
-          the previous partition remain valid; only new submissions use the updated value. If
-          <code>caribou serve</code> is already running, restart it to pick up this change.
+          The partition CARIBOU submits new Slurm jobs on. Saving here applies the change to this
+          running server immediately. Jobs that were already submitted keep the partition they
+          were submitted on; only new submissions use the updated value. A change made with
+          <code>caribou config set-slurm-partition</code> instead requires restarting
+          <code>caribou serve</code>.
         </p>
 
         <div class="field">
@@ -101,12 +106,20 @@
               type="text"
               [value]="slurmPartition()"
               (input)="slurmPartition.set($any($event.target).value)"
-              placeholder="peerd"
+              placeholder="e.g. your-partition"
             />
           </div>
           <span class="path-note">
-            Currently <strong>{{ s.slurm_partition }}</strong> —
-            {{ s.slurm_partition === slurmPartition() ? 'unchanged' : 'will be updated on save' }}
+            @if (s.slurm_partition === null) {
+              <strong>Not configured</strong> — Slurm experiments cannot be submitted until a
+              partition is set.
+              @if (slurmPartition()) {
+                It will be set on save.
+              }
+            } @else {
+              Currently <strong>{{ s.slurm_partition }}</strong> —
+              {{ s.slurm_partition === slurmPartition() ? 'unchanged' : 'will be updated on save' }}
+            }
           </span>
         </div>
       </section>

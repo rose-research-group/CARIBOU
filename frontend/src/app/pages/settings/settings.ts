@@ -5,19 +5,8 @@ import { HttpClient } from '@angular/common/http';
 import { Router } from '@angular/router';
 import { ConfigService } from '../../core/services/config.service';
 import { PreferencesService } from '../../core/services/preferences.service';
-import { OllamaModelsResponse } from '../../core/models/session.model';
+import { OllamaModelsResponse, ServerSettings } from '../../core/models/session.model';
 import { IconComponent } from '../../shared/components/icon/icon';
-
-interface ServerSettings {
-  caribou_home: string;
-  sessions_dir: string;
-  uploads_dir: string;
-  env_file: string;
-  api_keys: Record<string, string>;
-  ollama_host: string;
-  ollama_model: string;
-  slurm_partition: string;
-}
 
 @Component({
   selector: 'app-settings',
@@ -56,18 +45,23 @@ export class SettingsComponent implements OnInit {
     openrouter: false,
   };
 
+  loadError = signal<string | null>(null);
+
   ngOnInit(): void {
-    this.http.get<ServerSettings>('api/settings').subscribe({
+    this.configSvc.getSettings().subscribe({
       next: (s) => {
         this.settings.set(s);
         this.sessionsDir.set(s.sessions_dir);
         this.ollamaHost.set(s.ollama_host);
         this.ollamaModel.set(s.ollama_model);
-        this.slurmPartition.set(s.slurm_partition);
+        this.slurmPartition.set(s.slurm_partition ?? '');
         this.loading.set(false);
         this.refreshOllamaModels();
       },
-      error: () => this.loading.set(false),
+      error: (err) => {
+        this.loading.set(false);
+        this.loadError.set(err?.error?.detail ?? 'Failed to load server settings.');
+      },
     });
   }
 
@@ -88,7 +82,7 @@ export class SettingsComponent implements OnInit {
     if (this.ollamaModel() !== this.settings()?.ollama_model) {
       body['ollama_model'] = this.ollamaModel();
     }
-    if (this.slurmPartition() !== this.settings()?.slurm_partition) {
+    if (this.slurmPartition() !== (this.settings()?.slurm_partition ?? '')) {
       body['slurm_partition'] = this.slurmPartition();
     }
 
@@ -107,19 +101,39 @@ export class SettingsComponent implements OnInit {
         this.openrouterKey.set('');
         this.saveResult.set({ ok: true, message: `Saved: ${r.updated.join(', ')}` });
         // Reload settings to show updated masks
-        this.http.get<ServerSettings>('api/settings').subscribe((s) => {
-          this.settings.set(s);
-          this.ollamaHost.set(s.ollama_host);
-          this.ollamaModel.set(s.ollama_model);
-          this.slurmPartition.set(s.slurm_partition);
-          this.refreshOllamaModels();
+        this.configSvc.getSettings().subscribe({
+          next: (s) => {
+            this.settings.set(s);
+            this.ollamaHost.set(s.ollama_host);
+            this.ollamaModel.set(s.ollama_model);
+            this.slurmPartition.set(s.slurm_partition ?? '');
+            this.refreshOllamaModels();
+          },
+          error: (err) => {
+            this.saveResult.set({
+              ok: false,
+              message: err?.error?.detail ?? 'Saved, but reloading settings failed.',
+            });
+          },
         });
       },
       error: (err) => {
         this.saving.set(false);
-        this.saveResult.set({ ok: false, message: err?.error?.detail ?? 'Save failed.' });
+        this.saveResult.set({ ok: false, message: this.describeError(err, 'Save failed.') });
       },
     });
+  }
+
+  /** FastAPI returns a string detail for HTTPException and a list for body validation. */
+  private describeError(err: unknown, fallbackMessage: string): string {
+    const detail = (err as { error?: { detail?: unknown } } | null)?.error?.detail;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+      return detail
+        .map((d) => (d && typeof d === 'object' && 'msg' in d ? String(d.msg) : String(d)))
+        .join('; ');
+    }
+    return fallbackMessage;
   }
 
   goBack(): void {

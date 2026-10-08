@@ -1,7 +1,10 @@
 """
 Pytest configuration and shared fixtures for CARIBOU tests.
 """
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 # Add the caribou/src directory to the Python path so imports work
@@ -9,7 +12,40 @@ caribou_src = Path(__file__).parent.parent / "src"
 if str(caribou_src) not in sys.path:
     sys.path.insert(0, str(caribou_src))
 
+# Isolate the suite from the user's real CARIBOU home (and its .env) before
+# any caribou module is imported: CARIBOU_HOME and ENV_FILE are module-level
+# constants computed at import time in caribou.config.
+_ISOLATED_CARIBOU_HOME = Path(tempfile.mkdtemp(prefix="caribou-test-home-"))
+os.environ["CARIBOU_HOME"] = str(_ISOLATED_CARIBOU_HOME)
+
 import pytest
+
+import caribou.config as caribou_config
+
+if caribou_config.CARIBOU_HOME != _ISOLATED_CARIBOU_HOME:
+    raise RuntimeError(
+        "caribou.config was imported before tests/conftest.py could isolate "
+        f"CARIBOU_HOME (resolved to {caribou_config.CARIBOU_HOME})"
+    )
+
+TEST_SLURM_PARTITION = "peerd"
+
+
+def pytest_unconfigure(config):
+    shutil.rmtree(_ISOLATED_CARIBOU_HOME)
+
+
+@pytest.fixture(autouse=True)
+def isolated_caribou_settings(tmp_path_factory, monkeypatch):
+    """Pin CARIBOU settings so no test reads the user's real configuration.
+
+    The Slurm partition is set explicitly (tests that need it unset or
+    different override it), and caribou.config.ENV_FILE points at a per-test
+    path that does not exist so no real .env value can leak in.
+    """
+    monkeypatch.setenv("CARIBOU_SLURM_PARTITION", TEST_SLURM_PARTITION)
+    env_dir = tmp_path_factory.mktemp("caribou-env")
+    monkeypatch.setattr(caribou_config, "ENV_FILE", env_dir / ".env")
 from types import SimpleNamespace
 from typing import List, Dict, Any
 
