@@ -28,6 +28,7 @@ BLOCK_INDEX_SCHEMA = "caribou.block_index.v1"
 BLOCKS_FILENAME = "blocks.json"
 
 _OPEN = "running"
+_DELEGATION_PREFIX = "delegate_to_"
 
 
 class BlockError(RuntimeError):
@@ -191,6 +192,13 @@ class BlockTracker:
         # The block the previous code action went to, in memory only: after a
         # resume, the first implicit action starts a fresh implicit block.
         self._last_block: Optional[Dict[str, Any]] = None
+        # Workbench focus (in memory only): while set, every action goes to
+        # this block. `_focus_reopened` is True once a focused action reopened
+        # a block that was closed when the focus was set.
+        self._focus: Optional[Dict[str, Any]] = None
+        self._focus_reopened = False
+        # One-shot handoff titles for the next implicit block of an agent.
+        self._pending_titles: Dict[str, str] = {}
 
     # -- persistence -------------------------------------------------------
 
@@ -277,6 +285,10 @@ class BlockTracker:
         for block in self._blocks:
             if block["work_item_id"] != item["id"]:
                 continue
+            if block is self._focus and block["status"] == _OPEN:
+                # A focused block stays open until the focus clears;
+                # `clear_focus` applies the close rules then.
+                continue
             if block["status"] == "ok":
                 # A reject that arrives after the attempt closed ok (e.g. the
                 # item was Done, then reviewed) downgrades it to warn.
@@ -351,15 +363,74 @@ class BlockTracker:
             turn=turn,
             work_item_id=None,
             attempt=1,
-            title=f"{owner} (no work item)",
+            title=self._pending_titles.pop(owner, f"{owner} (no work item)"),
         )
+
+    # -- workbench focus and handoffs --------------------------------------
+
+    def set_focus(self, block_id: str) -> None:
+        """Attribute every action to `block_id` until `clear_focus`.
+
+        Overrides work-item and implicit attribution entirely. A closed block
+        reopens on the first focused action, not here. Focusing another block
+        clears the current focus first; refocusing the same block is a no-op.
+        """
+        block = next(
+            (value for value in self._blocks if value["block_id"] == block_id), None
+        )
+        if block is None:
+            raise BlockError(f"cannot focus unknown block {block_id!r}")
+        if block is self._focus:
+            return
+        self.clear_focus()
+        self._focus = block
+        self._focus_reopened = False
+
+    def clear_focus(self) -> None:
+        """End the focus. A block the focus reopened closes again under the
+        normal rules; one that was open before the focus stays open unless
+        its work item's state now closes it. No-op with no focus set."""
+        block = self._focus
+        reopened = self._focus_reopened
+        self._focus = None
+        self._focus_reopened = False
+        if block is None or block["status"] != _OPEN:
+            return
+        if block["implicit"]:
+            if reopened:
+                self._close(block, rejected=False)
+            return
+        item = self.work_items.read(int(block["work_item_id"]))
+        if reopened:
+            self._close(block, rejected=_rejections(item) >= block["attempt"])
+        else:
+            self._apply_item(item)
+
+    def note_delegation(self, from_agent: str, to_agent: str, command: str) -> None:
+        """Title the next implicit block created for `to_agent` after the
+        handoff, e.g. "QC metrics (from input_agent)" for
+        `delegate_to_QC_metrics`. One-shot: consumed by that block."""
+        if not command.startswith(_DELEGATION_PREFIX):
+            raise ValueError(
+                f"delegation command must start with {_DELEGATION_PREFIX!r}: "
+                f"{command!r}"
+            )
+        task = command[len(_DELEGATION_PREFIX):].replace("_", " ").strip()
+        if not task:
+            raise ValueError(f"delegation command names no task: {command!r}")
+        self._pending_titles[to_agent] = f"{task} (from {from_agent})"
 
     def begin_action(self, owner: str, turn: int, action_id: str) -> str:
         """Attribute a code action that is about to execute; returns its block_id."""
         if action_id in self._by_action:
             raise BlockError(f"action {action_id!r} was already attributed")
         self.sync()
-        block = self._attribute(owner, turn)
+        if self._focus is not None:
+            block = self._focus
+            if block["status"] != _OPEN:
+                self._focus_reopened = True
+        else:
+            block = self._attribute(owner, turn)
         last = self._last_block
         if last is not None and last is not block and last["implicit"]:
             self._close(last, rejected=False)
@@ -403,6 +474,8 @@ class BlockTracker:
     def close_all(self) -> None:
         """Session end (d): close every open block."""
         self.sync()
+        self._focus = None
+        self._focus_reopened = False
         for block in self._blocks:
             self._close(block, rejected=False)
         self._last_block = None

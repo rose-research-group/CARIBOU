@@ -13,6 +13,7 @@ from caribou.execution.work_items import (
     WorkItemPolicy,
     WorkItemStore,
     parse_work_item_command,
+    render_work_item_prompt,
 )
 
 
@@ -32,6 +33,70 @@ def test_agent_command_grammar_is_exact_and_quoted() -> None:
     assert parse_work_item_command("open_work_item title-only") is None
     assert parse_work_item_command("list_work_items\nextra prose") is None
     assert parse_work_item_command("```\nlist_work_items\n```") is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        'I loaded the data.\n\nopen_work_item "QC filtering" "Filter low-quality cells"',
+        'Done with QC.\nclose_work_item 3 "Filtered cells"   \n\n  \n',
+        "```python\nprint(1)\n```\nlist_work_items",
+        "Some prose.\n  read_work_item 2  ",
+        "list_work_items\n",
+    ],
+)
+def test_command_on_the_last_line_is_accepted(message) -> None:
+    assert parse_work_item_command(message) is not None
+
+
+def test_last_line_command_parses_exactly_as_a_whole_message_command() -> None:
+    whole = parse_work_item_command('close_work_item 3 "Filtered cells"')
+    trailing = parse_work_item_command(
+        'Prose first.\n```python\nx = 1\n```\nclose_work_item 3 "Filtered cells"\n'
+    )
+    assert trailing == whole
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # A command anywhere but the last non-empty line is ignored.
+        'open_work_item "QC" "Filter cells"\nThen I will continue.',
+        'Intro.\nlist_work_items\nOutro.',
+        # The message ends inside an unterminated code fence.
+        "```python\nlist_work_items",
+        "Prose.\n```\nprint(1)\nlist_work_items\n",
+        # A fenced command is code, not a command.
+        "```\nlist_work_items\n```",
+        # Last-line commands follow the same grammar as whole-message ones.
+        "Prose.\nopen_work_item title-only",
+        'Prose.\nopen_work_item "QC" "unterminated',
+        "Prose.\nlist_work_items extra",
+        "",
+        "   \n\n",
+    ],
+)
+def test_command_not_on_the_last_line_or_malformed_is_rejected(message) -> None:
+    assert parse_work_item_command(message) is None
+
+
+def test_delegation_line_before_a_last_line_command_leaves_it_parseable() -> None:
+    command = parse_work_item_command(
+        'QC is done.\ndelegate_to_clustering\nclose_work_item 1 "Filtered cells"'
+    )
+    assert command is not None
+    assert (command.name, command.item_id) == ("close_work_item", 1)
+    # A delegation after the command makes the command not the last line.
+    assert (
+        parse_work_item_command('close_work_item 1 "Filtered cells"\ndelegate_to_clustering')
+        is None
+    )
+
+
+def test_prompt_states_the_last_line_rule_and_per_task_work_items() -> None:
+    prompt = render_work_item_prompt(WorkItemPolicy())
+    assert "LAST line" in prompt
+    assert "When you receive a delegation" in prompt
 
 
 def test_optional_qc_store_commits_each_transition_and_restarts(tmp_path) -> None:

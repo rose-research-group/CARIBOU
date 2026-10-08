@@ -441,3 +441,209 @@ def test_human_reopen_without_an_explicit_sync_is_picked_up_by_begin_action(tmp_
 
     assert tracker.begin_action("coder", 4, "a2") == "blk-0002"
     assert [b["status"] for b in tracker.blocks()] == ["warn", "running"]
+
+
+# -- workbench focus and delegation handoffs --------------------------------
+
+
+def test_focus_on_unknown_block_raises(tmp_path):
+    tracker, _ = _tracker(_store(tmp_path))
+    with pytest.raises(BlockError):
+        tracker.set_focus("blk-0009")
+
+
+def test_clear_focus_without_focus_is_a_no_op(tmp_path):
+    tracker, changes = _tracker(_store(tmp_path))
+    tracker.clear_focus()
+    assert changes == []
+
+
+def test_focus_reopens_a_closed_block_and_clear_recloses_it(tmp_path):
+    store = _store(tmp_path)
+    tracker, changes = _tracker(store)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.finish_action("a1", True)
+    tracker.begin_action("reviewer", 2, "a2")  # closes blk-0001 ok
+    assert _by_id(tracker)["blk-0001"]["status"] == "ok"
+
+    tracker.set_focus("blk-0001")
+    # set_focus alone changes nothing.
+    assert _by_id(tracker)["blk-0001"]["status"] == "ok"
+
+    assert tracker.begin_action("reviewer", 3, "a3") == "blk-0001"
+    blocks = _by_id(tracker)
+    assert blocks["blk-0001"]["status"] == "running"
+    assert blocks["blk-0001"]["agents"] == ["coder", "reviewer"]
+    # The reviewer's implicit block closed when focus moved its code away.
+    assert blocks["blk-0002"]["status"] == "ok"
+    assert changes[-1]["block_id"] == "blk-0001"
+    assert changes[-1]["status"] == "running"
+    tracker.finish_action("a3", False)
+
+    tracker.clear_focus()
+    block = _by_id(tracker)["blk-0001"]
+    assert block["status"] == "error"  # last action failed
+    assert changes[-1] == block
+    on_disk = load_blocks(blocks_path_for(store))["blocks"][0]
+    assert on_disk["status"] == "error"
+    assert on_disk["action_ids"] == ["a1", "a3"]
+
+    # After the focus, attribution is normal again.
+    assert tracker.begin_action("reviewer", 4, "a4") == "blk-0003"
+
+
+def test_reclosing_a_reopened_block_warns_when_an_earlier_action_failed(tmp_path):
+    store = _store(tmp_path)
+    tracker, _ = _tracker(store)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.finish_action("a1", False)
+    tracker.begin_action("coder", 1, "a2")
+    tracker.finish_action("a2", True)
+    tracker.close_all()
+    tracker.set_focus("blk-0001")
+    tracker.begin_action("coder", 2, "a3")
+    tracker.finish_action("a3", True)
+    tracker.clear_focus()
+    assert tracker.blocks()[0]["status"] == "warn"
+
+
+def test_reclosing_a_reopened_rejected_attempt_is_warn(tmp_path):
+    store = _store(tmp_path, qc_mode="required")
+    tracker, _ = _tracker(store)
+    item = store.open("QC", "b", "coder", 1)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.finish_action("a1", True)
+    store.close(item["id"], "s", "coder", 2)
+    tracker.on_work_item_changed(
+        store.record_review(
+            item["id"], evaluator="qc", turn=3, verdict="reject", assessment="no"
+        )
+    )
+    assert tracker.blocks()[0]["status"] == "warn"
+
+    tracker.set_focus("blk-0001")
+    assert tracker.begin_action("coder", 4, "a2") == "blk-0001"
+    tracker.finish_action("a2", True)
+    # A sync during focus does not close the focused block.
+    tracker.sync()
+    assert tracker.blocks()[0]["status"] == "running"
+    tracker.clear_focus()
+    assert tracker.blocks()[0]["status"] == "warn"
+    assert len(tracker.blocks()) == 1
+
+
+def test_focus_overrides_work_item_attribution(tmp_path):
+    store = _store(tmp_path)
+    tracker, _ = _tracker(store)
+    tracker.begin_action("coder", 1, "a1")  # implicit blk-0001
+    store.open("QC", "b", "coder", 2)
+    tracker.begin_action("coder", 2, "a2")  # work-item blk-0002
+    tracker.set_focus("blk-0001")
+    assert tracker.begin_action("coder", 3, "a3") == "blk-0001"
+    blocks = _by_id(tracker)
+    # The work-item block is not implicit, so it stays open.
+    assert blocks["blk-0002"]["status"] == "running"
+    tracker.clear_focus()
+    assert _by_id(tracker)["blk-0001"]["status"] == "ok"
+    assert tracker.begin_action("coder", 4, "a4") == "blk-0002"
+
+
+def test_a_block_open_before_the_focus_stays_open_after_clear(tmp_path):
+    store = _store(tmp_path)
+    tracker, changes = _tracker(store)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.set_focus("blk-0001")
+    tracker.begin_action("coder", 2, "a2")
+    count = len(changes)
+    tracker.clear_focus()
+    assert len(changes) == count
+    assert tracker.blocks()[0]["status"] == "running"
+    # It is still the coder's current implicit block.
+    assert tracker.begin_action("coder", 3, "a3") == "blk-0001"
+
+
+def test_an_open_work_item_block_whose_item_finished_during_focus_closes_on_clear(
+    tmp_path,
+):
+    store = _store(tmp_path)
+    tracker, _ = _tracker(store)
+    item = store.open("QC", "b", "coder", 1)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.finish_action("a1", True)
+    tracker.set_focus("blk-0001")
+    tracker.on_work_item_changed(store.close(item["id"], "s", "coder", 2))
+    assert tracker.blocks()[0]["status"] == "running"
+    tracker.clear_focus()
+    assert tracker.blocks()[0]["status"] == "ok"
+
+
+def test_focus_set_without_any_action_leaves_a_closed_block_closed(tmp_path):
+    store = _store(tmp_path)
+    tracker, changes = _tracker(store)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.close_all()
+    count = len(changes)
+    tracker.set_focus("blk-0001")
+    tracker.clear_focus()
+    assert len(changes) == count
+    assert tracker.blocks()[0]["status"] == "ok"
+
+
+def test_focusing_another_block_clears_the_first(tmp_path):
+    store = _store(tmp_path)
+    tracker, _ = _tracker(store)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.begin_action("reviewer", 2, "a2")
+    tracker.close_all()
+    tracker.set_focus("blk-0001")
+    tracker.begin_action("coder", 3, "a3")
+    tracker.set_focus("blk-0002")
+    blocks = _by_id(tracker)
+    assert blocks["blk-0001"]["status"] == "ok"
+    assert tracker.begin_action("coder", 4, "a4") == "blk-0002"
+
+
+def test_close_all_ends_the_focus(tmp_path):
+    store = _store(tmp_path)
+    tracker, _ = _tracker(store)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.set_focus("blk-0001")
+    tracker.close_all()
+    assert tracker.begin_action("coder", 2, "a2") == "blk-0002"
+
+
+def test_note_delegation_titles_the_next_implicit_block_once(tmp_path):
+    store = _store(tmp_path)
+    tracker, _ = _tracker(store)
+    tracker.begin_action("input_agent", 1, "a1")
+    tracker.note_delegation("input_agent", "qc_agent", "delegate_to_QC_metrics")
+    tracker.begin_action("qc_agent", 2, "a2")
+    tracker.begin_action("input_agent", 3, "a3")
+    tracker.begin_action("qc_agent", 4, "a4")
+    titles = [block["title"] for block in tracker.blocks()]
+    assert titles == [
+        "input_agent (no work item)",
+        "QC metrics (from input_agent)",
+        "input_agent (no work item)",
+        "qc_agent (no work item)",
+    ]
+
+
+def test_note_delegation_does_not_retitle_a_work_item_block(tmp_path):
+    store = _store(tmp_path)
+    tracker, _ = _tracker(store)
+    tracker.note_delegation("input_agent", "qc_agent", "delegate_to_QC_metrics")
+    store.open("QC", "b", "qc_agent", 1)
+    tracker.begin_action("qc_agent", 1, "a1")
+    assert tracker.blocks()[0]["title"] == "QC"
+    # Still pending: the next implicit block for qc_agent gets it.
+    store.close(0, "s", "qc_agent", 2)
+    tracker.begin_action("qc_agent", 3, "a2")
+    assert tracker.blocks()[1]["title"] == "QC metrics (from input_agent)"
+
+
+@pytest.mark.parametrize("command", ["QC_metrics", "delegate_to_", "delegate_to___"])
+def test_note_delegation_rejects_malformed_commands(tmp_path, command):
+    tracker, _ = _tracker(_store(tmp_path))
+    with pytest.raises(ValueError):
+        tracker.note_delegation("a", "b", command)

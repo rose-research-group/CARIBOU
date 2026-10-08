@@ -109,17 +109,42 @@ class WorkItemCommandResult:
     changed_item: Optional[Dict[str, Any]] = None
 
 
-def parse_work_item_command(message: str) -> Optional[WorkItemCommand]:
-    """Parse one exact command-only assistant message.
+def command_line(message: str) -> Optional[str]:
+    """The line of `message` that may hold a work-item command: the whole
+    message when it is a single line, otherwise its last non-empty line.
 
-    Quoting follows shell-like rules solely for tokenization; nothing is ever
-    passed through a shell.  Messages containing prose, code, or extra lines do
-    not become commands accidentally.
+    Returns None when there is no such line, or when the last non-empty line
+    sits inside an unterminated ``` fence (the message ends inside a code
+    block, so that line is code, not a command).
     """
-    if not message or len(message.splitlines()) != 1:
+    if not message:
+        return None
+    lines = [line for line in message.splitlines() if line.strip()]
+    if not lines:
+        return None
+    fence_open = False
+    for line in lines[:-1]:
+        if line.strip().startswith("```"):
+            fence_open = not fence_open
+    if fence_open:
+        return None
+    return lines[-1].strip()
+
+
+def parse_work_item_command(message: str) -> Optional[WorkItemCommand]:
+    """Parse a work-item command from an assistant message.
+
+    The command is either the entire message or its last non-empty line,
+    with everything before it treated as prose or code. A command line
+    anywhere else is ignored, so a quoted or discussed command never fires
+    accidentally. Commands are single-line. Quoting follows shell-like rules
+    solely for tokenization; nothing is ever passed through a shell.
+    """
+    line = command_line(message)
+    if line is None:
         return None
     try:
-        tokens = shlex.split(message.strip())
+        tokens = shlex.split(line)
     except ValueError:
         return None
     if not tokens:
@@ -717,14 +742,20 @@ class WorkItemStore:
 def render_work_item_prompt(policy: WorkItemPolicy) -> str:
     close_result = "Done" if policy.qc_mode == "optional" else "In review"
     return (
-        "\n\nWork items are enforced in this run. Use exactly one command on "
-        "a standalone line, with no prose, Markdown, or code in the same message:\n"
+        "\n\nWork items are enforced in this run. Put at most one command in "
+        "a message, on a single line, as its LAST line; prose or code may come "
+        "before it, nothing after it. Commands anywhere else are ignored. If "
+        "you also delegate, put the delegation before the command. Do not wrap "
+        "the command in backticks:\n"
         '- `open_work_item "<title>" "<body>"`\n'
         '- `close_work_item <id> "<completion summary>"`\n'
         "- `list_work_items`\n"
         "- `read_work_item <id>`\n"
         "Delegating to another agent automatically transfers your in-progress "
         "work items to that agent; you do not need to mention an item id. "
+        "When you receive a delegation and own no open work item for that "
+        "task, open one for your task first, with a short stage-style title "
+        '(e.g. "QC filtering"); close it when the task is done. '
         f"Closing moves the item to {close_result}. You cannot use `end_session` "
         "while you own a work item that is not Done."
     )

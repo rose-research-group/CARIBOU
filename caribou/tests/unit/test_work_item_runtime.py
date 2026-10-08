@@ -46,22 +46,56 @@ def test_apply_command_returns_none_for_non_command_messages(tmp_path) -> None:
     assert store.list()[0]["title"] == "Title"
 
 
-def test_apply_command_corrects_a_command_with_narration_instead_of_silently_dropping_it(
-    tmp_path,
-) -> None:
-    # Observed in practice: an agent prefaces the command with prose, the
-    # strict one-command-per-message grammar rejects it, and with no
-    # feedback the agent repeats the identical mistake forever. This must
-    # not silently return None — the agent needs a reason to self-correct.
+def test_apply_command_accepts_a_command_after_narration(tmp_path) -> None:
+    # Observed in practice: agents preface the command with prose. The last
+    # non-empty line may be the command.
     store = _store(tmp_path)
     message = (
         "I'll open a work item to track this.\n\n"
-        'open_work_item "Load dataset" "Run the full pipeline"'
+        'open_work_item "Load dataset" "Run the full pipeline"\n'
     )
     result = apply_command(store, message, owner="coder", turn=1)
     assert result is not None
+    assert result.success is True
+    assert store.list()[0]["title"] == "Load dataset"
+
+
+def test_apply_command_corrects_a_malformed_last_line_command(tmp_path) -> None:
+    # Without feedback the agent repeats the identical mistake forever.
+    store = _store(tmp_path)
+    message = "I'll open a work item.\nopen_work_item \"Load dataset\""
+    result = apply_command(store, message, owner="coder", turn=1)
+    assert result is not None
     assert result.success is False
-    assert "ENTIRE message" in result.feedback
+    assert "LAST line" in result.feedback
+    assert store.list() == []
+
+
+def test_apply_command_corrects_a_command_that_is_not_the_last_line(
+    tmp_path,
+) -> None:
+    # Observed in practice: `close_work_item ...` followed by
+    # `delegate_to_X`. The command is not applied, but the agent is told why
+    # instead of it vanishing.
+    store = _store(tmp_path)
+    for message in (
+        'open_work_item "Load" "Body"\nNow running the loader.',
+        'close_work_item 0 "Done"\ndelegate_to_QC_metrics',
+        "open_work_item Load\nNow running the loader.",
+    ):
+        result = apply_command(store, message, owner="coder", turn=1)
+        assert result is not None and result.success is False
+        assert "LAST line" in result.feedback
+    assert store.list() == []
+
+
+def test_apply_command_ignores_command_names_inside_code(tmp_path) -> None:
+    store = _store(tmp_path)
+    for message in (
+        "```python\nprint(1)\nopen_work_item Load",
+        "```python\nopen_work_item = 1\n```\nDone.",
+    ):
+        assert apply_command(store, message, owner="coder", turn=1) is None
     assert store.list() == []
 
 

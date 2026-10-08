@@ -16,6 +16,7 @@ from caribou.execution.work_items import (
     WorkItemCommandResult,
     WorkItemPolicy,
     WorkItemStore,
+    command_line,
     execute_work_item_command,
     parse_work_item_command,
 )
@@ -32,15 +33,20 @@ _COMMAND_NAMES = (
 
 
 def _looks_like_attempted_command(message: str) -> bool:
-    """True if some line looks like a work-item command that
-    `parse_work_item_command` nonetheless rejected — almost always because
-    the agent added prose, a header, or extra lines around it, violating the
-    one-command-per-message grammar. Used only to decide whether the silent
-    `None` case below deserves an explicit correction instead.
+    """True if any line outside code fences starts with a work-item command
+    name although `parse_work_item_command` rejected the message — bad
+    quoting, a missing argument, or a command that is not the last line
+    (e.g. `close_work_item ...` followed by `delegate_to_X`). Used only to
+    decide whether the `None` case below deserves an explicit correction
+    instead of the command being ignored without a word.
     """
-    for line in message.splitlines():
-        stripped = line.strip()
-        if any(stripped.startswith(name) for name in _COMMAND_NAMES):
+    in_fence = False
+    for raw in message.splitlines():
+        line = raw.strip()
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence and any(line.startswith(name) for name in _COMMAND_NAMES):
             return True
     return False
 
@@ -54,9 +60,9 @@ def apply_command(
     distinct from a `WorkItemCommandResult(success=False, ...)`, which means
     it *was* a command but was refused.
 
-    A message that merely *looks like* an attempted command (contains a
-    command name on some line) but fails the strict one-command-per-message
-    grammar — e.g. the agent narrates before issuing it — is not silently
+    A message with a line that merely *looks like* an attempted command
+    (starts with a command name) but that fails the grammar or is not the
+    last line is not silently
     dropped as `None`: without feedback the agent has no signal that its
     message didn't register, and it will repeat the identical mistake
     forever (observed in practice — see the implementation brief's follow-up
@@ -68,11 +74,12 @@ def apply_command(
         if _looks_like_attempted_command(message):
             return WorkItemCommandResult(
                 feedback=(
-                    "Work-item command not recognized. A work-item command "
-                    "must be the ENTIRE message, alone on its own line — no "
-                    "narration, headers, or anything else before or after "
-                    'it. Resend ONLY the command, e.g.: '
-                    'open_work_item "<title>" "<body>"'
+                    "Work-item command not recognized. Put exactly one "
+                    "command, on a single line, as the LAST line of the "
+                    "message (prose or code may come before it, nothing "
+                    "after it), with every argument quoted, e.g.: "
+                    'open_work_item "<title>" "<body>" or '
+                    'close_work_item <id> "<completion summary>"'
                 ),
                 success=False,
             )
