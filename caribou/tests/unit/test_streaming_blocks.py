@@ -195,15 +195,19 @@ def test_user_message_from_the_queue_syncs_blocks_before_the_llm_call(
         if e["type"] == "message_complete"
         and e["data"]["message"]["content"] == "redo it"
     )
-    warned = events[user_redo + 1]
-    assert warned["type"] == "block_changed"
-    assert warned["data"]["block"]["block_id"] == "blk-0001"
-    assert warned["data"]["block"]["status"] == "warn"
+    # The reject is not folded into blk-0001's status (it shows on the review
+    # gate), so no block_changed follows the message; its effect is that the
+    # next run opens attempt 2.
+    assert not any(
+        e["type"] == "block_changed"
+        and e["data"]["block"]["block_id"] == "blk-0001"
+        for e in events[user_redo:]
+    )
 
     submitted = _of(events, "code_submitted")
     assert [s["block_id"] for s in submitted] == ["blk-0001", "blk-0002"]
     index = load_blocks(tmp_path / "blocks.json")
     assert [(b["attempt"], b["status"]) for b in index["blocks"]] == [
-        (1, "warn"),
+        (1, "ok"),
         (2, "ok"),
     ]

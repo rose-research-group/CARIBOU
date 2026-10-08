@@ -150,7 +150,8 @@ def test_reject_closes_the_attempt_and_the_next_action_opens_attempt_two(tmp_pat
     )
 
     tracker.on_work_item_changed(rejected)
-    assert tracker.blocks()[0]["status"] == "warn"
+    # The verdict lives on the review gate; the block reflects its code only.
+    assert tracker.blocks()[0]["status"] == "ok"
 
     assert tracker.begin_action("coder", 4, "a2") == "blk-0002"
     block = tracker.blocks()[1]
@@ -190,7 +191,7 @@ def test_review_made_outside_the_loop_is_picked_up_by_sync(tmp_path):
     tracker.sync()  # idempotent
 
 
-def test_close_all_marks_a_rejected_attempt_warn_not_ok(tmp_path):
+def test_close_all_closes_a_rejected_attempt_by_its_code_alone(tmp_path):
     store = _store(tmp_path, qc_mode="required")
     tracker, _ = _tracker(store)
     item = store.open("QC", "b", "coder", 1)
@@ -202,7 +203,7 @@ def test_close_all_marks_a_rejected_attempt_warn_not_ok(tmp_path):
     )
 
     tracker.close_all()
-    assert tracker.blocks()[0]["status"] == "warn"
+    assert tracker.blocks()[0]["status"] == "ok"
 
 
 def test_transfer_adds_the_new_agent_to_the_same_block(tmp_path):
@@ -343,9 +344,9 @@ def test_emitted_records_are_snapshots_not_live_views(tmp_path):
     assert tracker.blocks()[0]["action_ids"] == ["a1", "a2"]
 
 
-def test_a_reject_after_an_ok_close_turns_the_block_warn(tmp_path):
-    # Optional QC: an evaluator reject leaves the item Done, but the attempt
-    # that already closed ok is now known to be rejected.
+def test_a_reject_after_an_ok_close_leaves_the_block_status_alone(tmp_path):
+    # Optional QC: an evaluator reject leaves the item Done. The verdict is
+    # shown on the review gate, not folded into the block's status.
     store = _store(tmp_path)
     tracker, changes = _tracker(store)
     item = store.open("QC", "b", "coder", 1)
@@ -357,12 +358,9 @@ def test_a_reject_after_an_ok_close_turns_the_block_warn(tmp_path):
     store.record_review(
         item["id"], evaluator="qc", turn=3, verdict="reject", assessment="no"
     )
-    tracker.sync()
-    assert tracker.blocks()[0]["status"] == "warn"
-    assert changes[-1]["block_id"] == "blk-0001"
-    assert changes[-1]["status"] == "warn"
     count = len(changes)
-    tracker.sync()  # idempotent
+    tracker.sync()
+    assert tracker.blocks()[0]["status"] == "ok"
     assert len(changes) == count
 
 
@@ -408,15 +406,14 @@ def test_human_reopen_moves_the_next_run_to_attempt_two(tmp_path):
     )
 
     # 2. A human rejects it (made outside the loop, e.g. the REST route):
-    #    the item goes back to In progress, and sync turns attempt 1 warn.
+    #    the item goes back to In progress. Attempt 1's block keeps its
+    #    code-based status; the reject shows on its review gate.
     reopened = store.record_review(
         item["id"], turn=3, verdict="reject", assessment="redo the thresholds"
     )
     assert reopened["status"] == "In progress"
     tracker.sync()
-    assert tracker.blocks()[0]["status"] == "warn"
-    assert changes[-1]["block_id"] == "blk-0001"
-    assert changes[-1]["status"] == "warn"
+    assert tracker.blocks()[0]["status"] == "ok"
 
     # 3. The next code run goes to a new attempt-2 block.
     assert tracker.begin_action("coder", 4, "a2") == "blk-0002"
@@ -426,12 +423,12 @@ def test_human_reopen_moves_the_next_run_to_attempt_two(tmp_path):
         item["id"], 2, "running",
     )
     assert second["action_ids"] == ["a2"]
-    assert tracker.blocks()[0]["status"] == "warn"
+    assert tracker.blocks()[0]["status"] == "ok"
     assert tracker.blocks()[0]["action_ids"] == ["a1"]
 
-    # Closing again ends attempt 2 ok; attempt 1 stays warn.
+    # Closing again ends attempt 2 ok.
     tracker.on_work_item_changed(store.close(item["id"], "s2", "coder", 5))
-    assert [b["status"] for b in tracker.blocks()] == ["warn", "ok"]
+    assert [b["status"] for b in tracker.blocks()] == ["ok", "ok"]
 
 
 def test_human_reopen_without_an_explicit_sync_is_picked_up_by_begin_action(tmp_path):
@@ -443,7 +440,7 @@ def test_human_reopen_without_an_explicit_sync_is_picked_up_by_begin_action(tmp_
     store.record_review(item["id"], turn=3, verdict="reject", assessment="redo")
 
     assert tracker.begin_action("coder", 4, "a2") == "blk-0002"
-    assert [b["status"] for b in tracker.blocks()] == ["warn", "running"]
+    assert [b["status"] for b in tracker.blocks()] == ["ok", "running"]
 
 
 # -- workbench focus and delegation handoffs --------------------------------
@@ -510,7 +507,7 @@ def test_reclosing_a_reopened_block_warns_when_an_earlier_action_failed(tmp_path
     assert tracker.blocks()[0]["status"] == "warn"
 
 
-def test_reclosing_a_reopened_rejected_attempt_is_warn(tmp_path):
+def test_reclosing_a_reopened_rejected_attempt_uses_its_code_alone(tmp_path):
     store = _store(tmp_path, qc_mode="required")
     tracker, _ = _tracker(store)
     item = store.open("QC", "b", "coder", 1)
@@ -522,7 +519,7 @@ def test_reclosing_a_reopened_rejected_attempt_is_warn(tmp_path):
             item["id"], evaluator="qc", turn=3, verdict="reject", assessment="no"
         )
     )
-    assert tracker.blocks()[0]["status"] == "warn"
+    assert tracker.blocks()[0]["status"] == "ok"
 
     tracker.set_focus("blk-0001")
     assert tracker.begin_action("coder", 4, "a2") == "blk-0001"
@@ -531,7 +528,7 @@ def test_reclosing_a_reopened_rejected_attempt_is_warn(tmp_path):
     tracker.sync()
     assert tracker.blocks()[0]["status"] == "running"
     tracker.clear_focus()
-    assert tracker.blocks()[0]["status"] == "warn"
+    assert tracker.blocks()[0]["status"] == "ok"
     assert len(tracker.blocks()) == 1
 
 

@@ -366,14 +366,16 @@ class BlockTracker:
         self._blocks.append(block)
         return block
 
-    def _close(self, block: Dict[str, Any], *, rejected: bool) -> None:
+    def _close(self, block: Dict[str, Any]) -> None:
+        # A block's status reflects only how its code ran; review verdicts
+        # live on the work item and are shown as the block's review gate.
         if block["status"] != _OPEN:
             return
         actions = block["action_ids"]
         failed = set(block["failed_action_ids"])
         if actions and actions[-1] in failed:
             block["status"] = "error"
-        elif failed or rejected:
+        elif failed:
             block["status"] = "warn"
         else:
             block["status"] = "ok"
@@ -394,29 +396,20 @@ class BlockTracker:
                 # A focused block stays open until the focus clears;
                 # `clear_focus` applies the close rules then.
                 continue
-            if block["status"] == "ok":
-                # A reject that arrives after the attempt closed ok (e.g. the
-                # item was Done, then reviewed) downgrades it to warn.
-                if _rejections(item) >= block["attempt"]:
-                    block["status"] = "warn"
-                    self._changed(block)
-                continue
             if block["status"] != _OPEN:
                 continue
             reason = self._item_close_reason(item, block)
             if reason is not None:
-                self._close(block, rejected=reason == "rejected")
+                self._close(block)
 
     def on_work_item_changed(self, item: Dict[str, Any]) -> None:
         """Close blocks the change ends: the item is Done (a), or the block's
-        attempt was rejected (b); and turn an `ok` block whose attempt was
-        rejected afterwards into `warn`. `item` is a full item
-        (`WorkItemStore.read`)."""
+        attempt was rejected (b). The verdict itself is not reflected in the
+        block's status. `item` is a full item (`WorkItemStore.read`)."""
         self._apply_item(item)
 
     def sync(self) -> None:
-        """Re-read the work item of every open or `ok` work-item block and
-        apply it.
+        """Re-read the work item of every open work-item block and apply it.
 
         Catches reviews, reopens and Done transitions made outside the runner
         loop. Idempotent.
@@ -425,7 +418,7 @@ class BlockTracker:
             {
                 block["work_item_id"]
                 for block in self._blocks
-                if block["status"] in (_OPEN, "ok")
+                if block["status"] == _OPEN
                 and not block["implicit"]
                 and not _is_inherited(block)
             }
@@ -519,11 +512,11 @@ class BlockTracker:
             return
         if block["implicit"]:
             if reopened:
-                self._close(block, rejected=False)
+                self._close(block)
             return
         item = self.work_items.read(int(block["work_item_id"]))
         if reopened:
-            self._close(block, rejected=_rejections(item) >= block["attempt"])
+            self._close(block)
         else:
             self._apply_item(item)
 
@@ -585,7 +578,7 @@ class BlockTracker:
                     self._pending_titles.pop(owner, None)
         last = self._last_block
         if last is not None and last is not block and last["implicit"]:
-            self._close(last, rejected=False)
+            self._close(last)
         # A work-item block closed only by session end (d) is matched again
         # after a resume: the same attempt continues, so it reopens.
         block["status"] = _OPEN
@@ -635,5 +628,5 @@ class BlockTracker:
         self._focus_reopened = False
         for block in self._blocks:
             if not _is_inherited(block):
-                self._close(block, rejected=False)
+                self._close(block)
         self._last_block = None

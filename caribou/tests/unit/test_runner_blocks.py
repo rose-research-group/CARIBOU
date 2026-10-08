@@ -200,21 +200,13 @@ def test_user_input_syncs_blocks_before_the_next_llm_call(tmp_path, monkeypatch)
     assistant = [
         i for i, e in enumerate(events) if e["event_type"] == "assistant_message"
     ]
-    # The fifth LLM response is the one after "redo it".
-    warned = [
-        i
-        for i, e in enumerate(events)
-        if e["event_type"] == "block_changed"
-        and e["payload"]["block"]["status"] == "warn"
-    ]
-    assert len(warned) == 1
-    assert assistant[3] < warned[0] < assistant[4]
-    assert events[warned[0]]["payload"]["block"]["block_id"] == "blk-0001"
+    # The reject is not folded into blk-0001's status (it shows on the
+    # review gate); its effect is that the next run opens attempt 2.
 
     submitted = _payloads(events, "code_submitted")
     assert [s["block_id"] for s in submitted] == ["blk-0001", "blk-0002"]
     index = load_blocks(tmp_path / "blocks.json")
     assert [(b["attempt"], b["status"]) for b in index["blocks"]] == [
-        (1, "warn"),
+        (1, "ok"),
         (2, "ok"),
     ]
