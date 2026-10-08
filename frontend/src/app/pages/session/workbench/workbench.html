@@ -1,0 +1,261 @@
+<div class="wb" [class.has-panel]="selected() || missingId()">
+  <div class="wb-center">
+    @if (brief(); as b) {
+      <section class="wb-goal" aria-label="Goal">
+        <div class="lbl">Goal</div>
+        <p class="ask">{{ b.deliverable }}</p>
+        @if (b.done_when.length > 0) {
+          <div class="disc" [class.on]="goalOpen()">
+            <button type="button" class="dh" [attr.aria-expanded]="goalOpen()" (click)="goalOpen.set(!goalOpen())">
+              <span class="ch" aria-hidden="true">▶</span>Done when ({{ b.done_when.length }})
+            </button>
+            @if (goalOpen()) {
+              <ul class="db">
+                @for (item of b.done_when; track $index) { <li>{{ item }}</li> }
+              </ul>
+            }
+          </div>
+        }
+      </section>
+    }
+
+    <section class="wb-pipe" aria-label="Analysis steps">
+      <div class="pipe-head">
+        <h2>Analysis</h2>
+        @if (blocks().length > 0) {
+          <span class="dim">{{ plural(blocks().length, 'step') }}</span>
+        }
+      </div>
+
+      @if (blocksError(); as err) {
+        <p class="wb-state error" role="alert">Could not load blocks: {{ err }}</p>
+      } @else if (blocksRecorded() === null) {
+        <p class="wb-state" role="status">
+          <app-icon name="loader" [size]="14" class="spin" /> Loading blocks…
+        </p>
+      } @else if (blocksRecorded() === false) {
+        <p class="wb-state">This session was recorded before blocks existed. Switch to Chat to see its history.</p>
+      } @else if (blocks().length === 0) {
+        <p class="wb-state">No code has run yet.</p>
+      } @else {
+        <div class="flow" [style.grid-template-columns]="gridColumns()">
+          <button type="button" class="rail" [class.on]="plotsOpen()" style="grid-row: 1; grid-column: 1"
+            [attr.aria-expanded]="plotsOpen()" (click)="plotsOpen.set(!plotsOpen())"
+            [title]="plotsOpen() ? 'Fold the plots row' : 'Unfold the plots row'">
+            <span class="ch" aria-hidden="true">▶</span>Plots ({{ plotCount() }})
+          </button>
+          <span class="rail fixed" style="grid-row: 2; grid-column: 1">Steps</span>
+
+          @for (b of blocks(); track b.block_id; let i = $index) {
+            @if (plotsOpen()) {
+              @if (plotFor(b); as plot) {
+                <button type="button" class="rd" [class.sel]="selectedId() === b.block_id"
+                  [style.grid-column]="i + 2" style="grid-row: 1"
+                  [attr.aria-label]="'Plot ' + plot.filename + ' from ' + b.title"
+                  (click)="select(b)">
+                  <span class="t">{{ plot.filename }}</span>
+                  <img [src]="previewUrl(plot)" [alt]="plot.filename" loading="lazy" />
+                </button>
+              } @else {
+                <span class="rd-none" [style.grid-column]="i + 2" style="grid-row: 1">no plot</span>
+              }
+            }
+            <button type="button" class="blk s-{{ b.status }}"
+              [class.implicit]="b.implicit" [class.sel]="selectedId() === b.block_id"
+              [class.last]="i === blocks().length - 1"
+              [style.grid-column]="i + 2" style="grid-row: 2"
+              [attr.aria-pressed]="selectedId() === b.block_id"
+              (click)="select(b)">
+              <span class="n">
+                <span class="glyph" aria-hidden="true">{{ STATUS_GLYPH[b.status] }}</span>
+                <span class="title">{{ b.title }}</span>
+              </span>
+              <span class="tag">{{ STATUS_LABEL[b.status] }}</span>
+              <span class="wi">{{ workItemLabel(b) }}</span>
+              <span class="m">{{ b.agents.join(', ') }}</span>
+              <span class="m">{{ turnSpan(b) }}</span>
+              <span class="m">
+                {{ plural(b.action_ids.length, 'action') }}@if (b.failed_action_ids.length > 0) {<span class="failed"> · {{ b.failed_action_ids.length }} failed</span>} · {{ plural(b.artifact_paths.length, 'artifact') }}
+              </span>
+            </button>
+          }
+        </div>
+        <p class="hint">Select a step for its work item, code and artifacts. Fold the plots row from its label.</p>
+      }
+    </section>
+  </div>
+
+  @if (selected(); as b) {
+    <aside class="insp" aria-label="Selected step">
+      <div class="ihead">
+        <div>
+          <div class="lbl">{{ b.block_id }}</div>
+          <h3>{{ b.title }}</h3>
+          <span class="status-tag s-{{ b.status }}">
+            <span aria-hidden="true">{{ STATUS_GLYPH[b.status] }}</span> {{ STATUS_LABEL[b.status] }}
+          </span>
+        </div>
+        <button type="button" class="btn btn-ghost btn-xs" aria-label="Close step details" title="Close"
+          (click)="closePanel()">
+          <app-icon name="x" />
+        </button>
+      </div>
+      <div class="ibody">
+        <dl class="kv">
+          <dt>Work item</dt><dd [class.dim]="b.implicit">{{ workItemLabel(b) }}</dd>
+          <dt>Agents</dt><dd>{{ b.agents.join(', ') || '—' }}</dd>
+          <dt>Turns</dt><dd>{{ turnSpan(b) }}</dd>
+          <dt>Actions</dt>
+          <dd>{{ b.action_ids.length }}@if (b.failed_action_ids.length > 0) {<span class="failed"> ({{ b.failed_action_ids.length }} failed)</span>}</dd>
+          <dt>Artifacts</dt><dd>{{ b.artifact_paths.length }}</dd>
+          <dt>Updated</dt><dd class="mono">{{ b.updated_at }}</dd>
+        </dl>
+
+        @if (b.failed_action_ids.length > 0) {
+          <div class="warnbox" role="note">
+            <app-icon name="alert-triangle" [size]="14" aria-hidden="true" />
+            {{ b.failed_action_ids.length }} of {{ b.action_ids.length }} actions failed.
+          </div>
+        }
+
+        @if (selectedPlot(); as plot) {
+          <div class="thumb"><app-artifact-card [artifact]="plot" /></div>
+        }
+
+        @if (b.work_item_id !== null) {
+          <div class="disc" [class.on]="openSections().has('workitem')">
+            <button type="button" class="dh" [attr.aria-expanded]="openSections().has('workitem')"
+              (click)="toggleSection('workitem')">
+              <span class="ch" aria-hidden="true">▶</span>Work item #{{ b.work_item_id }}
+              @if (workItemSummary(); as w) { <span class="dim">· {{ w.status }}</span> }
+            </button>
+            @if (openSections().has('workitem')) {
+              <div class="db">
+                @if (workItem(); as w) {
+                  <p class="wi-title">{{ w.title }}</p>
+                  <dl class="kv">
+                    <dt>Status</dt><dd>{{ w.status }}</dd>
+                    <dt>Owner</dt><dd>{{ w.owner }}</dd>
+                  </dl>
+                  @if (w.completion_summary) {
+                    <div class="lbl sub">Completion summary</div>
+                    <p class="summary">{{ w.completion_summary }}</p>
+                  }
+                  <div class="lbl sub">Reviews ({{ w.reviews.length }})</div>
+                  @for (r of w.reviews; track $index) {
+                    <div class="review" [class.reject]="r.verdict === 'reject'" [class.approve]="r.verdict === 'approve'">
+                      <div class="review-head">
+                        <span class="verdict">
+                          <span aria-hidden="true">{{ r.verdict === 'approve' ? '✓' : r.verdict === 'reject' ? '✗' : '·' }}</span>
+                          {{ r.verdict ?? 'no verdict' }}
+                        </span>
+                        <span class="dim">{{ r.evaluator }} · turn {{ r.turn }}</span>
+                      </div>
+                      @if (r.assessment) { <p>{{ r.assessment }}</p> }
+                      @if (r.error) { <p class="failed">{{ r.error }}</p> }
+                    </div>
+                  } @empty {
+                    <p class="dim">No reviews yet.</p>
+                  }
+                } @else if (workItemError(); as err) {
+                  <p class="failed" role="alert">Could not load work item #{{ b.work_item_id }}: {{ err }}</p>
+                } @else {
+                  <p class="dim" role="status">Loading work item…</p>
+                }
+              </div>
+            }
+          </div>
+        }
+
+        <div class="disc" [class.on]="openSections().has('code')">
+          <button type="button" class="dh" [attr.aria-expanded]="openSections().has('code')"
+            (click)="toggleSection('code')">
+            <span class="ch" aria-hidden="true">▶</span>Code ({{ b.action_ids.length }})
+          </button>
+          @if (openSections().has('code')) {
+            <div class="db">
+              @if (loadedActionCount() < actions().length) {
+                <p class="dim">{{ loadedActionCount() }} of {{ actions().length }} actions loaded in this view.</p>
+              }
+              @for (a of actions(); track a.actionId) {
+                <div class="row" [class.failed-row]="a.failed">
+                  @if (a.codeEvent; as ev) {
+                    <button type="button" class="row-head" [attr.aria-expanded]="openRows().has(a.actionId)"
+                      (click)="toggleRow(a.actionId)">
+                      <span class="ch" aria-hidden="true">▶</span>
+                      <span>{{ a.position }}.</span>
+                      <span class="row-status" [class.failed]="a.failed">
+                        <span aria-hidden="true">{{ a.failed ? '✗' : ev.result ? '✓' : '▶' }}</span>
+                        {{ a.failed ? 'failed' : ev.result ? 'ok' : 'running' }}
+                      </span>
+                      <span class="dim">turn {{ a.turn }} · {{ ev.submitted.agent_name }}@if (ev.result) { · {{ ev.result.duration_ms }}ms}</span>
+                    </button>
+                    @if (openRows().has(a.actionId)) {
+                      <div appCodeCard [codeEvent]="ev" (copySource)="copySource.emit($event)"></div>
+                    }
+                  } @else {
+                    <div class="row-head static">
+                      <span>{{ a.position }}.</span>
+                      @if (a.failed) {
+                        <span class="row-status failed"><span aria-hidden="true">✗</span> failed</span>
+                      }
+                      <span class="mono dim">{{ a.actionId }}</span>
+                      <span class="dim">no code record in this view</span>
+                    </div>
+                  }
+                </div>
+              } @empty {
+                <p class="dim">No code actions.</p>
+              }
+            </div>
+          }
+        </div>
+
+        <div class="disc" [class.on]="openSections().has('artifacts')">
+          <button type="button" class="dh" [attr.aria-expanded]="openSections().has('artifacts')"
+            (click)="toggleSection('artifacts')">
+            <span class="ch" aria-hidden="true">▶</span>Artifacts ({{ b.artifact_paths.length }})
+          </button>
+          @if (openSections().has('artifacts')) {
+            <div class="db">
+              @for (e of artifactEntries(); track e.path) {
+                <div class="row">
+                  @if (e.artifact; as art) {
+                    <button type="button" class="row-head" [attr.aria-expanded]="openRows().has('art:' + e.path)"
+                      (click)="toggleRow('art:' + e.path)">
+                      <span class="ch" aria-hidden="true">▶</span>
+                      <span class="mono">{{ e.path }}</span>
+                      <span class="dim">{{ art.type }}</span>
+                    </button>
+                    @if (openRows().has('art:' + e.path)) {
+                      <app-artifact-card [artifact]="art" />
+                    }
+                  } @else {
+                    <div class="row-head static">
+                      <span class="mono">{{ e.path }}</span>
+                      <span class="dim">not in the artifact list yet</span>
+                    </div>
+                  }
+                </div>
+              } @empty {
+                <p class="dim">No artifacts.</p>
+              }
+            </div>
+          }
+        </div>
+      </div>
+    </aside>
+  } @else if (missingId(); as id) {
+    <aside class="insp" aria-label="Selected step">
+      <div class="ihead">
+        <div><h3>{{ id }}</h3></div>
+        <button type="button" class="btn btn-ghost btn-xs" aria-label="Close" title="Close" (click)="closePanel()">
+          <app-icon name="x" />
+        </button>
+      </div>
+      <div class="ibody">
+        <p class="failed" role="alert">Block {{ id }} was not found in this session.</p>
+      </div>
+    </aside>
+  }
+</div>

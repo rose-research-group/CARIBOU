@@ -16,3 +16,15 @@ export function dedupeArtifactsByPath(artifacts: Artifact[]): Artifact[] {
   }
   return [...byPath.values()];
 }
+
+/** Absolute download URL of an artifact's file. */
+export function artifactDownloadUrl(artifact: Artifact): string {
+  const base = document.baseURI.replace(/\/$/, '');
+  return `${base}/api/sessions/${artifact.session_id}/artifacts/${artifact.id}/download`;
+}
+
+/** Preview src; mtime_ns changes when the same path is overwritten, so the
+ *  browser does not keep showing the cached image of the old file. */
+export function artifactPreviewUrl(artifact: Artifact): string {
+  return `${artifactDownloadUrl(artifact)}?v=${artifact.mtime_ns}`;
+}

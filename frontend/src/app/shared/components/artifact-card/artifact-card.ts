@@ -1,6 +1,7 @@
 import { Component, Input, HostListener } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Artifact } from '../../../core/models/session.model';
+import { artifactDownloadUrl, artifactPreviewUrl } from '../../../core/utils/artifacts';
 import { TooltipDirective } from '../../directives/tooltip.directive';
 import { IconComponent } from '../icon/icon';
 
@@ -26,14 +27,11 @@ export class ArtifactCardComponent {
   onEscape(): void { this.lightboxOpen = false; }
 
   get downloadUrl(): string {
-    const base = document.baseURI.replace(/\/$/, '');
-    return `${base}/api/sessions/${this.artifact.session_id}/artifacts/${this.artifact.id}/download`;
+    return artifactDownloadUrl(this.artifact);
   }
 
-  /** Preview src; mtime_ns changes when the same path is overwritten, so the
-   *  browser does not keep showing the cached image of the old file. */
   get previewUrl(): string {
-    return `${this.downloadUrl}?v=${this.artifact.mtime_ns}`;
+    return artifactPreviewUrl(this.artifact);
   }
 
   formatSize(bytes: number): string {

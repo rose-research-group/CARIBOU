@@ -1,0 +1,42 @@
+@let ev = codeEvent();
+<div class="code-header">
+  <span class="agent-tag">{{ ev.submitted.agent_name }}</span>
+  <span class="exec-status"
+    [class.ok]="ev.result?.success"
+    [class.fail]="ev.result?.success === false"
+    [attr.aria-label]="ev.result ? (ev.result.success ? 'succeeded' : 'failed') : 'running'">
+    @if (ev.result) {
+      @if (ev.result.success) {
+        <app-icon name="check" [size]="14" />
+      } @else {
+        <app-icon name="x" [size]="14" />
+      }
+    } @else {
+      <app-icon name="loader" [size]="14" class="spin" />
+    }
+  </span>
+  @if (ev.result) {
+    <span class="duration"
+      [class.slow]="isSlow()"
+      [title]="isSlow() ? 'This block took longer than the slow threshold' : ''">
+      @if (isSlow()) {
+        <app-icon name="alert-triangle" [size]="12" aria-hidden="true" />
+      }
+      {{ ev.result.duration_ms }}ms
+    </span>
+  }
+  <button type="button" class="btn btn-ghost btn-xs code-copy"
+    aria-label="Copy code to clipboard"
+    title="Copy this code block to the clipboard"
+    (click)="copySource.emit(ev.submitted.source)">
+    <app-icon name="copy" />
+    <span>Copy</span>
+  </button>
+</div>
+<pre class="code-source">{{ ev.submitted.source }}</pre>
+@if (ev.result?.stdout) {
+  <pre class="code-stdout">{{ ev.result!.stdout }}</pre>
+}
+@if (ev.result?.stderr) {
+  <pre class="code-stderr">{{ ev.result!.stderr }}</pre>
+}

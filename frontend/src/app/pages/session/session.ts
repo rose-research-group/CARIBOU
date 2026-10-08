@@ -1,60 +1,34 @@
 import {
   Component, OnInit, OnDestroy, inject, signal, ViewChild,
-  ElementRef, AfterViewChecked, computed, HostListener, effect, untracked
+  ElementRef, AfterViewChecked, computed, HostListener, effect
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
 import { ActivatedRoute, Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
-import { Subscription, interval } from 'rxjs';
+import { Subscription, interval, map } from 'rxjs';
+import { toSignal } from '@angular/core/rxjs-interop';
 import { SessionService } from '../../core/services/session.service';
 import { ConfigService } from '../../core/services/config.service';
 import { AgentStreamService } from '../../core/services/agent-stream.service';
 import { ToastService } from '../../core/services/toast.service';
 import { PreferencesService } from '../../core/services/preferences.service';
-import { SessionCacheService } from '../../core/services/session-cache.service';
+import { SessionStore } from '../../core/state/session-store.service';
+import { ErrorRecord } from '../../core/state/session-state.model';
 import {
-  Message, Artifact, MemoryState, EvaluationResult, EvaluatorModelConfig,
+  MemoryState, EvaluationResult, EvaluatorModelConfig,
   RecoveryMode, SessionForkRequest, SessionResumeRequest,
-  WorkItemDetail, WorkItemSummary, SessionBriefFields,
+  WorkItemSummary, SessionBriefFields,
 } from '../../core/models/session.model';
-import {
-  MessageCompleteData, AgentSwitchData, CodeSubmittedData,
-  CodeResultData, ErrorData, StatusChangeData, RecoveryCompletedData,
-  SystemMessageData, WorkItemChangedData, BriefDraftData,
-} from '../../core/models/events.model';
 import { MessageBubbleComponent } from '../../shared/components/message-bubble/message-bubble';
+import { CodeCardComponent } from '../../shared/components/code-card/code-card';
 import { ArtifactCardComponent } from '../../shared/components/artifact-card/artifact-card';
 import { StatusIndicatorComponent } from '../../shared/components/status-indicator/status-indicator';
 import { IconComponent } from '../../shared/components/icon/icon';
 import { TooltipDirective } from '../../shared/directives/tooltip.directive';
 import { navigateTabToSession, reserveNewTab } from '../../core/utils/app-navigation';
-import { dedupeArtifactsByPath } from '../../core/utils/artifacts';
-
-export interface ErrorRecord {
-  code: string;
-  message: string;
-  fatal: boolean;
-  timestamp: string;
-  suggested_fix?: string | null;
-}
-
-export interface StatusEntry {
-  status: string;
-  reason: string | null;
-  timestamp: string;
-  count: number;
-}
-
-interface ChatItem {
-  kind: 'message' | 'delegation' | 'code' | 'error' | 'recovery';
-  turn?: number;
-  message?: Message;
-  delegation?: { from: string; to: string; command: string };
-  codeEvent?: { submitted: CodeSubmittedData; result?: CodeResultData };
-  error?: ErrorRecord;
-  recovery?: RecoveryCompletedData & { id: string; timestamp: string };
-}
+import { WorkbenchComponent } from './workbench/workbench';
+import { SessionView, ViewToggleComponent } from './workbench/view-toggle';
 
 const COMPACT_AFTER_ITEMS = 40;
 const VISIBLE_RECENT_ITEMS = 20;
@@ -69,9 +43,11 @@ type ArtifactFilter = 'all' | 'plot' | 'data' | 'other';
   standalone: true,
   imports: [
     CommonModule, FormsModule,
-    MessageBubbleComponent, ArtifactCardComponent, StatusIndicatorComponent,
-    IconComponent, TooltipDirective,
+    MessageBubbleComponent, CodeCardComponent, ArtifactCardComponent, StatusIndicatorComponent,
+    IconComponent, TooltipDirective, WorkbenchComponent, ViewToggleComponent,
   ],
+  // One store per session page: a fresh page starts from empty state.
+  providers: [SessionStore],
   templateUrl: './session.html',
   styleUrl: './session.scss',
 })
@@ -88,18 +64,28 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   stream = inject(AgentStreamService);
   private toasts = inject(ToastService);
   private prefsSvc = inject(PreferencesService);
-  private cache = inject(SessionCacheService);
+  private store = inject(SessionStore);
 
-  chatItems = signal<ChatItem[]>([]);
+  // Event-derived state lives in the store; these aliases keep the template's
+  // names.
+  chatItems = this.store.chatItems;
+  artifacts = this.store.artifacts;
+  errorLog = this.store.errorLog;
+  statusLog = this.store.statusLog;
+  waitingForAgent = this.store.waitingForAgent;
+  cancellingResponse = this.store.cancellingResponse;
+  awaitingCodeResult = this.store.awaitingCodeResult;
+  workItems = this.store.workItems;
+  selectedWorkItem = this.store.selectedWorkItem;
+  briefDraft = this.store.briefDraft;
+  briefEditDraft = this.store.briefEditDraft;
+  briefEditing = this.store.briefEditing;
+  submittingBriefDecision = this.store.submittingBriefDecision;
+  lastError = this.store.lastError;
+  hasRecoveryMilestone = this.store.hasRecoveryMilestone;
+
   olderConversationExpanded = signal(false);
-  artifacts = signal<Artifact[]>([]);
   userInput = signal('');
-  pendingCode = signal<Map<string, CodeSubmittedData>>(new Map());
-  errorLog = signal<ErrorRecord[]>([]);
-  statusLog = signal<StatusEntry[]>([]);
-  waitingForAgent = signal(false);
-  cancellingResponse = signal(false);
-  awaitingCodeResult = signal(false);
   showTimeline = signal(false);
   artifactFilter = signal<ArtifactFilter>('all');
   artifactSearch = signal('');
@@ -108,8 +94,6 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   evaluating = signal(false);
   evaluationResult = signal<EvaluationResult | null>(null);
   evaluationError = signal<string | null>(null);
-  workItems = signal<WorkItemSummary[]>([]);
-  selectedWorkItem = signal<WorkItemDetail | null>(null);
   workItemReviewing = signal(false);
   workItemError = signal<string | null>(null);
   editingEvaluatorModel = signal(false);
@@ -147,25 +131,17 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   private subs = new Subscription();
   private memoryPollSub: Subscription | null = null;
   private shouldScrollToBottom = false;
-  private cacheHydrated = false;
-  // Highest event seq whose effects are already in the state restored from
-  // sessionStorage. The server replays its full event log on connect, so
-  // handlers that APPEND to cached state skip events at or below it.
-  // (Reconnect replay within this page is dropped earlier, by the stream's own
-  // seq high-water mark.) Idempotent handlers still run for those events so
-  // un-cached state (pending code, brief draft) is rebuilt.
-  private hydratedSeq = 0;
 
   session = this.sessionSvc.currentSession;
+  // `?view=workbench` shows the read-only workbench; no param is the chat.
+  // Both views render from the one store and the one WebSocket.
+  private viewParam = toSignal(this.route.queryParamMap.pipe(map(p => p.get('view'))),
+    { initialValue: this.route.snapshot.queryParamMap.get('view') });
+  view = computed<SessionView>(() => this.viewParam() === 'workbench' ? 'workbench' : 'chat');
   // WS-5: the briefing conversation is a distinct phase, not a normal chat
-  // turn — `briefPhase` gates the interview view, `briefDraft` is the
-  // agent's current proposal (cleared once a decision is submitted).
+  // turn — `briefPhase` gates the interview view (the draft is in the store).
   briefPhase = computed(() => this.session()?.phase === 'briefing');
-  briefDraft = signal<SessionBriefFields | null>(null);
   frozenBrief = computed(() => this.session()?.brief ?? null);
-  submittingBriefDecision = signal(false);
-  briefEditDraft = signal<string>('');
-  briefEditing = signal(false);
   status = computed(() => this.session()?.status ?? 'stopped');
   currentAgent = computed(() => this.session()?.current_agent ?? '');
   isIdle = computed(() => this.status() === 'idle');
@@ -204,10 +180,6 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   thinkingLabel = computed(() =>
     this.isInitialInteractiveTurn() ? 'Getting environment set up…' : (this.currentAgent() || 'Agent')
   );
-  lastError = computed(() => {
-    const errs = this.errorLog();
-    return errs.length ? errs[errs.length - 1] : null;
-  });
   runState = computed<'idle' | 'thinking' | 'generating' | 'executing' | 'stopped' | 'error' | 'initializing' | 'recovering'>(() => {
     if (this.isError()) return 'error';
     if (this.isInitializing()) return 'initializing';
@@ -234,9 +206,6 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.chatItems().filter(item =>
       this.developerMode() || item.kind !== 'message' || item.message?.role !== 'system'
     )
-  );
-  hasRecoveryMilestone = computed(() =>
-    this.chatItems().some(item => item.kind === 'recovery')
   );
   hiddenChatItemCount = computed(() => {
     const count = this.displayChatItems().length;
@@ -357,6 +326,12 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   });
 
   constructor() {
+    effect(() => {
+      const param = this.viewParam();
+      if (param !== null && param !== 'workbench' && param !== 'chat') {
+        this.toasts.show({ kind: 'error', title: `Unknown view "${param}"`, detail: 'Showing the chat view.', ttlMs: 6000 });
+      }
+    });
     // Reactive tab-title notifications when session completes.
     effect(() => {
       const status = this.status();
@@ -378,38 +353,12 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
         document.title = this.originalTitle;
       }
     });
-
-    // Persist chat / artifacts / logs to sessionStorage for refresh recovery.
-    effect(() => {
-      const s = this.session();
-      if (!s || !this.cacheHydrated) return;
-      this.cache.write(s.id, {
-        chatItems: this.chatItems(),
-        artifacts: this.artifacts(),
-        errorLog: this.errorLog(),
-        statusLog: this.statusLog(),
-        // untracked: every event (tokens included) bumps seq; only changes to
-        // the cached signals above should trigger a rewrite.
-        lastSeq: Math.max(this.hydratedSeq, untracked(() => this.stream.lastSeq())),
-      });
-    });
   }
 
   ngOnInit(): void {
     const id = this.route.snapshot.paramMap.get('id')!;
     // Hydrate from sessionStorage FIRST so refresh isn't jarring.
-    const cached = this.cache.read(id);
-    if (cached) {
-      const stale = Date.now() - cached.cachedAt > 5 * 60 * 1000;
-      if (!stale) {
-        this.chatItems.set(cached.chatItems as ChatItem[] ?? []);
-        this.artifacts.set(cached.artifacts as Artifact[] ?? []);
-        this.errorLog.set(cached.errorLog as ErrorRecord[] ?? []);
-        this.statusLog.set(cached.statusLog as StatusEntry[] ?? []);
-        this.hydratedSeq = cached.lastSeq;
-      }
-    }
-    this.cacheHydrated = true;
+    this.store.attach(id);
 
     this.sessionSvc.getSession(id).subscribe({
       next: () => {
@@ -419,19 +368,13 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
         this.stream.connect(id);
         this.sessionSvc.getMessages(id).subscribe(msgs => {
           // Only replace chat when server has more/newer messages than cache.
-          if (msgs.length >= this.chatItems().filter(c => c.kind === 'message').length) {
-            const items: ChatItem[] = msgs.map(m => ({ kind: 'message' as const, message: m, turn: m.turn }));
-            const eventItems = this.chatItems().filter(item => item.kind !== 'message');
-            this.chatItems.set(
-              [...items, ...eventItems].sort(
-                (a, b) => (a.turn ?? a.message?.turn ?? 0) - (b.turn ?? b.message?.turn ?? 0)
-              )
-            );
+          if (this.store.mergeServerMessages(msgs)) {
             this.shouldScrollToBottom = true;
           }
         });
-        this.sessionSvc.getArtifacts(id).subscribe(a => this.artifacts.set(dedupeArtifactsByPath(a)));
+        this.store.refreshArtifacts();
         this.loadWorkItems(id);
+        this.store.hydrateBlocks();
         this.sessionStartTs = Date.now();
         this.fetchMemoryState(id);
       },
@@ -475,178 +418,20 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
       if (this.isRecovering()) this.sessionSvc.getSession(id).subscribe();
     }));
 
-    this.subs.add(this.stream.messageComplete$.subscribe(ev => {
-      const d = ev.data as MessageCompleteData;
-      this.upsertMessage(d.message);
-      this.awaitingCodeResult.set(false);
-      if (this.autoScrollEnabled()) this.shouldScrollToBottom = true;
-    }));
-
-    this.subs.add(this.stream.agentSwitch$.subscribe(ev => {
-      const d = ev.data as AgentSwitchData;
-      if (ev.seq <= this.hydratedSeq) return;
-      this.chatItems.update(items => [
-        ...items,
-        { kind: 'delegation', turn: ev.turn, delegation: { from: d.from_agent, to: d.to_agent, command: d.command } }
-      ]);
-    }));
-
-    this.subs.add(this.stream.codeSubmitted$.subscribe(ev => {
-      const d = ev.data as CodeSubmittedData;
-      const key = `${ev.turn}-${d.block_index}`;
-      this.pendingCode.update(m => { const n = new Map(m); n.set(key, d); return n; });
-      this.awaitingCodeResult.set(true);
-      // Card already restored from the session cache.
-      if (ev.seq <= this.hydratedSeq) return;
-      this.chatItems.update(items => [...items, {
-        kind: 'code',
-        turn: ev.turn,
-        codeEvent: { submitted: d },
-      }]);
-      if (this.autoScrollEnabled()) this.shouldScrollToBottom = true;
-    }));
-
-    this.subs.add(this.stream.codeResult$.subscribe(ev => {
-      const result = ev.data as CodeResultData;
-      const key = `${ev.turn}-${result.block_index}`;
-      this.pendingCode.update(m => { const n = new Map(m); n.delete(key); return n; });
-      // Attach to the card itself rather than requiring a pendingCode hit: a
-      // card restored from the cache mid-execution has no pending entry.
-      // Cards that already carry a result (replayed, cached) are left alone.
-      let attached = false;
-      this.chatItems.update(items => {
-        for (let i = items.length - 1; i >= 0; i--) {
-          const item = items[i];
-          if (item.kind === 'code' && item.codeEvent && !item.codeEvent.result &&
-              item.codeEvent.submitted.block_index === result.block_index && item.turn === ev.turn) {
-            const updated = [...items];
-            updated[i] = { ...item, codeEvent: { submitted: item.codeEvent.submitted, result } };
-            attached = true;
-            return updated;
-          }
-        }
-        return items;
-      });
-      if (attached && this.autoScrollEnabled()) this.shouldScrollToBottom = true;
-      if (this.pendingCode().size === 0) {
-        this.awaitingCodeResult.set(false);
-      }
-    }));
-
-    // The event payload carries no artifact id (needed for the download URL),
-    // so refetch the list; an overwritten file keeps its `path` and replaces
-    // the existing entry rather than adding a duplicate card.
-    this.subs.add(this.stream.artifacts$.subscribe(() => {
-      this.sessionSvc.getArtifacts(id).subscribe(a => this.artifacts.set(dedupeArtifactsByPath(a)));
-    }));
-
-    this.subs.add(this.stream.workItemChanges$.subscribe(ev => {
-      const d = ev.data as WorkItemChangedData;
-      this.workItems.update(items => {
-        const summary: WorkItemSummary = d.item;
-        return [...items.filter(item => item.id !== summary.id), summary]
-          .sort((a, b) => a.id - b.id);
-      });
-      if (this.selectedWorkItem()?.id === d.item.id) {
-        this.selectedWorkItem.set(d.item);
-      }
-    }));
-
-    this.subs.add(this.stream.briefDraft$.subscribe(ev => {
-      const d = ev.data as BriefDraftData;
-      this.briefDraft.set(d.brief);
-      this.briefEditDraft.set(JSON.stringify(d.brief, null, 2));
-      this.briefEditing.set(false);
-    }));
-
-    this.subs.add(this.stream.briefAccepted$.subscribe(() => {
-      this.briefDraft.set(null);
-      this.briefEditing.set(false);
-      this.submittingBriefDecision.set(false);
-    }));
-
-    this.subs.add(this.stream.phaseChange$.subscribe(() => {
-      // Phase lives on the Session record itself, not just the event
-      // stream — refetch so `briefPhase`/`frozenBrief` pick up the change.
-      this.sessionSvc.getSession(id).subscribe();
-    }));
-
-    this.subs.add(this.stream.errors$.subscribe(ev => {
-      this.waitingForAgent.set(false);
-      if (ev.seq <= this.hydratedSeq) return;
-      const d = ev.data as ErrorData;
-      const record: ErrorRecord = {
-        code: d.code,
-        message: d.message,
-        fatal: d.fatal,
-        timestamp: ev.timestamp,
-        suggested_fix: d.suggested_fix ?? null,
-      };
-      this.errorLog.update(errs => [...errs, record]);
-      this.chatItems.update(items => [...items, { kind: 'error', turn: ev.turn, error: record }]);
-      if (this.autoScrollEnabled()) this.shouldScrollToBottom = true;
-      if (!d.fatal && this.prefsSvc.prefs().toastNotifications) {
+    // Every session event goes through the store's reducer; what is left
+    // here are the side effects that need this component.
+    this.subs.add(this.stream.events$.subscribe(ev => {
+      const outcome = this.store.apply(ev);
+      if (outcome.status !== null) this.followStatusForMemoryPolling(outcome.status, id);
+      if (outcome.scroll && this.autoScrollEnabled()) this.shouldScrollToBottom = true;
+      if (outcome.nonFatalError && this.prefsSvc.prefs().toastNotifications) {
         this.toasts.show({
           kind: 'warn',
-          title: `${d.code}`,
-          detail: d.message,
+          title: `${outcome.nonFatalError.code}`,
+          detail: outcome.nonFatalError.message,
           ttlMs: 6000,
         });
       }
-    }));
-
-    this.subs.add(this.stream.statusChanges$.subscribe(ev => {
-      const d = ev.data as StatusChangeData;
-      if (d.status === 'idle' || d.status === 'stopped' || d.status === 'error') {
-        this.waitingForAgent.set(false);
-        this.cancellingResponse.set(false);
-      }
-      if (d.status === 'running' && !this.memoryPollSub) {
-        this.startMemoryPolling(id);
-      } else if ((d.status === 'stopped' || d.status === 'error') && this.memoryPollSub) {
-        this.stopMemoryPolling(id);
-      }
-      if (ev.seq <= this.hydratedSeq) return;
-      this.statusLog.update(log => {
-        const last = log[log.length - 1];
-        if (last && last.status === d.status && last.reason === d.reason) {
-          return [...log.slice(0, -1), { ...last, count: last.count + 1 }];
-        }
-        return [...log, { status: d.status, reason: d.reason ?? null, timestamp: ev.timestamp, count: 1 }];
-      });
-    }));
-
-    this.subs.add(this.stream.systemMessages$.subscribe(ev => {
-      const d = ev.data as SystemMessageData;
-      this.upsertMessage({
-        id: d.id,
-        session_id: ev.session_id,
-        turn: ev.turn,
-        role: 'system',
-        agent_name: d.category || 'System',
-        content: d.content,
-        timestamp: ev.timestamp,
-        is_delegation: false,
-      });
-    }));
-
-    this.subs.add(this.stream.recoveryCompleted$.subscribe(ev => {
-      const d = ev.data as RecoveryCompletedData;
-      const id = `recovery-${ev.timestamp.replace(/[^a-zA-Z0-9]/g, '-')}`;
-      this.chatItems.update(items => {
-        if (items.some(item => item.kind === 'recovery' && item.recovery?.id === id)) {
-          return items;
-        }
-        return [
-          ...items,
-          {
-            kind: 'recovery',
-            turn: ev.turn,
-            recovery: { ...d, id, timestamp: ev.timestamp },
-          },
-        ];
-      });
-      if (this.autoScrollEnabled()) this.shouldScrollToBottom = true;
     }));
   }
 
@@ -674,6 +459,14 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     });
   }
 
+  private followStatusForMemoryPolling(status: string, id: string): void {
+    if (status === 'running' && !this.memoryPollSub) {
+      this.startMemoryPolling(id);
+    } else if ((status === 'stopped' || status === 'error') && this.memoryPollSub) {
+      this.stopMemoryPolling(id);
+    }
+  }
+
   private startMemoryPolling(id: string): void {
     if (!this.memoryActive()) return;
     this.stopMemoryPolling();
@@ -699,47 +492,19 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     } else {
       this.stream.sendUserMessage(content);
     }
-    this.waitingForAgent.set(true);
     this.userInput.set('');
     this.pushHistory(content);
-    this.chatItems.update(items => [...items, {
-      kind: 'message',
-      turn: s.current_turn + 1,
-      message: {
-        id: 'pending-' + Date.now(),
-        session_id: s.id,
-        turn: s.current_turn + 1,
-        role: 'user',
-        agent_name: '',
-        content,
-        timestamp: new Date().toISOString(),
-        is_delegation: false,
-      }
-    }]);
+    this.store.sendUserMessage(s.id, s.current_turn + 1, content);
     this.shouldScrollToBottom = true;
   }
 
   continueSession(): void {
     const s = this.session();
     if (!s || s.status !== 'idle' || this.waitingForAgent()) return;
-    this.stream.sendUserMessage('Please continue with the next step.');
-    this.waitingForAgent.set(true);
-    this.pushHistory('Continue');
     const content = 'Please continue with the next step.';
-    this.chatItems.update(items => [...items, {
-      kind: 'message',
-      turn: s.current_turn + 1,
-      message: {
-        id: 'pending-' + Date.now(),
-        session_id: s.id,
-        turn: s.current_turn + 1,
-        role: 'user',
-        agent_name: '',
-        content,
-        timestamp: new Date().toISOString(),
-        is_delegation: false,
-      }
-    }]);
+    this.stream.sendUserMessage(content);
+    this.pushHistory('Continue');
+    this.store.sendUserMessage(s.id, s.current_turn + 1, content);
     this.shouldScrollToBottom = true;
   }
 
@@ -888,7 +653,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   cancelResponse(): void {
     if (!this.isRunning() || this.session()?.mode !== 'interactive') return;
-    this.cancellingResponse.set(true);
+    this.store.markCancelling();
     this.stream.cancelResponse();
   }
 
@@ -914,7 +679,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     const id = sessionId ?? this.session()?.id;
     if (!id) return;
     this.sessionSvc.getWorkItems(id).subscribe({
-      next: items => this.workItems.set(items),
+      next: items => this.store.setWorkItems(items),
       error: err => this.workItemError.set(err?.error?.detail ?? 'Unable to load work items.'),
     });
   }
@@ -924,7 +689,7 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     if (!id) return;
     this.workItemError.set(null);
     this.sessionSvc.getWorkItem(id, itemId).subscribe({
-      next: item => this.selectedWorkItem.set(item),
+      next: item => this.store.setSelectedWorkItem(item),
       error: err => this.workItemError.set(err?.error?.detail ?? 'Unable to load work item.'),
     });
   }
@@ -941,11 +706,8 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.sessionSvc.reviewWorkItem(id, itemId).subscribe({
       next: result => {
         this.workItemReviewing.set(false);
-        this.selectedWorkItem.set(result.item);
-        this.workItems.update(items => [
-          ...items.filter(item => item.id !== result.item.id),
-          result.item,
-        ].sort((a, b) => a.id - b.id));
+        this.store.setSelectedWorkItem(result.item);
+        this.store.upsertWorkItem(result.item);
       },
       error: err => {
         this.workItemReviewing.set(false);
@@ -957,10 +719,10 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   acceptBrief(): void {
     const id = this.session()?.id;
     if (!id || this.submittingBriefDecision()) return;
-    this.submittingBriefDecision.set(true);
+    this.store.setSubmittingBriefDecision(true);
     this.sessionSvc.submitBriefDecision(id, 'accept').subscribe({
       error: err => {
-        this.submittingBriefDecision.set(false);
+        this.store.setSubmittingBriefDecision(false);
         this.toasts.show({
           kind: 'error',
           title: 'Failed to accept the brief',
@@ -974,14 +736,14 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   rejectBrief(reason: string): void {
     const id = this.session()?.id;
     if (!id || this.submittingBriefDecision()) return;
-    this.submittingBriefDecision.set(true);
+    this.store.setSubmittingBriefDecision(true);
     this.sessionSvc.submitBriefDecision(id, 'reject', { reason }).subscribe({
       next: () => {
-        this.submittingBriefDecision.set(false);
-        this.briefDraft.set(null);
+        this.store.setSubmittingBriefDecision(false);
+        this.store.clearBriefDraft();
       },
       error: err => {
-        this.submittingBriefDecision.set(false);
+        this.store.setSubmittingBriefDecision(false);
         this.toasts.show({
           kind: 'error',
           title: 'Failed to reject the brief',
@@ -1002,10 +764,10 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
       this.toasts.show({ kind: 'error', title: 'Edited brief is not valid JSON', ttlMs: 4000 });
       return;
     }
-    this.submittingBriefDecision.set(true);
+    this.store.setSubmittingBriefDecision(true);
     this.sessionSvc.submitBriefDecision(id, 'edit', { brief: parsed }).subscribe({
       error: err => {
-        this.submittingBriefDecision.set(false);
+        this.store.setSubmittingBriefDecision(false);
         this.toasts.show({
           kind: 'error',
           title: 'Failed to submit the edited brief',
@@ -1014,6 +776,14 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
         });
       },
     });
+  }
+
+  setBriefEditDraft(text: string): void {
+    this.store.setBriefEditDraft(text);
+  }
+
+  setBriefEditing(editing: boolean): void {
+    this.store.setBriefEditing(editing);
   }
 
   openEvaluatorModelEditor(): void {
@@ -1096,11 +866,6 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     return this.formatDuration(Math.round(ms / 1000));
   }
 
-  isSlowBlock(codeEvent: { result?: CodeResultData }): boolean {
-    const ms = codeEvent.result?.duration_ms ?? 0;
-    return ms >= this.prefsSvc.prefs().slowCodeThresholdMs;
-  }
-
   jumpToAnchor(selector: string): void {
     this.olderConversationExpanded.set(true);
     setTimeout(() => {
@@ -1126,6 +891,15 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   toggleOlderConversation(): void {
     this.olderConversationExpanded.update(v => !v);
+  }
+
+  setView(view: SessionView): void {
+    this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { view: view === 'workbench' ? 'workbench' : null },
+      queryParamsHandling: 'merge',
+      preserveFragment: true,
+    });
   }
 
   toggleTimeline(): void {
@@ -1251,26 +1025,6 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
       osc.start();
       setTimeout(() => { osc.stop(); ctx.close(); }, 180);
     } catch {}
-  }
-
-  private upsertMessage(message: Message): void {
-    this.chatItems.update(items => {
-      if (items.some(item => item.kind === 'message' && item.message?.id === message.id)) {
-        return items;
-      }
-      const pendingIndex = items.findIndex(item =>
-        item.kind === 'message' &&
-        item.message?.id.startsWith('pending-') &&
-        item.message.role === message.role &&
-        item.message.content === message.content
-      );
-      if (pendingIndex >= 0) {
-        return items.map((item, index) =>
-          index === pendingIndex ? { kind: 'message', message, turn: message.turn } : item
-        );
-      }
-      return [...items, { kind: 'message', message, turn: message.turn }];
-    });
   }
 
   private loadHistory(): string[] {

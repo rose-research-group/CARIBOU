@@ -1,4 +1,5 @@
 import { Artifact, Message, WorkItemDetail, SessionBriefFields } from './session.model';
+import { Block } from './block.model';
 
 export interface AgentEventEnvelope<T = unknown> {
   type: AgentEventType;
@@ -26,6 +27,7 @@ export type AgentEventType =
   | 'brief_draft'
   | 'brief_accepted'
   | 'phase_change'
+  | 'block_changed'
   | 'error'
   | 'pong';
 
@@ -50,6 +52,10 @@ export interface CodeSubmittedData {
   source: string;
   block_index: number;
   total_blocks: number;
+  /** make_action_id(...) of this code block; matches Block.action_ids. */
+  action_id?: string;
+  /** Block this action was attributed to (absent from servers before blocks). */
+  block_id?: string | null;
 }
 
 export interface CodeResultData {
@@ -59,10 +65,14 @@ export interface CodeResultData {
   success: boolean;
   duration_ms: number;
   block_index: number;
+  action_id?: string;
+  block_id?: string | null;
 }
 
 export interface ArtifactEventData {
   artifact: Artifact & { local_path: string };
+  /** The producing action's block; null when the artifact has no action_id. */
+  block_id?: string | null;
 }
 
 export interface StatusChangeData {
@@ -119,6 +129,11 @@ export interface PhaseChangeData {
   phase: 'briefing' | 'execution';
 }
 
+/** Emitted every time a block is created or any of its fields change. */
+export interface BlockChangedData {
+  block: Block;
+}
+
 export type AgentEvent =
   | AgentEventEnvelope<TokenEventData>
   | AgentEventEnvelope<MessageCompleteData>
@@ -134,5 +149,6 @@ export type AgentEvent =
   | AgentEventEnvelope<BriefDraftData>
   | AgentEventEnvelope<BriefAcceptedData>
   | AgentEventEnvelope<PhaseChangeData>
+  | AgentEventEnvelope<BlockChangedData>
   | AgentEventEnvelope<ErrorData>
   | AgentEventEnvelope<{}>;

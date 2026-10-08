@@ -28,6 +28,7 @@
       </span>
     </div>
     <div class="header-right">
+      <app-view-toggle [view]="view()" (viewChange)="setView($event)" />
       <div class="header-metrics" *ngIf="session() as s">
         <span class="metric" title="Turn progress">
           <span class="metric-label">Turn</span>
@@ -51,7 +52,7 @@
         title="Toggle turn timeline"
         [class.active]="showTimeline()"
         (click)="toggleTimeline()"
-        *ngIf="displayChatItems().length > 4 || hasRecoveryMilestone()">
+        *ngIf="view() === 'chat' && (displayChatItems().length > 4 || hasRecoveryMilestone())">
         <app-icon [name]="showTimeline() ? 'x' : 'list'" />
         <span>Timeline</span>
       </button>
@@ -187,7 +188,7 @@
   <div class="session-body">
 
     <!-- Timeline -->
-    @if (showTimeline() && turnAnchors().length > 0) {
+    @if (view() === 'chat' && showTimeline() && turnAnchors().length > 0) {
       <nav class="timeline" aria-label="Turn timeline">
         <div class="timeline-header">Timeline</div>
         <div class="timeline-list">
@@ -202,7 +203,9 @@
     }
 
     <!-- Chat panel -->
-    <main class="chat-panel" #chatPanel (scroll)="onScroll($event)">
+    <!-- The chat stays mounted (hidden) in the workbench view so its scroll
+         position and element refs survive a toggle. -->
+    <main class="chat-panel" #chatPanel (scroll)="onScroll($event)" [hidden]="view() !== 'chat'">
       <!-- Briefing phase (WS-5): a distinct pre-execution interview. The
            conversation itself renders in the normal chat below; this
            banner + draft card are the confirmation gate on top of it. -->
@@ -247,10 +250,10 @@
                   class="brief-edit-textarea"
                   rows="10"
                   [ngModel]="briefEditDraft()"
-                  (ngModelChange)="briefEditDraft.set($event)"
+                  (ngModelChange)="setBriefEditDraft($event)"
                 ></textarea>
                 <div class="brief-draft-actions">
-                  <button class="btn btn-ghost btn-sm" type="button" (click)="briefEditing.set(false)">
+                  <button class="btn btn-ghost btn-sm" type="button" (click)="setBriefEditing(false)">
                     Cancel
                   </button>
                   <button
@@ -276,7 +279,7 @@
                     class="btn btn-ghost btn-sm"
                     type="button"
                     [disabled]="submittingBriefDecision()"
-                    (click)="briefEditing.set(true)"
+                    (click)="setBriefEditing(true)"
                   >
                     Edit
                   </button>
@@ -336,49 +339,8 @@
             </div>
           }
           @if (item.kind === 'code' && item.codeEvent) {
-            <div class="code-item" [attr.data-turn]="item.turn">
-              <div class="code-header">
-                <span class="agent-tag">{{ item.codeEvent.submitted.agent_name }}</span>
-                <span class="exec-status"
-                  [class.ok]="item.codeEvent.result?.success"
-                  [class.fail]="item.codeEvent.result?.success === false"
-                  [attr.aria-label]="item.codeEvent.result ? (item.codeEvent.result.success ? 'succeeded' : 'failed') : 'running'">
-                  @if (item.codeEvent.result) {
-                    @if (item.codeEvent.result.success) {
-                      <app-icon name="check" [size]="14" />
-                    } @else {
-                      <app-icon name="x" [size]="14" />
-                    }
-                  } @else {
-                    <app-icon name="loader" [size]="14" class="spin" />
-                  }
-                </span>
-                @if (item.codeEvent.result) {
-                  <span class="duration"
-                    [class.slow]="isSlowBlock(item.codeEvent)"
-                    [title]="isSlowBlock(item.codeEvent) ? 'This block took longer than the slow threshold' : ''">
-                    @if (isSlowBlock(item.codeEvent)) {
-                      <app-icon name="alert-triangle" [size]="12" aria-hidden="true" />
-                    }
-                    {{ item.codeEvent.result.duration_ms }}ms
-                  </span>
-                }
-                <button type="button" class="btn btn-ghost btn-xs code-copy"
-                  aria-label="Copy code to clipboard"
-                  title="Copy this code block to the clipboard"
-                  (click)="copyToClipboard(item.codeEvent.submitted.source)">
-                  <app-icon name="copy" />
-                  <span>Copy</span>
-                </button>
-              </div>
-              <pre class="code-source">{{ item.codeEvent.submitted.source }}</pre>
-              @if (item.codeEvent.result?.stdout) {
-                <pre class="code-stdout">{{ item.codeEvent.result!.stdout }}</pre>
-              }
-              @if (item.codeEvent.result?.stderr) {
-                <pre class="code-stderr">{{ item.codeEvent.result!.stderr }}</pre>
-              }
-            </div>
+            <div appCodeCard [codeEvent]="item.codeEvent" [attr.data-turn]="item.turn"
+              (copySource)="copyToClipboard($event)"></div>
           }
           @if (item.kind === 'error' && item.error) {
             <div class="chat-error-item" [class.fatal]="item.error.fatal" [attr.data-turn]="item.turn"
@@ -489,6 +451,10 @@
         </button>
       }
     </main>
+
+    @if (view() === 'workbench') {
+      <app-workbench role="main" aria-label="Workbench" (copySource)="copyToClipboard($event)" />
+    }
 
     <!-- Sidebar -->
     <aside class="sidebar" aria-label="Session sidebar">

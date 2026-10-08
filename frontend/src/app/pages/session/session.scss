@@ -607,11 +607,6 @@
   to { transform: rotate(360deg); }
 }
 
-app-icon.spin {
-  animation: spin 0.9s linear infinite;
-  transform-origin: center;
-}
-
 /* ── Delegation indicator ── */
 .delegation-indicator {
   display: flex;
@@ -684,84 +679,6 @@ app-icon.spin {
   border-radius: 4px;
   font-size: 0.68rem;
   font-weight: 700;
-}
-
-/* ── Code block ── */
-.code-item {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-  font-size: 0.8rem;
-}
-
-.code-header {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.4rem 0.75rem;
-  border-bottom: 1px solid var(--border-light);
-  background: var(--surface-2);
-
-  .agent-tag { color: var(--cividis-blue); font-weight: 600; font-size: 0.75rem; }
-  .exec-status {
-    font-weight: 700; font-size: 0.8rem;
-    &.ok   { color: var(--success); }
-    &.fail { color: var(--error); }
-  }
-  .duration {
-    margin-left: auto;
-    color: var(--text-muted);
-    font-family: monospace;
-    font-size: 0.72rem;
-    &.slow {
-      color: var(--error);
-      font-weight: 600;
-      background: var(--error-bg);
-      border: 1px solid var(--error-border);
-      border-radius: 4px;
-      padding: 0.1rem 0.4rem;
-    }
-  }
-  .code-copy { margin-left: 0.3rem; }
-}
-
-/* Running code pulse */
-.code-header.running {
-  background: var(--primary-bg);
-  .exec-status { color: var(--cividis-warm); animation: pulse 1.2s ease-in-out infinite; }
-}
-
-@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.4 } }
-
-pre.code-source {
-  margin: 0;
-  padding: 0.85rem 1rem;
-  overflow-x: auto;
-  font-size: 0.86rem;
-  line-height: 1.55;
-  color: var(--cividis-navy);
-  background: var(--surface);
-}
-
-pre.code-stdout {
-  margin: 0;
-  padding: 0.6rem 1rem;
-  background: var(--success-bg);
-  border-top: 1px solid #D0E8D8;
-  color: var(--success);
-  font-size: 0.82rem;
-  line-height: 1.5;
-}
-
-pre.code-stderr {
-  margin: 0;
-  padding: 0.6rem 1rem;
-  background: var(--error-bg);
-  border-top: 1px solid var(--error-border);
-  color: var(--error);
-  font-size: 0.82rem;
-  line-height: 1.5;
 }
 
 /* ── Inline error ── */

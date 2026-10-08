@@ -7,6 +7,7 @@ import {
   EvaluatorModelState, EvaluatorModelUpdateRequest,
   WorkItemDetail, WorkItemReviewResult, WorkItemSummary, SessionBriefFields,
 } from '../models/session.model';
+import { BlocksResponse } from '../models/block.model';
 
 @Injectable({ providedIn: 'root' })
 export class SessionService {
@@ -101,6 +102,10 @@ export class SessionService {
       `api/sessions/${id}/work-items/${itemId}/review`,
       {},
     );
+  }
+
+  getBlocks(id: string): Observable<BlocksResponse> {
+    return this.http.get<BlocksResponse>(`api/sessions/${id}/blocks`);
   }
 
   submitBriefDecision(

@@ -6,7 +6,7 @@ import {
   CodeSubmittedData, CodeResultData, ArtifactEventData,
   StatusChangeData, ErrorData, RecoveryProgressData, RecoveryCompletedData,
   SystemMessageData, WorkItemChangedData,
-  BriefDraftData, BriefAcceptedData, PhaseChangeData
+  BriefDraftData, BriefAcceptedData, PhaseChangeData, BlockChangedData
 } from '../models/events.model';
 import { SessionService } from './session.service';
 import { SessionStatus } from '../models/session.model';
@@ -63,6 +63,7 @@ export class AgentStreamService implements OnDestroy {
   readonly briefDraft$ = this.ofType<BriefDraftData>('brief_draft');
   readonly briefAccepted$ = this.ofType<BriefAcceptedData>('brief_accepted');
   readonly phaseChange$ = this.ofType<PhaseChangeData>('phase_change');
+  readonly blockChanges$ = this.ofType<BlockChangedData>('block_changed');
   readonly errors$ = this.ofType<ErrorData>('error');
 
   // Current streaming state

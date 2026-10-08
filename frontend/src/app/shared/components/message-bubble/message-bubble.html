@@ -24,13 +24,7 @@
     @if (streaming) {
       <div class="bubble-content md-body streaming-text">{{ message.content }}</div>
     } @else if (toolCall) {
-      <div class="bubble-content tool-call" [attr.title]="toolCall!.label">
-        <span class="tool-call-badge">
-          <app-icon name="zap" [size]="12" aria-hidden="true" />
-          Tool call
-        </span>
-        <code class="tool-call-command">{{ toolCall!.command }}</code>
-      </div>
+      <div class="bubble-content" appToolChip [call]="toolCall!"></div>
     } @else {
       <div class="bubble-content md-body" [innerHTML]="displayContent | markdown"></div>
     }
