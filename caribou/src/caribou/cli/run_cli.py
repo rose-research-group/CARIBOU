@@ -31,6 +31,7 @@ from caribou.core.python_environments import (
     discover_python_environments,
     validate_python_environment_path,
 )
+from caribou.execution.blocks import BLOCKS_FILENAME
 
 if TYPE_CHECKING:
     from caribou.agents.AgentSystem import AgentSystem
@@ -317,11 +318,13 @@ def _setup_and_run_session(
                 if f.is_file()
             ]
 
-        # The CLI's own event log is session bookkeeping, not an agent output;
-        # keep it from changing the generated-files report.
+        # The CLI's own event log and block index are session bookkeeping, not
+        # agent outputs; keep them from changing the generated-files report.
         if auto_save_mode:
             output_files_info = [
-                f for f in output_files_info if f.get("name") != CLI_EVENT_LOG_FILENAME
+                f
+                for f in output_files_info
+                if f.get("name") not in (CLI_EVENT_LOG_FILENAME, BLOCKS_FILENAME)
             ]
 
         if output_files_info:

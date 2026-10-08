@@ -159,6 +159,18 @@ class BlockTracker:
             # session_id. Forks re-stamp the file explicitly via fork_blocks.
             self.session_id = index["session_id"]
             self._blocks = index["blocks"]
+        else:
+            # Write the empty index up front so a new session reads as
+            # "recording blocks, none yet" rather than as a session recorded
+            # before blocks existed (no file).
+            _write_index(
+                self.blocks_path,
+                {
+                    "schema_version": BLOCK_INDEX_SCHEMA,
+                    "session_id": self.session_id,
+                    "blocks": self._blocks,
+                },
+            )
         self._by_action: Dict[str, Dict[str, Any]] = {
             action_id: block
             for block in self._blocks
