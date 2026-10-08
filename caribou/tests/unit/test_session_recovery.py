@@ -126,3 +126,31 @@ def test_rolling_checkpoints_prune_superseded_unreferenced_versions(tmp_path: Pa
     retained = list((output_dir.parent / ".checkpoints").glob("checkpoint_*/checkpoint.json"))
     assert len(retained) == 3
     assert load_checkpoint(output_dir)["checkpoint_id"] == session.checkpoint_id
+
+
+def test_action_ledger_pairs_legacy_and_unified_action_ids() -> None:
+    """A web session recorded before action_id was unified
+    (`{session}:{turn}:{idx}`) and resumed afterwards
+    (`{session}:turn:{turn}:block:{idx}`) still pairs every result with its
+    submission: the ledger compares ids for equality and never parses them."""
+    from caribou.execution.event_ids import make_action_id
+    from caribou.execution.session_recovery import _action_ledger
+
+    new_id = make_action_id("s1", 2, 1)
+    events = [
+        {"type": "code_submitted", "turn": 1, "data": {"action_id": "s1:1:1", "source": "a = 1"}},
+        {"type": "code_submitted", "turn": 1, "data": {"action_id": "s1:1:2", "source": "b = 2"}},
+        {"type": "code_result", "turn": 1, "data": {"action_id": "s1:1:2", "success": False, "stderr": "boom"}},
+        {"type": "code_result", "turn": 1, "data": {"action_id": "s1:1:1", "success": True, "stdout": "ok"}},
+        {"type": "code_submitted", "turn": 2, "data": {"action_id": new_id, "source": "c = 3"}},
+        {"type": "code_result", "turn": 2, "data": {"action_id": new_id, "success": True}},
+    ]
+
+    ledger = _action_ledger(events, through_turn=2)
+
+    assert [(item["action_id"], item["source"], item["recorded_result"]["success"]) for item in ledger] == [
+        ("s1:1:1", "a = 1", True),
+        ("s1:1:2", "b = 2", False),
+        (new_id, "c = 3", True),
+    ]
+    assert ledger[1]["recorded_result"]["stderr"] == "boom"

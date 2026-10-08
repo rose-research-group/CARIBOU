@@ -1254,3 +1254,107 @@ def test_provider_call_receipt_is_strict_versioned_and_consistent() -> None:
         candidate = {**_valid_provider_call_receipt(), **updates}
         with pytest.raises(ValidationError):
             ProviderCallReceipt.model_validate(candidate)
+
+
+def test_code_events_use_the_shared_action_id_format(tmp_path):
+    from caribou.execution.event_ids import make_action_id
+
+    events = []
+    _run(
+        tmp_path,
+        SequenceLlm(["```python\nprint('hello')\n```"]),
+        RecordingSandbox(),
+        durable_run_id="run_ids_1",
+        event_callback=events.append,
+    )
+
+    ids = [
+        event["payload"]["action_id"]
+        for event in events
+        if event["event_type"] in {"code_submitted", "code_result"}
+    ]
+    assert ids == [make_action_id("run_ids_1", 1, 1)] * 2
+
+
+def _state_blocks(messages):
+    return [
+        message["content"]
+        for message in messages
+        if message["role"] == "system" and "WORK ITEMS" in message["content"]
+    ]
+
+
+def test_frozen_brief_goal_is_in_every_turns_state_block(tmp_path):
+    from caribou.execution.session_brief import SessionBrief
+
+    brief = SessionBrief(
+        deliverable="Annotated UMAP of all clusters",
+        in_scope=["clustering"],
+        done_when=["UMAP saved"],
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    llm = SequenceLlm(["thinking", "still thinking"])
+
+    _run(
+        tmp_path,
+        llm,
+        RecordingSandbox(),
+        history=[
+            {"role": "system", "content": "policy"},
+            {"role": "system", "content": "driver prompt"},
+        ],
+        max_turns=2,
+        brief=brief,
+    )
+
+    assert len(llm.request_kwargs) == 2
+    for request in llm.request_kwargs:
+        (block,) = _state_blocks(request["messages"])
+        assert block.startswith("BRIEF GOAL: Annotated UMAP of all clusters\n")
+
+
+def test_no_brief_means_no_goal_line(tmp_path):
+    llm = SequenceLlm(["thinking"])
+
+    _run(tmp_path, llm, RecordingSandbox())
+
+    (block,) = _state_blocks(llm.request_kwargs[0]["messages"])
+    assert "BRIEF GOAL" not in block
+
+
+def test_handoff_report_is_recorded_on_delegation(tmp_path):
+    llm = AttemptSequenceLlm(
+        [_sdk_response("delegate_to_coder"), _sdk_response("planner handoff")]
+    )
+
+    _run(tmp_path, llm, RecordingSandbox(), agent_report_memory=True)
+
+    assert llm.calls == 2
+    report_request = llm.request_kwargs[1]["messages"]
+    assert "handoff report" in report_request[0]["content"]
+
+
+def test_failed_handoff_report_stops_the_session(tmp_path):
+    llm = AttemptSequenceLlm(
+        [_sdk_response("delegate_to_coder"), RuntimeError("report provider down")]
+    )
+
+    with pytest.raises(RuntimeError, match="report provider down"):
+        _run(
+            tmp_path,
+            llm,
+            RecordingSandbox(),
+            agent_report_memory=True,
+            max_turns=3,
+        )
+
+    assert llm.calls == 2
+
+
+def test_empty_handoff_report_stops_the_session(tmp_path):
+    llm = AttemptSequenceLlm(
+        [_sdk_response("delegate_to_coder"), _sdk_response(None)]
+    )
+
+    with pytest.raises(RuntimeError, match="returned no content"):
+        _run(tmp_path, llm, RecordingSandbox(), agent_report_memory=True)

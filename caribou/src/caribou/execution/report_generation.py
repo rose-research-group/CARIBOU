@@ -127,10 +127,14 @@ def _generate_agent_report(
     model_name: str,
     agent_name: str,
     history_slice: List[Dict[str, str]],
-) -> Optional[str]:
+) -> str:
     """
     Ask the LLM to produce a concise handoff report for the completed agent.
     Emphasis is on data generated, file changes, and key outcomes.
+
+    Errors from the LLM call propagate: the report is the next agent's only
+    summary of this agent's work under report memory, so a session must not
+    silently continue without it. An empty response is likewise an error.
     """
     if not history_slice:
         return "No history available for this agent; nothing to report."
@@ -142,16 +146,17 @@ def _generate_agent_report(
         "Be concise but specific so the next agent can pick up where this one left off."
     )
 
-    try:
-        resp = llm_client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": report_prompt},
-                {"role": "user", "content": json.dumps(history_slice)},
-            ],
-            temperature=0.3,
+    resp = llm_client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": report_prompt},
+            {"role": "user", "content": json.dumps(history_slice)},
+        ],
+        temperature=0.3,
+    )
+    content = resp.choices[0].message.content
+    if not content:
+        raise RuntimeError(
+            f"Handoff report LLM call for agent '{agent_name}' returned no content"
         )
-        return resp.choices[0].message.content
-    except Exception as exc:
-        console.print(f"[yellow]Warning: Failed to generate agent report: {exc}[/yellow]")
-        return None
+    return content

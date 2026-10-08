@@ -38,6 +38,7 @@ try:
         _count_code_blocks,
         _code_preview,
     )
+    from caribou.execution.event_ids import make_action_id
     from caribou.execution.path_utils import _init_paths, get_default_runs_dir
     from caribou.execution.report_generation import (
         AgentReportMemory,
@@ -965,7 +966,15 @@ def run_agent_session(
         # Ambient work-item state (WS-2): a view recomputed from the store
         # each turn, appended after context assembly so every memory
         # strategy sees current state without memory-subsystem changes.
-        state_block = render_work_item_state(work_items, current_agent.name)
+        # `frozen_brief` is None when no brief was accepted (briefing is
+        # opt-in); the state block then simply carries no goal line.
+        state_block = render_work_item_state(
+            work_items,
+            current_agent.name,
+            brief_goal=(
+                frozen_brief.deliverable if frozen_brief is not None else None
+            ),
+        )
         if state_block:
             cleaned_context.append({"role": "system", "content": state_block})
 
@@ -1329,14 +1338,13 @@ def run_agent_session(
                         agent_name=current_agent.name,
                         history_slice=agent_history_slice,
                     )
-                    if agent_report:
-                        report_memory.add_report(current_agent.name, agent_report)
-                        history.append(
-                            {
-                                "role": "system",
-                                "content": f"Agent report from {current_agent.name}:\n{agent_report}",
-                            }
-                        )
+                    report_memory.add_report(current_agent.name, agent_report)
+                    history.append(
+                        {
+                            "role": "system",
+                            "content": f"Agent report from {current_agent.name}:\n{agent_report}",
+                        }
+                    )
                     current_agent_history_start = len(history)
                 routing_message = f"🔄 Routing to '{target_agent_name}' via {cmd}"
                 current_agent = new_agent
@@ -1431,7 +1439,7 @@ def run_agent_session(
                     break
                 last_code_snippet = code
                 console.print("[cyan]Executing code in sandbox…[/cyan]")
-                action_id = f"{run_id}:turn:{turn}:block:{idx}"
+                action_id = make_action_id(run_id, turn, idx)
                 _emit_runner_event(
                     event_callback,
                     event_type="code_submitted",
