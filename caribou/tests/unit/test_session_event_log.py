@@ -289,7 +289,14 @@ def test_live_websocket_client_keeps_receiving_across_token_compaction(tmp_path:
         )
         manager._on_event(session, _event(session, "agent_switch", {"to_agent": "b"}, 2))
         manager._on_event(session, _event(session, "status_change", {"status": "stopped"}, 2))
-        await asyncio.wait_for(task, timeout=2)
+        # The stream outlives the stop (queued messages stay removable), so
+        # wait for the events, then end it as a client disconnect would.
+        for _ in range(200):
+            if len(websocket.sent) == 4:
+                break
+            await asyncio.sleep(0.01)
+        assert not task.done()
+        task.cancel()
 
         assert [e["type"] for e in websocket.sent] == [
             "token",

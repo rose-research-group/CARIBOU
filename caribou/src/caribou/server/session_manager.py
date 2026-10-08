@@ -76,6 +76,7 @@ from caribou.server.models import (
     RecoveryMode,
     RecoveryStatus,
     MessageRecord,
+    QueuedMessage,
     SessionCreateRequest,
     SessionForkRequest,
     SessionMode,
@@ -2427,7 +2428,7 @@ class SessionManager:
         return errors
 
     def _reject_user_message(self, session: _Session, code: str, message: str) -> None:
-        """Log a refused user message as a non-fatal error event.
+        """Log a refused, dropped or failed message action as a non-fatal error event.
 
         The sender sees the refusal in the session log; a refused message used
         to vanish without a trace.
@@ -2443,68 +2444,81 @@ class SessionManager:
             },
         )
 
-    async def send_user_message(
-        self, session_id: str, content: str, block_id: Optional[str] = None
-    ) -> bool:
-        """Queue one message only while a live interactive runner is waiting.
+    @staticmethod
+    def _runner_waiting(session: _Session) -> bool:
+        """True when a live interactive runner is waiting for its next turn.
 
-        `block_id` (from the workbench) focuses the turn on that block; it
-        must name a block in the session's blocks.json. A refused message is
-        logged as a non-fatal error event and nothing is queued.
+        The runner emits `idle` as it starts waiting on `user_input_queue`;
+        a turn already on that queue (e.g. a branch child's first turn), or
+        a requested stop, means it will not take another one.
         """
-        session = self._sessions.get(session_id)
-        if not session:
+        return (
+            session.config.mode == SessionMode.interactive
+            and session.status == SessionStatus.idle
+            and session.runner_task is not None
+            and not session.runner_task.done()
+            and not session.stop_flag.is_set()
+            and session.user_input_queue.empty()
+        )
+
+    @staticmethod
+    def _can_queue(session: _Session) -> bool:
+        """True when a message may wait in the queue for the runner's next idle.
+
+        Only interactive sessions whose runner is live or starting: a message
+        queued on a stopped, errored or auto session would never be delivered.
+        """
+        if session.config.mode != SessionMode.interactive:
             return False
-        if (
-            session.config.mode != SessionMode.interactive
-            or session.status != SessionStatus.idle
-            or not session.runner_task
-            or session.runner_task.done()
-        ):
-            self._reject_user_message(
-                session,
-                "MESSAGE_NOT_ACCEPTED",
-                "Message not delivered: the session accepts messages "
-                f"only while idle in interactive mode (status: "
-                f"{SessionStatus(session.status).value}, mode: "
-                f"{SessionMode(session.config.mode).value}).",
+        if session.status in (SessionStatus.initializing, SessionStatus.recovering):
+            return True
+        return (
+            session.status in (SessionStatus.running, SessionStatus.idle)
+            and session.runner_task is not None
+            and not session.runner_task.done()
+        )
+
+    @staticmethod
+    def _block_refusal(
+        session: _Session, block_id: Optional[str]
+    ) -> Optional[tuple[str, str]]:
+        """Why `block_id` cannot focus a turn, as (code, reason), or None if it can.
+
+        `block_id` (from the workbench) must name a block in the session's
+        blocks.json that is not inherited. Checked when a message is sent or
+        queued, and again when a queued message is delivered.
+        """
+        if block_id is None:
+            return None
+        if not isinstance(block_id, str) or not block_id:
+            return (
+                "INVALID_BLOCK_ID",
+                f"block_id must be a non-empty string, got {block_id!r}.",
             )
-            return False
-        if block_id is not None:
-            if not isinstance(block_id, str) or not block_id:
-                self._reject_user_message(
-                    session,
-                    "INVALID_BLOCK_ID",
-                    "Message not delivered: block_id must be a non-empty "
-                    f"string, got {block_id!r}.",
-                )
-                return False
-            index = load_blocks(session.output_dir.parent / BLOCKS_FILENAME)
-            known = (
-                {block["block_id"] for block in index["blocks"]}
-                if index is not None
-                else set()
+        index = load_blocks(session.output_dir.parent / BLOCKS_FILENAME)
+        block = (
+            next((b for b in index["blocks"] if b["block_id"] == block_id), None)
+            if index is not None
+            else None
+        )
+        if block is None:
+            return (
+                "UNKNOWN_BLOCK",
+                f"block {block_id} does not exist in this session.",
             )
-            if block_id not in known:
-                self._reject_user_message(
-                    session,
-                    "UNKNOWN_BLOCK",
-                    f"Message not delivered: block {block_id} does not exist "
-                    "in this session.",
-                )
-                return False
-            block = next(b for b in index["blocks"] if b["block_id"] == block_id)
-            if block.get("inherited_from") is not None:
-                # Inherited blocks are immutable in a branch (A5); focusing
-                # one would fail the runner.
-                self._reject_user_message(
-                    session,
-                    "INHERITED_BLOCK",
-                    f"Message not delivered: block {block_id} is inherited from "
-                    f"session {block['inherited_from']['session_id']} and cannot "
-                    "be focused in this branch.",
-                )
-                return False
+        if block.get("inherited_from") is not None:
+            # Inherited blocks are immutable in a branch (A5); focusing
+            # one would fail the runner.
+            return (
+                "INHERITED_BLOCK",
+                f"block {block_id} is inherited from session "
+                f"{block['inherited_from']['session_id']} and cannot be "
+                "focused in this branch.",
+            )
+        return None
+
+    def _deliver_user_turn(self, session: _Session, turn: UserTurn) -> None:
+        """Hand one turn to the waiting runner (caller checked _runner_waiting)."""
         self._on_event(
             session,
             {
@@ -2515,7 +2529,126 @@ class SessionManager:
                 "data": {"status": "running", "reason": "user_message_queued"},
             },
         )
-        session.user_input_queue.put(UserTurn(content=content, block_id=block_id))
+        session.user_input_queue.put(turn)
+
+    def _emit_message_queue_changed(self, session: _Session) -> None:
+        """Log the full current queue; the latest such event is the truth."""
+        self._on_event(
+            session,
+            {
+                "type": "message_queue_changed",
+                "session_id": session.id,
+                "turn": session.current_turn,
+                "timestamp": datetime.utcnow().isoformat(),
+                "data": {
+                    "queue": [
+                        item.model_dump(mode="json") for item in session.message_queue
+                    ]
+                },
+            },
+        )
+
+    def _deliver_next_queued(self, session: _Session) -> None:
+        """Deliver the queue head if the runner is waiting (one per idle).
+
+        Runs on the event loop, after the runner's `idle` status_change has
+        been processed. A head whose block_id is no longer valid is dropped
+        with a visible error (never sent with the wrong focus) and the next
+        item is tried, so a drop does not strand the rest of the queue.
+        """
+        while session.message_queue and self._runner_waiting(session):
+            item = session.message_queue.pop(0)
+            self._emit_message_queue_changed(session)
+            refusal = self._block_refusal(session, item.block_id)
+            if refusal is not None:
+                code, reason = refusal
+                self._reject_user_message(
+                    session,
+                    code,
+                    f"Queued message {item.id} dropped, not delivered: {reason}",
+                )
+                continue
+            self._deliver_user_turn(
+                session, UserTurn(content=item.content, block_id=item.block_id)
+            )
+            return
+
+    async def send_user_message(
+        self, session_id: str, content: str, block_id: Optional[str] = None
+    ) -> bool:
+        """Deliver one message now, or queue it while the agent is busy.
+
+        Delivered at once when a live interactive runner is waiting and
+        nothing is queued ahead of it; queued (delivered on a later idle)
+        while an interactive session's runner is busy or starting. Anything
+        else, and a bad `block_id`, is refused with a non-fatal error event.
+        Returns True when the message was delivered or queued.
+        """
+        session = self._sessions.get(session_id)
+        if not session:
+            return False
+        if not self._runner_waiting(session) and not self._can_queue(session):
+            self._reject_user_message(
+                session,
+                "MESSAGE_NOT_ACCEPTED",
+                "Message not delivered: the session accepts messages only in "
+                "interactive mode while its runner is live or starting "
+                f"(status: {SessionStatus(session.status).value}, mode: "
+                f"{SessionMode(session.config.mode).value}).",
+            )
+            return False
+        refusal = self._block_refusal(session, block_id)
+        if refusal is not None:
+            code, reason = refusal
+            self._reject_user_message(
+                session, code, f"Message not delivered: {reason}"
+            )
+            return False
+        if self._runner_waiting(session) and not session.message_queue:
+            self._deliver_user_turn(
+                session, UserTurn(content=content, block_id=block_id)
+            )
+            return True
+        session.message_queue.append(
+            QueuedMessage(
+                id=uuid4().hex,
+                content=content,
+                block_id=block_id,
+                created_at=datetime.utcnow(),
+            )
+        )
+        self._emit_message_queue_changed(session)
+        self._deliver_next_queued(session)
+        return True
+
+    async def unqueue_message(self, session_id: str, message_id: str) -> bool:
+        """Remove one queued message before delivery; it is then never sent.
+
+        Runs on the event loop like delivery, so the two cannot race. An id
+        that is no longer queued (delivered, dropped or already removed) is
+        logged as a non-fatal QUEUED_MESSAGE_GONE error event.
+        """
+        session = self._sessions.get(session_id)
+        if not session:
+            return False
+        index = next(
+            (
+                position
+                for position, item in enumerate(session.message_queue)
+                if item.id == message_id
+            ),
+            None,
+        )
+        if index is None:
+            self._reject_user_message(
+                session,
+                "QUEUED_MESSAGE_GONE",
+                f"Queued message {message_id!r} is no longer queued: it was "
+                "already delivered or removed.",
+            )
+            return False
+        del session.message_queue[index]
+        self._emit_message_queue_changed(session)
         return True
 
     async def start_run(self, session_id: str, initial_prompt: str) -> bool:
@@ -2788,6 +2921,12 @@ class SessionManager:
         ):
             self._save_session(session)
         asyncio.ensure_future(self._notify_condition(session))
+        if event.get("type") == "status_change" and (event.get("data") or {}).get(
+            "status"
+        ) == SessionStatus.idle.value:
+            # The runner emits `idle` as it starts waiting for input: hand it
+            # the oldest queued message, if any (after `idle` is in the log).
+            self._deliver_next_queued(session)
 
     async def _notify_condition(self, session: _Session) -> None:
         async with session.event_condition:

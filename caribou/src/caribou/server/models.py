@@ -417,6 +417,36 @@ class BriefDecisionRequest(BaseModel):
         return self
 
 
+class QueuedMessage(BaseModel):
+    """A user message waiting in a session's message queue.
+
+    Queued while the agent is busy and delivered (as a UserTurn keeping its
+    block_id) the next time the runner waits for input. Wire shape of every
+    item in `message_queue_changed` events and `SessionResponse.message_queue`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    content: str
+    block_id: Optional[str] = None
+    created_at: datetime
+
+    @field_validator("id", "content")
+    @classmethod
+    def _non_empty(cls, value: str) -> str:
+        if not value:
+            raise ValueError("must be a non-empty string")
+        return value
+
+    @field_validator("block_id")
+    @classmethod
+    def _non_empty_block_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not value:
+            raise ValueError("block_id must be a non-empty string or null")
+        return value
+
+
 class SessionResponse(BaseModel):
     id: str
     name: str
@@ -471,6 +501,9 @@ class SessionResponse(BaseModel):
     # The frozen brief, once accepted — None until then. Draft proposals
     # arrive only via the brief_draft WS event, not this field.
     brief: Optional[Dict[str, Any]] = None
+    # Messages queued while the agent was busy, oldest first; the latest
+    # `message_queue_changed` event supersedes this snapshot.
+    message_queue: List[QueuedMessage] = Field(default_factory=list)
 
 
 class SessionResumeRequest(BaseModel):

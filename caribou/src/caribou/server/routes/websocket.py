@@ -6,6 +6,7 @@ Protocol:
     { "type": "run",          "content": "<initial prompt>" }
     { "type": "user_message", "content": "<next turn>",
       "block_id"?: "<workbench block id>"                    }
+    { "type": "unqueue_message", "id": "<queued message id>" }
     { "type": "stop"                                         }
     { "type": "ping"                                         }
 
@@ -16,6 +17,14 @@ Protocol:
     session). The log is compacted (token events are removed once their
     message completes), so positions in it are not stable — clients are
     tracked by the last seq they were sent, never by list index.
+
+  A `user_message` is delivered at once when the runner is waiting, queued
+  while the agent is busy (announced by a `message_queue_changed` log event
+  carrying the full queue), or refused with a non-fatal `error` event.
+
+  The socket stays open after the session stops or errors, so queued
+  messages remain removable (`unqueue_message`) and later events (e.g. a
+  resume) still stream; it closes when the client disconnects.
 """
 from __future__ import annotations
 
@@ -26,7 +35,6 @@ from datetime import datetime
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from caribou.server.models import SessionStatus
 from caribou.server.session_manager import session_manager
 
 router = APIRouter(tags=["websocket"])
@@ -78,13 +86,16 @@ def _events_after(session, last_seq: int) -> list:
 
 
 async def _stream_events(websocket: WebSocket, session, last_seq: int) -> None:
-    """Wait for events with seq > last_seq and forward them to the WebSocket."""
+    """Wait for events with seq > last_seq and forward them to the WebSocket.
+
+    Runs until a send fails (client gone) or the task is cancelled when the
+    receive side ends; a stopped or errored session keeps streaming, since
+    its queue can still change and it can be resumed.
+    """
     while True:
         async with session.event_condition:
             pending = _events_after(session, last_seq)
             while not pending:
-                if session.status in (SessionStatus.stopped, SessionStatus.error):
-                    return
                 await session.event_condition.wait()
                 pending = _events_after(session, last_seq)
 
@@ -94,9 +105,6 @@ async def _stream_events(websocket: WebSocket, session, last_seq: int) -> None:
                     await websocket.send_json(event)
                 except Exception:
                     return
-
-        if session.status in (SessionStatus.stopped, SessionStatus.error):
-            return
 
 
 async def _receive_messages(websocket: WebSocket, session) -> None:
@@ -140,6 +148,11 @@ async def _receive_messages(websocket: WebSocket, session) -> None:
                 await session_manager.send_user_message(
                     session.id, content, block_id=msg.get("block_id")
                 )
+
+        elif msg_type == "unqueue_message":
+            # The manager logs an unknown or missing id as a non-fatal
+            # QUEUED_MESSAGE_GONE error event.
+            await session_manager.unqueue_message(session.id, msg.get("id"))
 
         elif msg_type == "stop":
             await session_manager.stop_session(session.id)

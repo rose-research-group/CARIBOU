@@ -22,6 +22,7 @@ from caribou.server.models import (
     BranchRestoreMode,
     CodeEventRecord,
     MessageRecord,
+    QueuedMessage,
     ResolvedModelInfo,
     RecoveryMode,
     RecoveryStatus,
@@ -122,6 +123,9 @@ def save_session(
             "checkpoint_id": session.checkpoint_id,
             "checkpoint_turn": session.checkpoint_turn,
             "checkpoint_healthy": session.checkpoint_healthy,
+            "message_queue": [
+                item.model_dump(mode="json") for item in session.message_queue
+            ],
         }
         if is_deleted(session.id):
             return
@@ -295,6 +299,13 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
                 # also None until then).
                 phase=data.get("phase", "execution"),
                 brief=data.get("brief"),
+                # Files written before the message queue existed have no key:
+                # nothing was queued then. A present queue is validated item
+                # by item (a malformed one skips the session, as above).
+                message_queue=[
+                    QueuedMessage.model_validate(item)
+                    for item in data.get("message_queue", [])
+                ],
             )
             # If the session was interrupted, record that in the event log
             if raw_status != data.get("status"):

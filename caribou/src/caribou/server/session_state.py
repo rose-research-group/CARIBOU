@@ -29,6 +29,7 @@ from caribou.server.models import (
     EvaluatorModelState,
     MemoryConfigResponse,
     MessageRecord,
+    QueuedMessage,
     ResolvedModelInfo,
     RecoveryMode,
     RecoveryStatus,
@@ -267,6 +268,11 @@ class _Session:
     # keyed by the opaque `action_id`, so the CodeEventRecord built on
     # code_result carries the real source.
     pending_code_sources: Dict[str, str] = field(default_factory=dict)
+    # User messages queued while the agent was busy, oldest first. Persisted
+    # in session.json; changed only on the event loop (SessionManager), each
+    # change announced by a `message_queue_changed` event. Fork and branch
+    # children start with an empty queue.
+    message_queue: List[QueuedMessage] = field(default_factory=list)
 
     def to_response(self) -> SessionResponse:
         memory = None
@@ -346,4 +352,5 @@ class _Session:
             ),
             phase=self.phase,
             brief=self.brief,
+            message_queue=[item.model_copy() for item in self.message_queue],
         )

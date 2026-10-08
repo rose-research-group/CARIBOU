@@ -126,7 +126,7 @@ def test_stopped_session_rejects_user_messages(tmp_path, monkeypatch):
     asyncio.run(run_test())
 
 
-def test_only_one_user_message_is_accepted_while_waiting(tmp_path, monkeypatch):
+def test_second_message_while_busy_is_queued_not_delivered(tmp_path, monkeypatch):
     async def run_test():
         manager = _make_manager(tmp_path, monkeypatch)
         session = _make_session("session-interactive", tmp_path / "session-interactive" / "outputs")
@@ -138,9 +138,11 @@ def test_only_one_user_message_is_accepted_while_waiting(tmp_path, monkeypatch):
         second = await manager.send_user_message(session.id, "Second")
 
         assert first is True
-        assert second is False
-        assert session.events[-1]["data"]["code"] == "MESSAGE_NOT_ACCEPTED"
+        assert second is True
+        assert session.events[-1]["type"] == "message_queue_changed"
+        assert [item.content for item in session.message_queue] == ["Second"]
         assert session.status == SessionStatus.running
+        # Only the first reached the runner; the second waits for its idle.
         assert session.user_input_queue.get_nowait() == UserTurn("First")
         assert session.user_input_queue.empty()
 

@@ -82,10 +82,21 @@ def test_non_string_block_id_is_rejected_visibly(tmp_path, monkeypatch, bad):
     assert rejection["data"]["fatal"] is False
 
 
-def test_busy_session_reports_not_accepted_before_checking_block(tmp_path, monkeypatch):
+def test_busy_session_rejects_unknown_block_instead_of_queueing(tmp_path, monkeypatch):
     manager = _make_manager(tmp_path, monkeypatch)
     session = _waiting_session(tmp_path, manager, blocks=[_block(1, "session-focus")])
     session.status = "running"
+
+    assert _send(manager, session, "About this", block_id="blk-0009") is False
+    assert session.events[-1]["data"]["code"] == "UNKNOWN_BLOCK"
+    assert session.message_queue == []
+    assert session.user_input_queue.empty()
+
+
+def test_auto_session_reports_not_accepted_before_checking_block(tmp_path, monkeypatch):
+    manager = _make_manager(tmp_path, monkeypatch)
+    session = _waiting_session(tmp_path, manager, blocks=[_block(1, "session-focus")])
+    session.config = session.config.model_copy(update={"mode": "auto"})
 
     assert _send(manager, session, "About this", block_id="blk-0009") is False
     assert session.events[-1]["data"]["code"] == "MESSAGE_NOT_ACCEPTED"
