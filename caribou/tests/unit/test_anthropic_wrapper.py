@@ -7,7 +7,7 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch, MagicMock
 
-from caribou.core.anthropic_wrapper import AnthropicClient
+from caribou.core.anthropic_wrapper import DEFAULT_LLM_TIMEOUT, AnthropicClient
 
 
 class TestAnthropicClientInitialization:
@@ -20,7 +20,9 @@ class TestAnthropicClientInitialization:
 
             assert client._default_model == "claude-sonnet-4-5-20250929"
             assert client._max_output_tokens == 1024
-            mock_anthropic.assert_called_once_with(api_key="test-key")
+            mock_anthropic.assert_called_once_with(
+                api_key="test-key", timeout=DEFAULT_LLM_TIMEOUT
+            )
 
     def test_init_with_custom_params(self):
         """Test initialization with custom parameters."""
@@ -36,6 +38,7 @@ class TestAnthropicClientInitialization:
             assert client._max_output_tokens == 2048
             mock_anthropic.assert_called_once_with(
                 api_key="test-key",
+                timeout=DEFAULT_LLM_TIMEOUT,
                 base_url="https://custom.api.com"
             )
 

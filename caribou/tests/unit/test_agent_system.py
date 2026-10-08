@@ -171,10 +171,26 @@ class TestAgent:
         )
 
         prompt = agent.get_full_prompt()
-        assert "Code Samples Available" in prompt
-        assert "example1.py" in prompt
-        assert "example2.py" in prompt
-        assert "MUST BE REWRITTEN TO BE USED" in prompt
+        # Section header and the do-not-import rules (inlined since a11a53b).
+        assert "## Code Samples (Reference ONLY — DO NOT IMPORT)" in prompt
+        assert "These files DO NOT EXIST on disk inside the sandbox" in prompt
+        assert "You MUST rewrite any logic you need from scratch" in prompt
+        # Each sample gets its own header followed by its full content in a
+        # fenced python block, in insertion order.
+        for name, content in samples.items():
+            block = (
+                f"### `{name}` (reference only — rewrite, do not import)\n"
+                f"```python\n{content}\n```"
+            )
+            assert block in prompt
+        assert prompt.index("`example1.py`") < prompt.index("`example2.py`")
+
+    def test_get_full_prompt_without_code_samples_omits_section(self):
+        """No code samples means no code-samples section."""
+        agent = Agent(name="agent", prompt="Agent prompt", commands={}, code_samples={})
+        prompt = agent.get_full_prompt()
+        assert "Code Samples" not in prompt
+        assert "reference only — rewrite, do not import" not in prompt
 
     def test_get_full_prompt_complete(self):
         """Test prompt with all features."""
