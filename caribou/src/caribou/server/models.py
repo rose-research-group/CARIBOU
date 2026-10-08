@@ -5,7 +5,14 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    field_validator,
+    model_validator,
+)
 
 from caribou.core.python_environments import ResolvedPythonEnvironment
 
@@ -397,6 +404,16 @@ class WorkItemPolicyConfig(BaseModel):
     qc_mode: Literal["optional", "required"] = "optional"
 
 
+class BriefPolicyConfig(BaseModel):
+    """A blueprint's `brief_policy` block, in the shape BriefPolicy.from_dict reads."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: StrictBool = False
+    mode: Literal["context", "seed_item"] = "context"
+    require_confirmation: StrictBool = True
+
+
 class BlueprintContent(BaseModel):
     name: str
     global_policy: str
@@ -404,6 +421,8 @@ class BlueprintContent(BaseModel):
     is_package_default: bool
     evaluator_agent: Optional[str] = None
     work_item_policy: WorkItemPolicyConfig = Field(default_factory=WorkItemPolicyConfig)
+    # None when the blueprint file has no brief_policy block.
+    brief_policy: Optional[BriefPolicyConfig] = None
 
 
 class SaveBlueprintRequest(BaseModel):
@@ -412,6 +431,8 @@ class SaveBlueprintRequest(BaseModel):
     agents: Dict[str, AgentConfig]
     evaluator_agent: Optional[str] = None
     work_item_policy: WorkItemPolicyConfig = Field(default_factory=WorkItemPolicyConfig)
+    # None when the blueprint file has no brief_policy block.
+    brief_policy: Optional[BriefPolicyConfig] = None
 
 
 class ServerStatus(BaseModel):

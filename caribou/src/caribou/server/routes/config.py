@@ -418,6 +418,7 @@ def _load_blueprint_content(name: str) -> BlueprintContent:
         is_package_default=_is_package_default(name),
         evaluator_agent=raw.get("evaluator_agent"),
         work_item_policy=raw.get("work_item_policy") or {"qc_mode": "optional"},
+        brief_policy=raw.get("brief_policy"),
     )
 
 
@@ -441,6 +442,11 @@ def _to_disk_dict(req: SaveBlueprintRequest) -> dict:
         "global_policy": req.global_policy,
         "evaluator_agent": req.evaluator_agent,
         "work_item_policy": req.work_item_policy.model_dump(),
+        **(
+            {"brief_policy": req.brief_policy.model_dump()}
+            if req.brief_policy is not None
+            else {}
+        ),
         "agents": agents_dict,
     }
 
@@ -528,6 +534,7 @@ async def update_blueprint(name: str, req: SaveBlueprintRequest) -> BlueprintCon
         agents=req.agents,
         evaluator_agent=req.evaluator_agent,
         work_item_policy=req.work_item_policy,
+        brief_policy=req.brief_policy,
     )
     _atomic_write(user_path, _to_disk_dict(req))
     return _load_blueprint_content(name)

@@ -10,7 +10,7 @@ import { IconComponent } from '../../shared/components/icon/icon';
 import { TooltipDirective } from '../../shared/directives/tooltip.directive';
 import {
   AgentConfig, AgentEntry, BlueprintContent, CommandConfig,
-  CommandEntry, SaveBlueprintRequest,
+  CommandEntry, SaveBlueprintRequest, BriefPolicyConfig,
 } from '../../core/models/blueprint.model';
 
 interface CodeSampleInfo {
@@ -42,6 +42,9 @@ export class BlueprintEditorComponent implements OnInit {
   globalPolicy = signal('');
   evaluatorAgent = signal<string | null>(null);
   workItemQcMode = signal<'optional' | 'required'>('optional');
+  // Not editable in the form: held as received (object, null, or absent =
+  // undefined) and sent back unchanged on save.
+  briefPolicy = signal<BriefPolicyConfig | null | undefined>(undefined);
   agents = signal<AgentEntry[]>([]);
 
   // Tabs
@@ -104,6 +107,7 @@ export class BlueprintEditorComponent implements OnInit {
         this.globalPolicy.set(bp.global_policy);
         this.evaluatorAgent.set(bp.evaluator_agent);
         this.workItemQcMode.set(bp.work_item_policy?.qc_mode ?? 'optional');
+        this.briefPolicy.set(bp.brief_policy);
         const entries = this._toAgentEntries(bp.agents);
         this.agents.set(entries);
         this._resetImportState(entries.length);
@@ -123,6 +127,7 @@ export class BlueprintEditorComponent implements OnInit {
     this.globalPolicy.set('');
     this.evaluatorAgent.set(null);
     this.workItemQcMode.set('optional');
+    this.briefPolicy.set(undefined);
     this.agents.set([]);
     this._resetImportState(0);
     this.activeTab.set('form');
@@ -184,6 +189,7 @@ export class BlueprintEditorComponent implements OnInit {
       agents: this._toAgentConfigMap(this.agents()),
       evaluator_agent: this.evaluatorAgent(),
       work_item_policy: { qc_mode: this.workItemQcMode() },
+      ...this._briefPolicyField(),
     };
 
     this.saving.set(true);
@@ -456,12 +462,20 @@ export class BlueprintEditorComponent implements OnInit {
     return map;
   }
 
+  /** `{ brief_policy }` when the blueprint has one (object or null), else `{}`
+   *  so an absent policy stays absent rather than becoming null. */
+  private _briefPolicyField(): { brief_policy?: BriefPolicyConfig | null } {
+    const briefPolicy = this.briefPolicy();
+    return briefPolicy === undefined ? {} : { brief_policy: briefPolicy };
+  }
+
   private _serializeToJson(): string {
     return JSON.stringify({
       name: this.blueprintName(),
       global_policy: this.globalPolicy(),
       evaluator_agent: this.evaluatorAgent(),
       work_item_policy: { qc_mode: this.workItemQcMode() },
+      ...this._briefPolicyField(),
       agents: this._toAgentConfigMap(this.agents()),
     }, null, 2);
   }
@@ -469,6 +483,14 @@ export class BlueprintEditorComponent implements OnInit {
   private _applyJsonToForm(raw: string): string | null {
     try {
       const parsed = JSON.parse(raw);
+      // Absent key = blueprint has no brief_policy; otherwise it must be an
+      // object or null and is kept verbatim.
+      const briefPolicy = parsed.brief_policy;
+      if (briefPolicy !== undefined && briefPolicy !== null &&
+          (typeof briefPolicy !== 'object' || Array.isArray(briefPolicy))) {
+        return 'brief_policy must be a JSON object or null.';
+      }
+      this.briefPolicy.set(briefPolicy);
       if (parsed.name !== undefined) this.blueprintName.set(parsed.name);
       if (parsed.global_policy !== undefined) this.globalPolicy.set(parsed.global_policy);
       if (parsed.evaluator_agent !== undefined) this.evaluatorAgent.set(parsed.evaluator_agent);
