@@ -27,7 +27,7 @@ import { StatusIndicatorComponent } from '../../shared/components/status-indicat
 import { IconComponent } from '../../shared/components/icon/icon';
 import { TooltipDirective } from '../../shared/directives/tooltip.directive';
 import { navigateTabToSession, reserveNewTab } from '../../core/utils/app-navigation';
-import { WorkbenchComponent } from './workbench/workbench';
+import { BlockMessage, WorkbenchComponent } from './workbench/workbench';
 import { SessionView, ViewToggleComponent } from './workbench/view-toggle';
 import { anchorLabel } from './workbench/block-actions';
 
@@ -499,21 +499,29 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
    * as a typed message, so it shows in the chat. The workbench only emits
    * while `canSendMessage()` holds, so a refusal here is a bug: raise it.
    */
-  sendBlockMessage(content: string): void {
+  sendBlockMessage(message: BlockMessage): void {
     if (!this.canSendMessage()) {
       throw new Error('The session cannot take a message right now.');
     }
-    this.submitUserMessage(content);
+    this.submitUserMessage(message.content, message.blockId);
   }
 
-  /** The one send path for user messages (chat input and workbench). */
-  private submitUserMessage(content: string): void {
+  /**
+   * The one send path for user messages (chat input and workbench). A
+   * workbench message carries its block's id, which focuses the agent's next
+   * code on that block; chat messages carry none.
+   */
+  private submitUserMessage(content: string, blockId?: string): void {
     const s = this.session();
     if (!s) throw new Error('No session to send a message to.');
     if (s.current_turn === 0 && s.mode === 'interactive') {
+      // A 'run' message has no block focus; no block exists before the first turn.
+      if (blockId !== undefined) {
+        throw new Error(`Block ${blockId} cannot be focused before the session has started.`);
+      }
       this.stream.startRun(content);
     } else {
-      this.stream.sendUserMessage(content);
+      this.stream.sendUserMessage(content, blockId);
     }
     this.pushHistory(content);
     this.store.sendUserMessage(s.id, s.current_turn + 1, content);

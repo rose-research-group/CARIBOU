@@ -144,15 +144,22 @@ def test_reused_output_dir_continues_block_ids_under_the_first_session(tmp_path)
 def test_user_input_syncs_blocks_before_the_next_llm_call(tmp_path, monkeypatch):
     """A human reject made while the CLI waits for input is applied as soon as
     the input is read, before the next LLM call."""
-    from caribou.execution.work_items import WorkItemPolicy, WorkItemStore
+    from caribou.execution.work_items import WorkItemStore
+
+    # The reject goes through the runner's own store, as the CLI's
+    # /review-work-item command does (ctx.work_items).
+    stores: list = []
+
+    class CapturingStore(WorkItemStore):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            stores.append(self)
+
+    monkeypatch.setattr(runner, "WorkItemStore", CapturingStore)
 
     def human_reject():
-        store = WorkItemStore(
-            tmp_path / "work-items",
-            session_id="run_cli",
-            policy=WorkItemPolicy(qc_mode="optional"),
-        )
-        store.record_review(0, turn=3, verdict="reject", assessment="redo")
+        (store,) = stores
+        store.record_review(0, turn=4, verdict="reject", assessment="redo")
 
     script = [(None, "close it"), (human_reject, "redo it"), (None, "exit")]
 
@@ -175,6 +182,8 @@ def test_user_input_syncs_blocks_before_the_next_llm_call(tmp_path, monkeypatch)
                 'open_work_item "QC" "filter low quality cells"',
                 "```python\nprint('qc')\n```",
                 'close_work_item 0 "filtered"',
+                # Closing auto-continues (D1); this report then waits.
+                "Closed; waiting for review.",
                 "```python\nprint('qc again')\n```",
             ]
         ),
@@ -191,7 +200,7 @@ def test_user_input_syncs_blocks_before_the_next_llm_call(tmp_path, monkeypatch)
     assistant = [
         i for i, e in enumerate(events) if e["event_type"] == "assistant_message"
     ]
-    # The fourth LLM response is the one after "redo it".
+    # The fifth LLM response is the one after "redo it".
     warned = [
         i
         for i, e in enumerate(events)
@@ -199,7 +208,7 @@ def test_user_input_syncs_blocks_before_the_next_llm_call(tmp_path, monkeypatch)
         and e["payload"]["block"]["status"] == "warn"
     ]
     assert len(warned) == 1
-    assert assistant[2] < warned[0] < assistant[3]
+    assert assistant[3] < warned[0] < assistant[4]
     assert events[warned[0]]["payload"]["block"]["block_id"] == "blk-0001"
 
     submitted = _payloads(events, "code_submitted")

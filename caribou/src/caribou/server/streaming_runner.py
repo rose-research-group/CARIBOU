@@ -176,6 +176,12 @@ def run_session_sync(
     from caribou.execution.blocks import BlockTracker, blocks_path_for
     from caribou.execution.event_ids import make_action_id
     from caribou.execution.rag_client import get_rag_client
+    from caribou.execution.user_input import require_user_turn
+    from caribou.execution.runner import (
+        AUTO_CONTINUE_LIMIT,
+        auto_continue_exhausted_message,
+        auto_continue_message,
+    )
     from caribou.execution.work_items import (
         WorkItemError,
         WorkItemPolicy,
@@ -344,9 +350,9 @@ def run_session_sync(
     current_agent_history_start = int(
         (resume_state or {}).get("current_agent_history_start", len(history))
     )
-    # At most one automatic "continue" per user message, consumed after the agent
-    # opens a work item so it can proceed with the work instead of stopping.
-    auto_continue_budget = 1
+    # Automatic "continue"s after a work-item open/close or a delegation (D1),
+    # at most AUTO_CONTINUE_LIMIT in a row; reset by every real user message.
+    auto_continue_budget = AUTO_CONTINUE_LIMIT
 
     def _checkpoint_boundary() -> None:
         if checkpoint_callback is None:
@@ -385,8 +391,15 @@ def run_session_sync(
                 turn=turn,
             )
 
-    def _wait_for_user(turn: int, reason: Optional[str] = None) -> bool:
-        """Wait for one interactive message; return false if the session stops."""
+    def _wait_for_user(
+        turn: int, reason: Optional[str] = None, *, briefing: bool = False
+    ) -> bool:
+        """Wait for one interactive message; return false if the session stops.
+
+        Queue items are `UserTurn`s (anything else raises TypeError). A turn
+        with a `block_id` focuses that block until the next handoff (D4); a
+        briefing reply must not carry one, since no blocks exist yet.
+        """
         nonlocal auto_continue_budget
         _emit("status_change", {"status": "idle", "reason": reason}, turn=turn)
         if logger:
@@ -404,7 +417,14 @@ def run_session_sync(
                 )
                 return False
             try:
-                user_msg = user_input_queue.get(timeout=1.0)
+                user_turn = require_user_turn(user_input_queue.get(timeout=1.0))
+                user_msg = user_turn.content
+                if briefing and user_turn.block_id is not None:
+                    raise ValueError(
+                        "a briefing reply cannot target a block "
+                        f"(block_id={user_turn.block_id!r}): no blocks exist "
+                        "before execution starts"
+                    )
                 if logger:
                     logger.info(
                         "User message received | turn: %s | length: %s chars",
@@ -414,7 +434,7 @@ def run_session_sync(
                 history.append({"role": "user", "content": user_msg})
                 if memory_manager is not None:
                     memory_manager.add_message("user", user_msg)
-                auto_continue_budget = 1
+                auto_continue_budget = AUTO_CONTINUE_LIMIT
                 next_turn = turns_completed + 1
                 _emit(
                     "message_complete",
@@ -430,9 +450,13 @@ def run_session_sync(
                     },
                     turn=next_turn,
                 )
+                # A new user message ends any focus from the previous one.
+                block_tracker.clear_focus()
                 # Pick up work-item changes made through the REST routes
                 # (human reviews, reopens) before the next LLM call.
                 block_tracker.sync()
+                if user_turn.block_id is not None:
+                    block_tracker.set_focus(user_turn.block_id)
                 return True
             except queue.Empty:
                 continue
@@ -452,7 +476,7 @@ def run_session_sync(
         """
         _emit("status_change", {"status": "running", "reason": "briefing"})
         while True:
-            if not _wait_for_user(0, "briefing_waiting"):
+            if not _wait_for_user(0, "briefing_waiting", briefing=True):
                 return None, True
             if stop_flag.is_set():
                 return None, True
@@ -790,87 +814,15 @@ def run_session_sync(
 
             _action_fired = False
             _delegated = False
-            _opened_work_item = False
+            # What this message did that earns an automatic continue in
+            # interactive mode (D1): a successful work-item open/close and/or
+            # a delegation, each as a short phrase for the guidance message.
+            _auto_triggers: List[str] = []
 
-            # --- Enforced work-item commands ---
-            work_command = parse_work_item_command(msg)
-            work_result = apply_work_item_command(
-                work_items, msg, owner=current_agent.name, turn=turn
-            )
-            if work_result is not None:
-                _action_fired = True
-                if (
-                    work_command is not None
-                    and work_command.name == "open_work_item"
-                    and work_result.success
-                ):
-                    _opened_work_item = True
-                feedback = work_result.feedback
-                history.append({"role": "system", "content": feedback})
-                if memory_manager is not None:
-                    memory_manager.add_message("system", feedback)
-                _emit(
-                    "system_message",
-                    {"content": feedback, "category": "Work item"},
-                    turn=turn,
-                )
-                if work_result.changed_item is not None:
-                    _emit(
-                        "work_item_changed",
-                        {"item": work_result.changed_item},
-                        turn=turn,
-                    )
-                    block_tracker.on_work_item_changed(work_result.changed_item)
-
-            # --- End session detection ---
-            has_delegation = detect_delegation(msg) is not None
-            end_session_refused = False
-            if detect_end_session(msg):
-                blocking = end_session_block(work_items, current_agent.name)
-                if blocking:
-                    end_session_refused = True
-                    feedback = (
-                        f"end_session refused. Current owner {current_agent.name} "
-                        "still owns non-Done work items: "
-                        + ", ".join(
-                            f"{item['id']} ({item['status']}, owner={item['owner']})"
-                            for item in blocking
-                        )
-                    )
-                    history.append({"role": "system", "content": feedback})
-                    if memory_manager is not None:
-                        memory_manager.add_message("system", feedback)
-                    _emit(
-                        "system_message",
-                        {"content": feedback, "category": "Work item"},
-                        turn=turn,
-                    )
-            if (
-                detect_end_session(msg)
-                and _count_code_blocks(msg) == 0
-                and not has_delegation
-                and not end_session_refused
-            ):
-                if is_auto:
-                    if logger:
-                        logger.info(
-                            "Session finished — agent signalled end | turn: %s", turn
-                        )
-                    _checkpoint_boundary()
-                    _emit(
-                        "status_change",
-                        {"status": "stopped", "reason": "agent_finished"},
-                    )
-                    return
-                else:
-                    if logger:
-                        logger.info("Agent requested session end | turn: %s", turn)
-                    _checkpoint_boundary()
-                    _emit(
-                        "status_change",
-                        {"status": "stopped", "reason": "agent_requested_end"},
-                    )
-                    return
+            # Order inside one message (D2/D3): RAG, then the code blocks, run
+            # and recorded as the agent that WROTE the message, then the
+            # work-item command, then the delegation, which only then switches
+            # `current_agent`.
 
             # --- RAG ---
             query_str = detect_rag(msg)
@@ -910,125 +862,6 @@ def run_session_sync(
                         },
                         turn=turn,
                     )
-
-            # --- Delegation ---
-            cmd = detect_delegation(msg)
-            if cmd and cmd in current_agent.commands:
-                target_name = current_agent.commands[cmd].target_agent
-                new_agent = agent_system.get_agent(target_name)
-                if new_agent is not None:
-                    try:
-                        transferred_items = transfer_on_delegation(
-                            work_items,
-                            current_agent.name,
-                            target_name,
-                            turn=turn,
-                            evaluator_agent_name=evaluator_agent_name,
-                        )
-                    except WorkItemError as exc:
-                        feedback = (
-                            f"Delegation refused: work-item transfer failed: {exc}"
-                        )
-                        history.append({"role": "system", "content": feedback})
-                        if memory_manager is not None:
-                            memory_manager.add_message("system", feedback)
-                        _emit(
-                            "system_message",
-                            {"content": feedback, "category": "Work item"},
-                            turn=turn,
-                        )
-                        new_agent = None
-                    else:
-                        for transferred_item in transferred_items:
-                            _emit(
-                                "work_item_changed",
-                                {"item": transferred_item},
-                                turn=turn,
-                            )
-                            block_tracker.on_work_item_changed(transferred_item)
-                if new_agent:
-                    _action_fired = True
-                    if logger:
-                        logger.info(
-                            "Agent switch: %s -> %s | command: %s | turn: %s",
-                            current_agent.name,
-                            target_name,
-                            cmd,
-                            turn,
-                        )
-                    _emit(
-                        "agent_switch",
-                        {
-                            "from_agent": current_agent.name,
-                            "to_agent": target_name,
-                            "command": cmd,
-                            "reason": None,
-                        },
-                        turn=turn,
-                    )
-                    history.append(
-                        {
-                            "role": "assistant",
-                            "content": f"Routing to **{target_name}** (command `{cmd}`)",
-                        }
-                    )
-                    if memory_manager is not None:
-                        memory_manager.add_message(
-                            "assistant",
-                            f"Routing to **{target_name}** (command `{cmd}`)",
-                        )
-                    # Generate handoff report for the departing agent
-                    if report_memory is not None:
-                        from caribou.execution.report_generation import (
-                            _generate_agent_report,
-                        )
-
-                        agent_slice = history[current_agent_history_start:]
-                        agent_report = _generate_agent_report(
-                            console,
-                            llm_client=llm_client,
-                            model_name=model_name,
-                            agent_name=current_agent.name,
-                            history_slice=agent_slice,
-                        )
-                        report_memory.add_report(current_agent.name, agent_report)
-                        if logger:
-                            logger.info(
-                                "Agent report generated for %s | length: %s chars",
-                                current_agent.name,
-                                len(agent_report),
-                            )
-                        report_memory.update_agent_prompt(_agent_prompt(new_agent))
-                        current_agent_history_start = len(history)
-                    switch_history_start = len(history)
-                    refreshed_agent_prompt = (
-                        _agent_prompt(new_agent) + "\n\n" + analysis_context
-                    )
-                    _emit(
-                        "system_message",
-                        {"content": refreshed_agent_prompt, "category": "Agent prompt"},
-                        turn=turn,
-                    )
-                    _apply_agent_switch(
-                        new_agent_prompt=_agent_prompt(new_agent),
-                        analysis_context=analysis_context,
-                        history=history,
-                        memory_manager=memory_manager,
-                        action_space=action_space,
-                        new_agent=new_agent,
-                    )
-                    for system_item in history[switch_history_start:]:
-                        if system_item.get("role") == "system":
-                            _emit(
-                                "system_message",
-                                {
-                                    "content": system_item.get("content", ""),
-                                    "category": "Agent switch",
-                                },
-                                turn=turn,
-                            )
-                    current_agent = new_agent
-                    _delegated = True
 
             # --- Code execution ---
             code_blocks = extract_python_code_blocks(msg)
@@ -1159,6 +992,218 @@ def run_session_sync(
                         if success:
                             memory_manager.add_pivotal_code(code)
 
+            # --- Enforced work-item commands (after the code, D2) ---
+            work_command = parse_work_item_command(msg)
+            work_result = apply_work_item_command(
+                work_items, msg, owner=current_agent.name, turn=turn
+            )
+            if work_result is not None:
+                _action_fired = True
+                if (
+                    work_command is not None
+                    and work_command.name in ("open_work_item", "close_work_item")
+                    and work_result.success
+                ):
+                    _auto_triggers.append(
+                        "opening a work item"
+                        if work_command.name == "open_work_item"
+                        else "closing a work item"
+                    )
+                feedback = work_result.feedback
+                history.append({"role": "system", "content": feedback})
+                if memory_manager is not None:
+                    memory_manager.add_message("system", feedback)
+                _emit(
+                    "system_message",
+                    {"content": feedback, "category": "Work item"},
+                    turn=turn,
+                )
+                if work_result.changed_item is not None:
+                    _emit(
+                        "work_item_changed",
+                        {"item": work_result.changed_item},
+                        turn=turn,
+                    )
+                    block_tracker.on_work_item_changed(work_result.changed_item)
+                if _auto_triggers:
+                    # An applied open/close ends a workbench block focus (D4).
+                    block_tracker.clear_focus()
+
+            # --- End session detection ---
+            has_delegation = detect_delegation(msg) is not None
+            end_session_refused = False
+            if detect_end_session(msg):
+                blocking = end_session_block(work_items, current_agent.name)
+                if blocking:
+                    end_session_refused = True
+                    feedback = (
+                        f"end_session refused. Current owner {current_agent.name} "
+                        "still owns non-Done work items: "
+                        + ", ".join(
+                            f"{item['id']} ({item['status']}, owner={item['owner']})"
+                            for item in blocking
+                        )
+                    )
+                    history.append({"role": "system", "content": feedback})
+                    if memory_manager is not None:
+                        memory_manager.add_message("system", feedback)
+                    _emit(
+                        "system_message",
+                        {"content": feedback, "category": "Work item"},
+                        turn=turn,
+                    )
+            if (
+                detect_end_session(msg)
+                and _count_code_blocks(msg) == 0
+                and not has_delegation
+                and not end_session_refused
+            ):
+                if is_auto:
+                    if logger:
+                        logger.info(
+                            "Session finished — agent signalled end | turn: %s", turn
+                        )
+                    _checkpoint_boundary()
+                    _emit(
+                        "status_change",
+                        {"status": "stopped", "reason": "agent_finished"},
+                    )
+                    return
+                else:
+                    if logger:
+                        logger.info("Agent requested session end | turn: %s", turn)
+                    _checkpoint_boundary()
+                    _emit(
+                        "status_change",
+                        {"status": "stopped", "reason": "agent_requested_end"},
+                    )
+                    return
+
+            # --- Delegation ---
+            cmd = detect_delegation(msg)
+            if cmd and cmd in current_agent.commands:
+                target_name = current_agent.commands[cmd].target_agent
+                new_agent = agent_system.get_agent(target_name)
+                if new_agent is not None:
+                    try:
+                        transferred_items = transfer_on_delegation(
+                            work_items,
+                            current_agent.name,
+                            target_name,
+                            turn=turn,
+                            evaluator_agent_name=evaluator_agent_name,
+                        )
+                    except WorkItemError as exc:
+                        feedback = (
+                            f"Delegation refused: work-item transfer failed: {exc}"
+                        )
+                        history.append({"role": "system", "content": feedback})
+                        if memory_manager is not None:
+                            memory_manager.add_message("system", feedback)
+                        _emit(
+                            "system_message",
+                            {"content": feedback, "category": "Work item"},
+                            turn=turn,
+                        )
+                        new_agent = None
+                    else:
+                        for transferred_item in transferred_items:
+                            _emit(
+                                "work_item_changed",
+                                {"item": transferred_item},
+                                turn=turn,
+                            )
+                            block_tracker.on_work_item_changed(transferred_item)
+                if new_agent:
+                    _action_fired = True
+                    # The author's code has already run (D3): end any block
+                    # focus, and title the target's next implicit block after
+                    # this handoff (D4), before switching agents.
+                    block_tracker.clear_focus()
+                    block_tracker.note_delegation(current_agent.name, target_name, cmd)
+                    _auto_triggers.append(f"delegating to {target_name}")
+                    if logger:
+                        logger.info(
+                            "Agent switch: %s -> %s | command: %s | turn: %s",
+                            current_agent.name,
+                            target_name,
+                            cmd,
+                            turn,
+                        )
+                    _emit(
+                        "agent_switch",
+                        {
+                            "from_agent": current_agent.name,
+                            "to_agent": target_name,
+                            "command": cmd,
+                            "reason": None,
+                        },
+                        turn=turn,
+                    )
+                    history.append(
+                        {
+                            "role": "assistant",
+                            "content": f"Routing to **{target_name}** (command `{cmd}`)",
+                        }
+                    )
+                    if memory_manager is not None:
+                        memory_manager.add_message(
+                            "assistant",
+                            f"Routing to **{target_name}** (command `{cmd}`)",
+                        )
+                    # Generate handoff report for the departing agent
+                    if report_memory is not None:
+                        from caribou.execution.report_generation import (
+                            _generate_agent_report,
+                        )
+
+                        agent_slice = history[current_agent_history_start:]
+                        agent_report = _generate_agent_report(
+                            console,
+                            llm_client=llm_client,
+                            model_name=model_name,
+                            agent_name=current_agent.name,
+                            history_slice=agent_slice,
+                        )
+                        report_memory.add_report(current_agent.name, agent_report)
+                        if logger:
+                            logger.info(
+                                "Agent report generated for %s | length: %s chars",
+                                current_agent.name,
+                                len(agent_report),
+                            )
+                        report_memory.update_agent_prompt(_agent_prompt(new_agent))
+                        current_agent_history_start = len(history)
+                    switch_history_start = len(history)
+                    refreshed_agent_prompt = (
+                        _agent_prompt(new_agent) + "\n\n" + analysis_context
+                    )
+                    _emit(
+                        "system_message",
+                        {"content": refreshed_agent_prompt, "category": "Agent prompt"},
+                        turn=turn,
+                    )
+                    _apply_agent_switch(
+                        new_agent_prompt=_agent_prompt(new_agent),
+                        analysis_context=analysis_context,
+                        history=history,
+                        memory_manager=memory_manager,
+                        action_space=action_space,
+                        new_agent=new_agent,
+                    )
+                    for system_item in history[switch_history_start:]:
+                        if system_item.get("role") == "system":
+                            _emit(
+                                "system_message",
+                                {
+                                    "content": system_item.get("content", ""),
+                                    "category": "Agent switch",
+                                },
+                                turn=turn,
+                            )
+                    current_agent = new_agent
+                    _delegated = True
+
             if cancel_response_flag.is_set() and not is_auto:
                 cancel_response_flag.clear()
                 _checkpoint_boundary()
@@ -1229,31 +1274,45 @@ def run_session_sync(
                     )
                 continue
 
-            # Interactive mode: after opening a work item, let the agent keep going
-            # for one extra turn instead of stopping to wait for the user.
-            # `not is_auto` is explicit here (rather than relying on the
-            # `if is_auto: ... continue` above always firing first in auto
-            # mode) because that ordering is incidental, not a contract —
-            # work_items is no longer `None` in auto mode, so nothing else
-            # here still depends on is_auto to disable this branch.
-            if not is_auto and _opened_work_item and auto_continue_budget > 0:
-                auto_continue_budget -= 1
-                history.append(
-                    {"role": "user", "content": "Please continue with the next step."}
-                )
-                if memory_manager is not None:
-                    memory_manager.add_message(
-                        "user", "Please continue with the next step."
+            # Interactive mode (D1): after a work-item open/close or a
+            # delegation, keep going instead of waiting for the user, at most
+            # AUTO_CONTINUE_LIMIT times in a row (reset by a real user
+            # message). `not is_auto` is explicit here (rather than relying
+            # on the `if is_auto: ... continue` above always firing first in
+            # auto mode) because that ordering is incidental, not a contract.
+            if not is_auto and _auto_triggers:
+                if auto_continue_budget > 0:
+                    auto_continue_budget -= 1
+                    history.append(
+                        {"role": "user", "content": "Please continue with the next step."}
                     )
+                    if memory_manager is not None:
+                        memory_manager.add_message(
+                            "user", "Please continue with the next step."
+                        )
+                    # The auto-continue is the next user message: it ends any
+                    # block focus (D4).
+                    block_tracker.clear_focus()
+                    _emit(
+                        "system_message",
+                        {
+                            "content": auto_continue_message(
+                                _auto_triggers,
+                                AUTO_CONTINUE_LIMIT - auto_continue_budget,
+                            ),
+                            "category": "Runner guidance",
+                        },
+                        turn=turn,
+                    )
+                    continue
                 _emit(
                     "system_message",
                     {
-                        "content": "Continuing automatically after opening a work item.",
+                        "content": auto_continue_exhausted_message(),
                         "category": "Runner guidance",
                     },
                     turn=turn,
                 )
-                continue
 
             # --- Interactive: wait for next user message ---
             if not _wait_for_user(turn):

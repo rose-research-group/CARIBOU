@@ -9,6 +9,7 @@ import pytest
 
 from caribou.execution.blocks import BlockError, load_blocks
 from caribou.execution.event_ids import make_action_id
+from caribou.execution.user_input import UserTurn
 
 from .test_streaming_artifacts import WritingSandbox, _write
 from caribou.server.streaming_runner import run_session_sync
@@ -152,7 +153,7 @@ def test_user_message_from_the_queue_syncs_blocks_before_the_llm_call(
             side_effect, message = self.script.pop(0)
             if side_effect is not None:
                 side_effect()
-            return message
+            return UserTurn(message)
 
     def human_reject():
         store.record_review(0, turn=3, verdict="reject", assessment="redo")
@@ -169,6 +170,8 @@ def test_user_message_from_the_queue_syncs_blocks_before_the_llm_call(
                 'open_work_item "QC" "filter low quality cells"',
                 "```python\npass\n```",
                 'close_work_item 0 "filtered"',
+                # Closing auto-continues (D1); this report then waits.
+                "Closed; waiting for review.",
                 "```python\npass\n```",
             ]
         ),

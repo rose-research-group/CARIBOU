@@ -43,6 +43,12 @@ interface TicketForm {
  * path) or a REST work-item change; the resulting `work_item_changed` events
  * update the store, so nothing here patches state itself.
  */
+/** A message about one block: the text the agent reads and the block it focuses. */
+export interface BlockMessage {
+  content: string;
+  blockId: string;
+}
+
 @Component({
   selector: 'app-workbench',
   standalone: true,
@@ -63,7 +69,7 @@ export class WorkbenchComponent {
   /** Whether the session takes a user message now (the chat input's condition). */
   readonly canSend = input.required<boolean>();
   /** A block-scoped message; the page sends it through the chat's send path. */
-  readonly sendMessage = output<string>();
+  readonly sendMessage = output<BlockMessage>();
 
   readonly STATUS_GLYPH = STATUS_GLYPH;
   readonly STATUS_LABEL = STATUS_LABEL;
@@ -231,7 +237,7 @@ export class WorkbenchComponent {
       return;
     }
     const content = formatBlockMessage(block, this.references(), this.composerText());
-    this.sendMessage.emit(content);
+    this.sendMessage.emit({ content, blockId: block.block_id });
     this.composerText.set('');
     this.references.set([]);
     this.composerNotice.set('Sent. It appears in the chat like a typed message.');
@@ -291,7 +297,7 @@ export class WorkbenchComponent {
             `session is busy. Send it from the composer when the agent is idle: "${text}"`));
           return;
         }
-        this.sendMessage.emit(formatBlockMessage(block, [], text));
+        this.sendMessage.emit({ content: formatBlockMessage(block, [], text), blockId: block.block_id });
         this.finishReview(block, `Work item #${item.id} sent back for changes. The agent has been told.`);
       },
       error: err => this.failReview(block, `Request changes on #${item.id}`, err),

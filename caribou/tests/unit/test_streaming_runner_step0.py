@@ -10,6 +10,7 @@ from types import ModuleType, SimpleNamespace
 
 from caribou.execution.event_ids import make_action_id
 from caribou.execution.session_brief import BriefPolicy
+from caribou.execution.user_input import UserTurn
 from caribou.server.streaming_runner import run_session_sync
 
 from .test_streaming_runner_interactive import FakeAgent, FakeAgentSystem, FakeSandbox
@@ -142,7 +143,7 @@ def test_brief_accepted_in_the_interview_sets_the_goal(tmp_path, monkeypatch):
     agents = FakeAgentSystem({"driver": driver})
     user_input_queue: queue.Queue = queue.Queue()
     brief_decision_queue: queue.Queue = queue.Queue()
-    user_input_queue.put("Please build a QC pipeline.")
+    user_input_queue.put(UserTurn("Please build a QC pipeline."))
     brief_decision_queue.put({"decision": "accept"})
     llm = RecordingLLM(
         [

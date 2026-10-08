@@ -5,6 +5,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from caribou.execution.user_input import UserTurn
 from caribou.server.streaming_runner import (
     _stream_tokens,
     run_session_sync,
@@ -118,7 +119,7 @@ def test_partial_stream_failure_does_not_replay_the_prompt():
     assert len(llm.calls) == 1
 
 
-def test_interactive_delegation_waits_for_user_before_next_agent_turn(
+def test_interactive_delegation_auto_continues_as_the_target_agent(
     tmp_path: Path, monkeypatch
 ):
     rag_stub = ModuleType("caribou.execution.rag_client")
@@ -133,7 +134,7 @@ def test_interactive_delegation_waits_for_user_before_next_agent_turn(
         {"delegate_to_coder": SimpleNamespace(target_agent="coder")},
     )
     agent_system = FakeAgentSystem({"planner": planner, "coder": coder})
-    llm = FakeLLM(["delegate_to_coder", "coder should not run yet"])
+    llm = FakeLLM(["delegate_to_coder", "coder reports back"])
     stop_flag = threading.Event()
     user_input_queue = queue.Queue()
     events = []
@@ -166,13 +167,25 @@ def test_interactive_delegation_waits_for_user_before_next_agent_turn(
     thread.start()
 
     assert idle_seen.wait(timeout=2)
-    assert llm.calls == 1
+    # D1: the delegation continues automatically into the target's turn; the
+    # target's plain report then waits for the user.
+    assert llm.calls == 2
     assert [
-        event["data"]["message"]["content"]
+        (
+            event["data"]["message"]["agent_name"],
+            event["data"]["message"]["content"],
+        )
         for event in events
         if event["type"] == "message_complete"
-    ] == ["delegate_to_coder"]
+    ] == [("planner", "delegate_to_coder"), ("coder", "coder reports back")]
     assert any(event["type"] == "agent_switch" for event in events)
+    guidance = [
+        event["data"]["content"]
+        for event in events
+        if event["type"] == "system_message"
+        and event["data"].get("category") == "Runner guidance"
+    ]
+    assert guidance == ["Continuing automatically after delegating to coder (1 of 4)."]
 
     stop_flag.set()
     thread.join(timeout=2)
@@ -199,11 +212,12 @@ def test_interactive_work_item_transfers_and_blocks_end_session(
             'open_work_item "Implement" "Build and test it"',
             "delegate_to_coder",
             "end_session",
+            "still working on it",
         ]
     )
     stop_flag = threading.Event()
     user_input_queue = queue.Queue()
-    user_input_queue.put("continue")
+    user_input_queue.put(UserTurn("continue"))
     events = []
     second_idle = threading.Event()
     idle_count = 0
@@ -274,7 +288,7 @@ def test_interactive_work_item_transfers_and_blocks_end_session(
     assert not thread.is_alive()
 
 
-def test_open_work_item_auto_continues_once_then_waits(
+def test_open_work_item_auto_continues_until_the_budget_is_spent(
     tmp_path: Path, monkeypatch
 ):
     rag_stub = ModuleType("caribou.execution.rag_client")
@@ -285,10 +299,7 @@ def test_open_work_item_auto_continues_once_then_waits(
 
     planner = FakeAgent("planner")
     llm = FakeLLM(
-        [
-            'open_work_item "First" "Do the first thing"',
-            'open_work_item "Second" "Do the second thing"',
-        ]
+        [f'open_work_item "Step {n}" "Do step {n}"' for n in range(5)]
     )
     stop_flag = threading.Event()
     events = []
@@ -321,21 +332,33 @@ def test_open_work_item_auto_continues_once_then_waits(
     thread.start()
 
     assert idle_seen.wait(timeout=5)
-    # The first open auto-continued into a second provider turn, but that second
-    # open was bounded by the one-per-user-message budget and therefore waited.
-    assert llm.calls == 2
+    # Each of the first four opens auto-continued; the fifth found the budget
+    # of four spent, said so, and waited for the user.
+    assert llm.calls == 5
     opened_items = [
         event["data"]["item"]
         for event in events
         if event["type"] == "work_item_changed"
     ]
-    assert [item["id"] for item in opened_items] == [0, 1]
-    assert any(
-        event["type"] == "system_message"
-        and "Continuing automatically after opening a work item."
-        in event["data"].get("content", "")
+    assert [item["id"] for item in opened_items] == [0, 1, 2, 3, 4]
+    guidance = [
+        event["data"]["content"]
         for event in events
+        if event["type"] == "system_message"
+        and event["data"].get("category") == "Runner guidance"
+    ]
+    assert guidance == [
+        f"Continuing automatically after opening a work item ({n} of 4)."
+        for n in range(1, 5)
+    ] + ["Automatic continuation paused after 4 steps. Waiting for your next message."]
+    exhausted = next(
+        i
+        for i, event in enumerate(events)
+        if event["type"] == "system_message"
+        and event["data"]["content"].startswith("Automatic continuation paused")
     )
+    assert events[exhausted + 1]["type"] == "status_change"
+    assert events[exhausted + 1]["data"]["status"] == "idle"
 
     stop_flag.set()
     thread.join(timeout=2)

@@ -4,6 +4,7 @@ from pathlib import Path
 from queue import Queue
 from threading import Event
 
+from caribou.execution.user_input import UserTurn
 from caribou.server.models import SessionCreateRequest, SessionStatus
 from caribou.server.session_manager import SessionManager, _Session
 
@@ -140,7 +141,7 @@ def test_only_one_user_message_is_accepted_while_waiting(tmp_path, monkeypatch):
         assert second is False
         assert session.events[-1]["data"]["code"] == "MESSAGE_NOT_ACCEPTED"
         assert session.status == SessionStatus.running
-        assert session.user_input_queue.get_nowait() == "First"
+        assert session.user_input_queue.get_nowait() == UserTurn("First")
         assert session.user_input_queue.empty()
 
     asyncio.run(run_test())

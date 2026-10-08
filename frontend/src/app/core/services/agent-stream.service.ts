@@ -117,7 +117,7 @@ export class AgentStreamService implements OnDestroy {
     this.nextRetryAt.set(null);
   }
 
-  send(msg: { type: string; content?: string }): void {
+  send(msg: { type: string; content?: string; block_id?: string }): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
     }
@@ -127,8 +127,11 @@ export class AgentStreamService implements OnDestroy {
     this.send({ type: 'run', content: prompt });
   }
 
-  sendUserMessage(content: string): void {
-    this.send({ type: 'user_message', content });
+  /** A user turn; `blockId` focuses it on a workbench block (until handoff). */
+  sendUserMessage(content: string, blockId?: string): void {
+    this.send(blockId === undefined
+      ? { type: 'user_message', content }
+      : { type: 'user_message', content, block_id: blockId });
   }
 
   stop(): void {

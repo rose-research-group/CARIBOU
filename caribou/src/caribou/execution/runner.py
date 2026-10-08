@@ -94,6 +94,31 @@ MAX_CONSECUTIVE_EXEC_FAILURES = 5
 _LLM_RETRY_ATTEMPTS = 3
 _LLM_RETRY_BASE_DELAY = 2.0
 _LLM_RETRY_MAX_DELAY = 4.0
+# Interactive mode (CLI and web loops): consecutive automatic continuations
+# after a work-item open/close or a delegation before the loop waits for the
+# user again (D1). Reset by every real user message.
+AUTO_CONTINUE_LIMIT = 4
+AUTO_CONTINUE_MESSAGE = "Please continue with the next step."
+
+
+def auto_continue_message(triggers: List[str], step: int) -> str:
+    """Guidance text for one automatic continuation, e.g.
+    'Continuing automatically after delegating to QC_metrics_agent (2 of 4).'
+    """
+    if not triggers:
+        raise ValueError("an automatic continuation needs at least one trigger")
+    return (
+        f"Continuing automatically after {' and '.join(triggers)} "
+        f"({step} of {AUTO_CONTINUE_LIMIT})."
+    )
+
+
+def auto_continue_exhausted_message() -> str:
+    """Guidance text when the automatic-continuation budget is used up."""
+    return (
+        f"Automatic continuation paused after {AUTO_CONTINUE_LIMIT} steps. "
+        "Waiting for your next message."
+    )
 
 
 class RunnerEvent(TypedDict):
@@ -900,9 +925,9 @@ def run_agent_session(
 
     session_end_reason = "completed"
     last_code_snippet: str | None = None
-    # At most one automatic "continue" per user message, consumed after the agent
-    # opens a work item so it can proceed with the work instead of stopping.
-    auto_continue_budget = 1
+    # Automatic "continue"s after a work-item open/close or a delegation (D1),
+    # at most AUTO_CONTINUE_LIMIT in a row; reset by every real user message.
+    auto_continue_budget = AUTO_CONTINUE_LIMIT
 
     def checkpoint_at_completed_turn() -> bool:
         if should_checkpoint is None or not should_checkpoint():
@@ -1088,89 +1113,19 @@ def run_agent_session(
         # Track whether any substantive action fires this turn.
         _action_fired = False
         _delegated = False
-        _opened_work_item = False
+        # What this message did that earns an automatic continue in
+        # interactive mode (D1): a successful work-item open/close and/or a
+        # delegation, each as a short phrase for the guidance line.
+        _auto_triggers: List[str] = []
+        # A signature-repair RAG hit during code execution skips the rest of
+        # the turn's tail; it is acted on after the work-item command and the
+        # delegation, so those still apply.
+        rag_short_circuit = False
 
-        # --- Enforced work-item commands ---
-        work_command = parse_work_item_command(msg)
-        work_result = apply_work_item_command(
-            work_items, msg, owner=current_agent.name, turn=turn
-        )
-        if work_result is not None:
-            _action_fired = True
-            if (
-                work_command is not None
-                and work_command.name == "open_work_item"
-                and work_result.success
-            ):
-                _opened_work_item = True
-            work_feedback = "[SYSTEM] " + work_result.feedback
-            history.append({"role": "system", "content": work_feedback})
-            if memory_manager:
-                memory_manager.add_message("system", work_feedback)
-            action_space.add_action(
-                "work_item_command",
-                work_feedback,
-                status="ok" if work_result.success else "error",
-            )
-            if work_result.changed_item is not None:
-                _emit_runner_event(
-                    event_callback,
-                    event_type="work_item_changed",
-                    run_id=run_id,
-                    turn=turn,
-                    agent_name=current_agent.name,
-                    payload={"item": work_result.changed_item},
-                )
-                block_tracker.on_work_item_changed(work_result.changed_item)
-
-        # --- End session handling ---
-        # Only end session if there's no delegation command also present
-        # (prevents premature exit when LLM outputs both delegation and end_session)
-        has_delegation = detect_delegation(msg) is not None
-        end_session_refused = False
-        if detect_end_session(msg):
-            blocking = end_session_block(work_items, current_agent.name)
-            if blocking:
-                end_session_refused = True
-                blocked_feedback = (
-                    "[SYSTEM] end_session refused. Current owner "
-                    f"{current_agent.name} still owns non-Done work items: "
-                    + ", ".join(
-                        f"{item['id']} ({item['status']}, owner={item['owner']})"
-                        for item in blocking
-                    )
-                    + ". Close or transfer them before ending the session."
-                )
-                history.append({"role": "system", "content": blocked_feedback})
-                if memory_manager:
-                    memory_manager.add_message("system", blocked_feedback)
-                action_space.add_action(
-                    "end_session_refused", blocked_feedback, status="error"
-                )
-        if (
-            detect_end_session(msg)
-            and _count_code_blocks(msg) == 0
-            and not has_delegation
-            and not end_session_refused
-        ):
-            if is_auto:
-                console.print(
-                    "[yellow]Agent requested end_session. Ending auto run.[/yellow]"
-                )
-                session_end_reason = "agent_finished"
-                break
-            else:
-                user_choice = Prompt.ask(
-                    "Agent requested end_session. Continue anyway?",
-                    choices=["y", "n"],
-                    default="n",
-                ).lower()
-                if user_choice == "n":
-                    console.print(
-                        "[bold yellow]Ending session at agent request.[/bold yellow]"
-                    )
-                    session_end_reason = "agent_finished"
-                    break
+        # Order inside one message (D2/D3): RAG, then the code block, run and
+        # recorded as the agent that WROTE the message, then the work-item
+        # command, then the delegation, which only then switches
+        # `current_agent`.
 
         # --- RAG handling ---
         query_from_re = detect_rag(msg)
@@ -1308,105 +1263,6 @@ def run_agent_session(
                 session_end_reason = stop_reason
                 break
 
-        # Agent delegation command (e.g. "delegate_to_coder"), emitted by the
-        # LLM's own generated message and matched against the blueprint's
-        # Agent.commands. Unrelated to the human-typed REPL commands (/todo,
-        # /evaluate, ...) dispatched later in the interactive prompt loop via
-        # caribou.execution.user_commands — no human input is involved here.
-        cmd = detect_delegation(msg)
-        if cmd and cmd in current_agent.commands:
-            target_agent_name = current_agent.commands[cmd].target_agent
-            new_agent = agent_system.get_agent(target_agent_name)
-            previous_agent_name = current_agent.name
-            if new_agent is not None:
-                try:
-                    transferred_items = transfer_on_delegation(
-                        work_items,
-                        previous_agent_name,
-                        target_agent_name,
-                        turn=turn,
-                        evaluator_agent_name=evaluator_agent_name,
-                    )
-                except WorkItemError as exc:
-                    transfer_feedback = (
-                        f"[SYSTEM] Delegation refused because work-item transfer "
-                        f"failed: {exc}"
-                    )
-                    history.append({"role": "system", "content": transfer_feedback})
-                    if memory_manager:
-                        memory_manager.add_message("system", transfer_feedback)
-                    action_space.add_action(
-                        "work_item_transfer", transfer_feedback, status="error"
-                    )
-                    new_agent = None
-                else:
-                    for transferred_item in transferred_items:
-                        _emit_runner_event(
-                            event_callback,
-                            event_type="work_item_changed",
-                            run_id=run_id,
-                            turn=turn,
-                            agent_name=previous_agent_name,
-                            payload={"item": transferred_item},
-                        )
-                        block_tracker.on_work_item_changed(transferred_item)
-            if new_agent:
-                _action_fired = True
-                if report_memory:
-                    agent_history_slice = history[current_agent_history_start:]
-                    agent_report = _generate_agent_report(
-                        console,
-                        llm_client=llm_client,
-                        model_name=model_name,
-                        agent_name=current_agent.name,
-                        history_slice=agent_history_slice,
-                    )
-                    report_memory.add_report(current_agent.name, agent_report)
-                    history.append(
-                        {
-                            "role": "system",
-                            "content": f"Agent report from {current_agent.name}:\n{agent_report}",
-                        }
-                    )
-                    current_agent_history_start = len(history)
-                routing_message = f"🔄 Routing to '{target_agent_name}' via {cmd}"
-                current_agent = new_agent
-                # Global policy lives in the pinned first system message; skip re-embedding here.
-                system_prompt = current_agent.get_full_prompt(None, work_item_policy)
-                prompt_with_context = system_prompt + "\n\n" + analysis_context
-                console.print(f"[yellow]{routing_message}[/yellow]")
-                history.append(
-                    {
-                        "role": "assistant",
-                        "content": f"🔄 Routing to **{target_agent_name}** (command `{cmd}`)",
-                    }
-                )
-                if memory_manager:
-                    memory_manager.add_message("assistant", routing_message)
-                _apply_agent_switch(
-                    new_agent_prompt=system_prompt,
-                    analysis_context=analysis_context,
-                    history=history,
-                    memory_manager=memory_manager,
-                    action_space=action_space,
-                    new_agent=new_agent,
-                )
-                if report_memory:
-                    report_memory.update_agent_prompt(prompt_with_context)
-                    current_agent_history_start = len(history)
-                _emit_runner_event(
-                    event_callback,
-                    event_type="agent_switch",
-                    run_id=run_id,
-                    turn=turn,
-                    agent_name=current_agent.name,
-                    payload={
-                        "from_agent": previous_agent_name,
-                        "to_agent": target_agent_name,
-                        "command": cmd,
-                    },
-                )
-                _delegated = True
 
         stop_reason = session_stop_reason()
         if stop_reason is not None:
@@ -1453,7 +1309,6 @@ def run_agent_session(
                 )
             code_blocks = produced_code_blocks[:1]
             total_blocks = len(code_blocks)
-            rag_short_circuit = False
             cancelled_during_actions = False
             sandbox_permanently_unavailable = False
             for idx, code in enumerate(code_blocks, start=1):
@@ -1648,13 +1503,13 @@ def run_agent_session(
                     memory_manager.add_message("system", escalation_msg)
                 session_end_reason = "stuck_code_failures"
                 break
-            if rag_short_circuit:
-                if checkpoint_at_completed_turn():
-                    session_end_reason = "checkpointed"
-                    break
-                continue
-            # Escalate if the same code path keeps failing — don't loop forever.
-            if is_auto and consecutive_failures >= max_consecutive_exec_failures:
+            # Escalate if the same code path keeps failing — don't loop forever
+            # (unless a signature repair was just found for the failure).
+            if (
+                not rag_short_circuit
+                and is_auto
+                and consecutive_failures >= max_consecutive_exec_failures
+            ):
                 console.print(
                     f"[bold red]Auto run halted: {consecutive_failures} consecutive "
                     f"code execution failures — likely stuck on the same error.[/bold red]"
@@ -1670,8 +1525,206 @@ def run_agent_session(
                 session_end_reason = "stuck_code_failures"
                 break
 
+        # --- Enforced work-item commands (after the code, D2) ---
+        work_command = parse_work_item_command(msg)
+        work_result = apply_work_item_command(
+            work_items, msg, owner=current_agent.name, turn=turn
+        )
+        if work_result is not None:
+            _action_fired = True
+            if (
+                work_command is not None
+                and work_command.name in ("open_work_item", "close_work_item")
+                and work_result.success
+            ):
+                _auto_triggers.append(
+                    "opening a work item"
+                    if work_command.name == "open_work_item"
+                    else "closing a work item"
+                )
+            work_feedback = "[SYSTEM] " + work_result.feedback
+            history.append({"role": "system", "content": work_feedback})
+            if memory_manager:
+                memory_manager.add_message("system", work_feedback)
+            action_space.add_action(
+                "work_item_command",
+                work_feedback,
+                status="ok" if work_result.success else "error",
+            )
+            if work_result.changed_item is not None:
+                _emit_runner_event(
+                    event_callback,
+                    event_type="work_item_changed",
+                    run_id=run_id,
+                    turn=turn,
+                    agent_name=current_agent.name,
+                    payload={"item": work_result.changed_item},
+                )
+                block_tracker.on_work_item_changed(work_result.changed_item)
+
+        # --- End session handling ---
+        # Only end session if there's no delegation command also present
+        # (prevents premature exit when LLM outputs both delegation and end_session)
+        has_delegation = detect_delegation(msg) is not None
+        end_session_refused = False
+        if detect_end_session(msg):
+            blocking = end_session_block(work_items, current_agent.name)
+            if blocking:
+                end_session_refused = True
+                blocked_feedback = (
+                    "[SYSTEM] end_session refused. Current owner "
+                    f"{current_agent.name} still owns non-Done work items: "
+                    + ", ".join(
+                        f"{item['id']} ({item['status']}, owner={item['owner']})"
+                        for item in blocking
+                    )
+                    + ". Close or transfer them before ending the session."
+                )
+                history.append({"role": "system", "content": blocked_feedback})
+                if memory_manager:
+                    memory_manager.add_message("system", blocked_feedback)
+                action_space.add_action(
+                    "end_session_refused", blocked_feedback, status="error"
+                )
+        if (
+            detect_end_session(msg)
+            and _count_code_blocks(msg) == 0
+            and not has_delegation
+            and not end_session_refused
+        ):
+            if is_auto:
+                console.print(
+                    "[yellow]Agent requested end_session. Ending auto run.[/yellow]"
+                )
+                session_end_reason = "agent_finished"
+                break
+            else:
+                user_choice = Prompt.ask(
+                    "Agent requested end_session. Continue anyway?",
+                    choices=["y", "n"],
+                    default="n",
+                ).lower()
+                if user_choice == "n":
+                    console.print(
+                        "[bold yellow]Ending session at agent request.[/bold yellow]"
+                    )
+                    session_end_reason = "agent_finished"
+                    break
+
+        # Agent delegation command (e.g. "delegate_to_coder"), emitted by the
+        # LLM's own generated message and matched against the blueprint's
+        # Agent.commands. Unrelated to the human-typed REPL commands (/todo,
+        # /evaluate, ...) dispatched later in the interactive prompt loop via
+        # caribou.execution.user_commands — no human input is involved here.
+        cmd = detect_delegation(msg)
+        if cmd and cmd in current_agent.commands:
+            target_agent_name = current_agent.commands[cmd].target_agent
+            new_agent = agent_system.get_agent(target_agent_name)
+            previous_agent_name = current_agent.name
+            if new_agent is not None:
+                try:
+                    transferred_items = transfer_on_delegation(
+                        work_items,
+                        previous_agent_name,
+                        target_agent_name,
+                        turn=turn,
+                        evaluator_agent_name=evaluator_agent_name,
+                    )
+                except WorkItemError as exc:
+                    transfer_feedback = (
+                        f"[SYSTEM] Delegation refused because work-item transfer "
+                        f"failed: {exc}"
+                    )
+                    history.append({"role": "system", "content": transfer_feedback})
+                    if memory_manager:
+                        memory_manager.add_message("system", transfer_feedback)
+                    action_space.add_action(
+                        "work_item_transfer", transfer_feedback, status="error"
+                    )
+                    new_agent = None
+                else:
+                    for transferred_item in transferred_items:
+                        _emit_runner_event(
+                            event_callback,
+                            event_type="work_item_changed",
+                            run_id=run_id,
+                            turn=turn,
+                            agent_name=previous_agent_name,
+                            payload={"item": transferred_item},
+                        )
+                        block_tracker.on_work_item_changed(transferred_item)
+            if new_agent:
+                _action_fired = True
+                # The author's code has already run (D3); title the target's
+                # next implicit block after this handoff (D4).
+                block_tracker.note_delegation(
+                    previous_agent_name, target_agent_name, cmd
+                )
+                _auto_triggers.append(f"delegating to {target_agent_name}")
+                if report_memory:
+                    agent_history_slice = history[current_agent_history_start:]
+                    agent_report = _generate_agent_report(
+                        console,
+                        llm_client=llm_client,
+                        model_name=model_name,
+                        agent_name=current_agent.name,
+                        history_slice=agent_history_slice,
+                    )
+                    report_memory.add_report(current_agent.name, agent_report)
+                    history.append(
+                        {
+                            "role": "system",
+                            "content": f"Agent report from {current_agent.name}:\n{agent_report}",
+                        }
+                    )
+                    current_agent_history_start = len(history)
+                routing_message = f"🔄 Routing to '{target_agent_name}' via {cmd}"
+                current_agent = new_agent
+                # Global policy lives in the pinned first system message; skip re-embedding here.
+                system_prompt = current_agent.get_full_prompt(None, work_item_policy)
+                prompt_with_context = system_prompt + "\n\n" + analysis_context
+                console.print(f"[yellow]{routing_message}[/yellow]")
+                history.append(
+                    {
+                        "role": "assistant",
+                        "content": f"🔄 Routing to **{target_agent_name}** (command `{cmd}`)",
+                    }
+                )
+                if memory_manager:
+                    memory_manager.add_message("assistant", routing_message)
+                _apply_agent_switch(
+                    new_agent_prompt=system_prompt,
+                    analysis_context=analysis_context,
+                    history=history,
+                    memory_manager=memory_manager,
+                    action_space=action_space,
+                    new_agent=new_agent,
+                )
+                if report_memory:
+                    report_memory.update_agent_prompt(prompt_with_context)
+                    current_agent_history_start = len(history)
+                _emit_runner_event(
+                    event_callback,
+                    event_type="agent_switch",
+                    run_id=run_id,
+                    turn=turn,
+                    agent_name=current_agent.name,
+                    payload={
+                        "from_agent": previous_agent_name,
+                        "to_agent": target_agent_name,
+                        "command": cmd,
+                    },
+                )
+                _delegated = True
+
+        if rag_short_circuit:
+            if checkpoint_at_completed_turn():
+                session_end_reason = "checkpointed"
+                break
+            continue
+
         # In auto mode, delegation immediately hands execution to the new agent.
-        # In interactive mode, the user gets control back after the handoff.
+        # In interactive mode, it auto-continues below (D1).
         if _delegated and is_auto:
             if checkpoint_at_completed_turn():
                 session_end_reason = "checkpointed"
@@ -1755,18 +1808,24 @@ def run_agent_session(
             )
             continue
 
-        # Interactive mode: after opening a work item, let the agent keep going
-        # for one extra turn instead of stopping to wait for the user.
-        if not is_auto and _opened_work_item and auto_continue_budget > 0:
-            auto_continue_budget -= 1
-            history.append(
-                {"role": "user", "content": "Please continue with the next step."}
-            )
-            if memory_manager:
-                memory_manager.add_message(
-                    "user", "Please continue with the next step."
+        # Interactive mode (D1): after a work-item open/close or a delegation,
+        # keep going instead of waiting for the user, at most
+        # AUTO_CONTINUE_LIMIT times in a row (reset by a real user message).
+        if not is_auto and _auto_triggers:
+            if auto_continue_budget > 0:
+                auto_continue_budget -= 1
+                history.append({"role": "user", "content": AUTO_CONTINUE_MESSAGE})
+                if memory_manager:
+                    memory_manager.add_message("user", AUTO_CONTINUE_MESSAGE)
+                console.print(
+                    "[yellow]"
+                    + auto_continue_message(
+                        _auto_triggers, AUTO_CONTINUE_LIMIT - auto_continue_budget
+                    )
+                    + "[/yellow]"
                 )
-            continue
+                continue
+            console.print(f"[yellow]{auto_continue_exhausted_message()}[/yellow]")
 
         # Interactive mode: prompt user for next action
         while True:
@@ -1817,7 +1876,7 @@ def run_agent_session(
                     memory_manager.add_message("user", user_input)
                 history.append({"role": "user", "content": user_input})
                 display(console, "user", user_input)
-                auto_continue_budget = 1
+                auto_continue_budget = AUTO_CONTINUE_LIMIT
             # Pick up work-item changes made while waiting (reviews, reopens)
             # before the next LLM call.
             block_tracker.sync()

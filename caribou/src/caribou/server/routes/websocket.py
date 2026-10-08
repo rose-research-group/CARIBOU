@@ -4,7 +4,8 @@ WebSocket endpoint for real-time session streaming.
 Protocol:
   Client → Server:
     { "type": "run",          "content": "<initial prompt>" }
-    { "type": "user_message", "content": "<next turn>"      }
+    { "type": "user_message", "content": "<next turn>",
+      "block_id"?: "<workbench block id>"                    }
     { "type": "stop"                                         }
     { "type": "ping"                                         }
 
@@ -133,7 +134,12 @@ async def _receive_messages(websocket: WebSocket, session) -> None:
         elif msg_type == "user_message":
             content = msg.get("content", "")
             if content:
-                await session_manager.send_user_message(session.id, content)
+                # The manager validates block_id (type and existence) and logs
+                # a refusal as an error event; an absent or null id means the
+                # message is not about a block.
+                await session_manager.send_user_message(
+                    session.id, content, block_id=msg.get("block_id")
+                )
 
         elif msg_type == "stop":
             await session_manager.stop_session(session.id)

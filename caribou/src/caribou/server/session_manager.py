@@ -52,6 +52,7 @@ from caribou.execution.blocks import (
     init_blocks,
     load_blocks,
 )
+from caribou.execution.user_input import UserTurn
 from caribou.execution.work_item_runtime import copy_work_items
 from caribou.execution.work_items import (
     HUMAN_REVIEWER,
@@ -1648,8 +1649,32 @@ class SessionManager:
 
         return errors
 
-    async def send_user_message(self, session_id: str, content: str) -> bool:
-        """Queue one message only while a live interactive runner is waiting."""
+    def _reject_user_message(self, session: _Session, code: str, message: str) -> None:
+        """Log a refused user message as a non-fatal error event.
+
+        The sender sees the refusal in the session log; a refused message used
+        to vanish without a trace.
+        """
+        self._on_event(
+            session,
+            {
+                "type": "error",
+                "session_id": session.id,
+                "turn": session.current_turn,
+                "timestamp": datetime.utcnow().isoformat(),
+                "data": {"code": code, "message": message, "fatal": False},
+            },
+        )
+
+    async def send_user_message(
+        self, session_id: str, content: str, block_id: Optional[str] = None
+    ) -> bool:
+        """Queue one message only while a live interactive runner is waiting.
+
+        `block_id` (from the workbench) focuses the turn on that block; it
+        must name a block in the session's blocks.json. A refused message is
+        logged as a non-fatal error event and nothing is queued.
+        """
         session = self._sessions.get(session_id)
         if not session:
             return False
@@ -1659,28 +1684,38 @@ class SessionManager:
             or not session.runner_task
             or session.runner_task.done()
         ):
-            # Record the rejection in the log so the sender sees it; the
-            # message used to vanish without a trace.
-            self._on_event(
+            self._reject_user_message(
                 session,
-                {
-                    "type": "error",
-                    "session_id": session.id,
-                    "turn": session.current_turn,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "data": {
-                        "code": "MESSAGE_NOT_ACCEPTED",
-                        "message": (
-                            "Message not delivered: the session accepts messages "
-                            f"only while idle in interactive mode (status: "
-                            f"{SessionStatus(session.status).value}, mode: "
-                            f"{SessionMode(session.config.mode).value})."
-                        ),
-                        "fatal": False,
-                    },
-                },
+                "MESSAGE_NOT_ACCEPTED",
+                "Message not delivered: the session accepts messages "
+                f"only while idle in interactive mode (status: "
+                f"{SessionStatus(session.status).value}, mode: "
+                f"{SessionMode(session.config.mode).value}).",
             )
             return False
+        if block_id is not None:
+            if not isinstance(block_id, str) or not block_id:
+                self._reject_user_message(
+                    session,
+                    "INVALID_BLOCK_ID",
+                    "Message not delivered: block_id must be a non-empty "
+                    f"string, got {block_id!r}.",
+                )
+                return False
+            index = load_blocks(session.output_dir.parent / BLOCKS_FILENAME)
+            known = (
+                {block["block_id"] for block in index["blocks"]}
+                if index is not None
+                else set()
+            )
+            if block_id not in known:
+                self._reject_user_message(
+                    session,
+                    "UNKNOWN_BLOCK",
+                    f"Message not delivered: block {block_id} does not exist "
+                    "in this session.",
+                )
+                return False
         self._on_event(
             session,
             {
@@ -1691,7 +1726,7 @@ class SessionManager:
                 "data": {"status": "running", "reason": "user_message_queued"},
             },
         )
-        session.user_input_queue.put(content)
+        session.user_input_queue.put(UserTurn(content=content, block_id=block_id))
         return True
 
     async def start_run(self, session_id: str, initial_prompt: str) -> bool:
