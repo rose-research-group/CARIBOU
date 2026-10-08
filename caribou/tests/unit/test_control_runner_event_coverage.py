@@ -93,6 +93,28 @@ _MINIMAL_PAYLOADS: dict[str, dict[str, object]] = {
         "error": "",
     },
     "work_item_changed": {"item": _work_item_snapshot()},
+    "block_changed": {
+        "block": {
+            "schema_version": "caribou.block.v1",
+            "block_id": "blk-0001",
+            "session_id": "run",
+            "index": 1,
+            "work_item_id": 0,
+            "attempt": 1,
+            "implicit": False,
+            "title": "Cluster cells",
+            "kind": None,
+            "agents": ["analyst"],
+            "status": "running",
+            "turn_start": 1,
+            "turn_end": 1,
+            "action_ids": ["run:turn:1:block:1"],
+            "failed_action_ids": [],
+            "artifact_paths": [],
+            "created_at": "2026-07-15T12:00:00Z",
+            "updated_at": "2026-07-15T12:00:00Z",
+        }
+    },
     "agent_switch": {
         "from_agent": "analyst",
         "to_agent": "analyst",
@@ -109,6 +131,7 @@ _MINIMAL_PAYLOADS: dict[str, dict[str, object]] = {
         "source": "print(1)",
         "block_index": 1,
         "total_blocks": 1,
+        "block_id": "blk-0001",
     },
     "code_result": {
         "action_id": "run:turn:1:block:1",
@@ -119,6 +142,7 @@ _MINIMAL_PAYLOADS: dict[str, dict[str, object]] = {
         "stderr": "",
         "block_index": 1,
         "total_blocks": 1,
+        "block_id": "blk-0001",
     },
     "session_end": {
         "succeeded": True,

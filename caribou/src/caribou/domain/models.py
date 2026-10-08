@@ -20,7 +20,9 @@ from pydantic import (
     StrictInt,
     StrictStr,
     StringConstraints,
+    SerializerFunctionWrapHandler,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -676,20 +678,40 @@ class RagPayload(DomainModel):
     success: StrictBool
 
 
-class CodeSubmittedPayload(DomainModel):
+class _BlockAttributedPayload(DomainModel):
+    """Code payload with an optional workbench ``block_id``.
+
+    An absent ``block_id`` is omitted from the dump rather than written as
+    null, so events journaled before block attribution keep their exact
+    canonical bytes (checkpoint action ledgers hash those dumps).
+    """
+
+    @model_serializer(mode="wrap")
+    def omit_absent_block_id(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> Dict[str, Any]:
+        data = handler(self)
+        if self.block_id is None:  # type: ignore[attr-defined]
+            del data["block_id"]
+        return data
+
+
+class CodeSubmittedPayload(_BlockAttributedPayload):
     action_id: NonEmptyStr
     source_artifact_id: ArtifactId
     agent_name: NonEmptyStr
     block_index: PositiveInt
     total_blocks: PositiveInt
+    block_id: Optional[NonEmptyStr] = None
 
 
-class CodeResultPayload(DomainModel):
+class CodeResultPayload(_BlockAttributedPayload):
     action_id: NonEmptyStr
     success: StrictBool
     duration_ms: NonNegativeInt
     stdout_artifact_id: Optional[ArtifactId] = None
     stderr_artifact_id: Optional[ArtifactId] = None
+    block_id: Optional[NonEmptyStr] = None
 
 
 class ArtifactCreatedPayload(DomainModel):
@@ -744,6 +766,20 @@ class WorkItemChangedPayload(DomainModel):
         return self
 
 
+class BlockChangedPayload(DomainModel):
+    """A workbench block was created or changed; carries the full block record."""
+
+    block: Dict[StrictStr, JsonValue]
+
+    @model_validator(mode="after")
+    def validate_block_record(self) -> "BlockChangedPayload":
+        if self.block.get("schema_version") != "caribou.block.v1":
+            raise ValueError("block record must have schema_version 'caribou.block.v1'")
+        if not isinstance(self.block.get("block_id"), str) or not self.block["block_id"]:
+            raise ValueError("block record is missing a non-empty 'block_id'")
+        return self
+
+
 EventPayload = Union[
     StateTransitionPayload,
     MessagePayload,
@@ -759,6 +795,7 @@ EventPayload = Union[
     FailureRecordedPayload,
     HeartbeatPayload,
     WorkItemChangedPayload,
+    BlockChangedPayload,
 ]
 
 
@@ -795,6 +832,7 @@ class Event(DomainModel):
             EventType.failure_recorded: FailureRecordedPayload,
             EventType.heartbeat: HeartbeatPayload,
             EventType.work_item_changed: WorkItemChangedPayload,
+            EventType.block_changed: BlockChangedPayload,
         }
         if not isinstance(self.payload, expected[self.event_type]):
             raise ValueError(

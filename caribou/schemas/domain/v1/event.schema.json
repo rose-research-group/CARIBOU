@@ -55,6 +55,24 @@
       "title": "ArtifactCreatedPayload",
       "type": "object"
     },
+    "BlockChangedPayload": {
+      "additionalProperties": false,
+      "description": "A workbench block was created or changed; carries the full block record.",
+      "properties": {
+        "block": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Block",
+          "type": "object"
+        }
+      },
+      "required": [
+        "block"
+      ],
+      "title": "BlockChangedPayload",
+      "type": "object"
+    },
     "BudgetRecordedPayload": {
       "additionalProperties": false,
       "properties": {
@@ -92,6 +110,19 @@
           "minLength": 1,
           "title": "Action Id",
           "type": "string"
+        },
+        "block_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Id"
         },
         "duration_ms": {
           "minimum": 0,
@@ -150,6 +181,19 @@
           "title": "Agent Name",
           "type": "string"
         },
+        "block_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Id"
+        },
         "block_index": {
           "exclusiveMinimum": 0,
           "title": "Block Index",
@@ -191,7 +235,8 @@
         "budget_recorded",
         "failure_recorded",
         "heartbeat",
-        "work_item_changed"
+        "work_item_changed",
+        "block_changed"
       ],
       "title": "EventType",
       "type": "string"
@@ -519,6 +564,9 @@
         },
         {
           "$ref": "#/$defs/WorkItemChangedPayload"
+        },
+        {
+          "$ref": "#/$defs/BlockChangedPayload"
         }
       ],
       "title": "Payload"

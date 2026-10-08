@@ -45,6 +45,7 @@ from caribou.execution.evaluation import (
     evaluation_response_metadata,
 )
 from caribou.execution.session_brief import resolve_brief_policy
+from caribou.execution.blocks import BLOCKS_FILENAME, fork_blocks, load_blocks
 from caribou.execution.work_item_runtime import copy_work_items
 from caribou.execution.work_items import WorkItemPolicy, WorkItemStore
 from caribou.execution.token_utils import estimate_tokens
@@ -1224,6 +1225,13 @@ class SessionManager:
         )
         if copied_store is not None:
             child.work_item_store = copied_store
+        # blocks.json sits next to work-items/; copied (re-stamped with the
+        # child's session id) before the child's runner can start a tracker.
+        fork_blocks(
+            source.output_dir.parent / BLOCKS_FILENAME,
+            child.output_dir.parent / BLOCKS_FILENAME,
+            child_session_id=child.id,
+        )
 
     def _work_item_store(self, session: _Session) -> WorkItemStore:
         # Cached on the session so this method, the turn loop
@@ -1274,6 +1282,18 @@ class SessionManager:
         if session is None:
             raise KeyError("Session not found")
         return self._work_item_store(session).list()
+
+    def read_blocks(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """The session's blocks.json index, or None if it never recorded blocks.
+
+        BlockTracker's file is the source of truth; the manager keeps no copy.
+        Raises KeyError for an unknown session and BlockError for a malformed
+        file.
+        """
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise KeyError("Session not found")
+        return load_blocks(session.output_dir.parent / BLOCKS_FILENAME)
 
     def read_work_item(self, session_id: str, item_id: int) -> Dict[str, Any]:
         session = self._sessions.get(session_id)
@@ -1939,6 +1959,12 @@ class SessionManager:
             else:
                 record.id = session.artifacts[existing].id
                 session.artifacts[existing] = record
+
+        elif t == "block_changed":
+            # blocks.json (written by BlockTracker) is the source of truth and
+            # the event log already holds this event for live updates and
+            # replay, so the manager keeps no second copy of block state.
+            pass
 
         elif t == "phase_change":
             session.phase = data.get("phase", session.phase)

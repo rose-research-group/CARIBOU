@@ -173,6 +173,7 @@ def run_session_sync(
         detect_rag,
         extract_labeled_block,
     )
+    from caribou.execution.blocks import BlockTracker, blocks_path_for
     from caribou.execution.event_ids import make_action_id
     from caribou.execution.rag_client import get_rag_client
     from caribou.execution.work_items import (
@@ -276,9 +277,11 @@ def run_session_sync(
                 suffix, ("data", "application/octet-stream")
             )
             emitted_artifacts[relative] = stat.st_mtime_ns
+            block_id = block_tracker.record_artifact(relative, action_id)
             _emit(
                 "artifact",
                 {
+                    "block_id": block_id,
                     "artifact": {
                         "filename": fpath.name,
                         "path": relative,
@@ -293,6 +296,21 @@ def run_session_sync(
                 },
                 turn=turn,
             )
+
+    # Block attribution (workbench step 1): blocks.json next to work-items/,
+    # loaded here so a resumed session continues its block ids. Every block
+    # create or change is broadcast as `block_changed`.
+    def _emit_block_changed(block: Dict[str, Any]) -> None:
+        # Bound late: the tracker only calls this once `turns_completed`
+        # (assigned below) exists, and by then it equals the current turn.
+        _emit("block_changed", {"block": block}, turn=turns_completed)
+
+    block_tracker = BlockTracker(
+        blocks_path_for(work_items),
+        session_id,
+        work_items,
+        on_change=_emit_block_changed,
+    )
 
     current_agent = driver_agent
     if resume_state and resume_state.get("current_agent_name"):
@@ -576,6 +594,7 @@ def run_session_sync(
                 _emit("brief_accepted", {"brief": frozen_brief_dict}, turn=0)
                 if seed_item is not None:
                     _emit("work_item_changed", {"item": seed_item}, turn=0)
+                    block_tracker.on_work_item_changed(seed_item)
                 _emit("phase_change", {"phase": "execution"}, turn=0)
 
         if start_waiting and not is_auto:
@@ -798,6 +817,7 @@ def run_session_sync(
                         {"item": work_result.changed_item},
                         turn=turn,
                     )
+                    block_tracker.on_work_item_changed(work_result.changed_item)
 
             # --- End session detection ---
             has_delegation = detect_delegation(msg) is not None
@@ -922,6 +942,7 @@ def run_session_sync(
                                 {"item": transferred_item},
                                 turn=turn,
                             )
+                            block_tracker.on_work_item_changed(transferred_item)
                 if new_agent:
                     _action_fired = True
                     if logger:
@@ -1024,10 +1045,14 @@ def run_session_sync(
                         )
 
                     action_id = make_action_id(session_id, turn, idx)
+                    block_id = block_tracker.begin_action(
+                        current_agent.name, turn, action_id
+                    )
                     _emit(
                         "code_submitted",
                         {
                             "action_id": action_id,
+                            "block_id": block_id,
                             "agent_name": current_agent.name,
                             "source": code,
                             "block_index": idx,
@@ -1056,10 +1081,12 @@ def run_session_sync(
                             "stderr": str(exc),
                             "duration_ms": duration_ms,
                         }
+                        block_tracker.finish_action(action_id, False)
                         _emit(
                             "code_result",
                             {
                                 "action_id": ledger_entry["action_id"],
+                                "block_id": block_id,
                                 "agent_name": current_agent.name,
                                 "stdout": "",
                                 "stderr": str(exc),
@@ -1085,10 +1112,12 @@ def run_session_sync(
                             success,
                         )
 
+                    block_tracker.finish_action(action_id, success)
                     _emit(
                         "code_result",
                         {
                             "action_id": ledger_entry["action_id"],
+                            "block_id": block_id,
                             "agent_name": current_agent.name,
                             "stdout": exec_result.get("stdout", ""),
                             "stderr": exec_result.get("stderr", ""),
@@ -1240,6 +1269,10 @@ def run_session_sync(
             },
         )
         _emit("status_change", {"status": "error", "reason": str(exc)})
+    finally:
+        # Session end (every return path, and after a reported runner error)
+        # closes every open block.
+        block_tracker.close_all()
 
 
 # ---------------------------------------------------------------------------

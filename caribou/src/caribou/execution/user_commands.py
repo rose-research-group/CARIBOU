@@ -22,10 +22,12 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.text import Text
 
 from caribou.agents.AgentSystem import Agent, AgentSystem
 from caribou.execution.artifacts import SessionArtifacts
 from caribou.execution.benchmark_runner import run_benchmark
+from caribou.execution.blocks import blocks_path_for, load_blocks
 from caribou.execution.evaluation import (
     EvaluationContextTooLarge,
     EvaluatorRuntime,
@@ -279,6 +281,46 @@ def _cmd_work_items(_arg: str, ctx: UserCommandContext) -> None:
     ctx.console.print(Panel("\n".join(lines), title="Work Items", border_style="cyan"))
 
 
+_BLOCK_STATUS_GLYPHS = {"running": "▶", "ok": "✓", "warn": "⚠", "error": "✗"}
+
+
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def format_block_line(block: Dict[str, object]) -> str:
+    """One `/blocks` line, e.g.
+    `blk-0001 ✓ QC  [work item #2, attempt 1]  turns 3–5  4 actions, 1 artifact`."""
+    if block["implicit"]:
+        origin = "[no work item]"
+    else:
+        origin = f"[work item #{block['work_item_id']}, attempt {block['attempt']}]"
+    return (
+        f"{block['block_id']} {_BLOCK_STATUS_GLYPHS[block['status']]} {block['title']}  "
+        f"{origin}  turns {block['turn_start']}–{block['turn_end']}  "
+        f"{_plural(len(block['action_ids']), 'action')}, "
+        f"{_plural(len(block['artifact_paths']), 'artifact')}"
+    )
+
+
+def _cmd_blocks(_arg: str, ctx: UserCommandContext) -> None:
+    # blocks.json lives beside the work-items store, like brief.json. A
+    # missing file is a normal state (no code has run yet, or an older
+    # session); a malformed one raises out of load_blocks.
+    index = load_blocks(blocks_path_for(ctx.work_items))
+    if index is None or not index["blocks"]:
+        ctx.console.print("[yellow]No blocks recorded for this session.[/yellow]")
+        return
+    # Text, not markup: the `[work item ...]` brackets would parse as tags.
+    ctx.console.print(
+        Panel(
+            Text("\n".join(format_block_line(block) for block in index["blocks"])),
+            title="Blocks",
+            border_style="cyan",
+        )
+    )
+
+
 def _cmd_work_item(arg: str, ctx: UserCommandContext) -> None:
     if not arg.strip().isdigit():
         ctx.console.print("[yellow]Usage: /work-item <id>[/yellow]")
@@ -398,6 +440,14 @@ _register(
         aliases=(),
         help="/work-items — list work items",
         handler=_cmd_work_items,
+    )
+)
+_register(
+    UserCommand(
+        name="/blocks",
+        aliases=(),
+        help="/blocks — list code blocks and the work item each implements",
+        handler=_cmd_blocks,
     )
 )
 _register(

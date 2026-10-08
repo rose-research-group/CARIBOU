@@ -25,6 +25,7 @@ from caribou.domain.enums import ArtifactType, EventType, MemoryStrategy, RunSta
 from caribou.domain.models import (
     AgentSwitchPayload,
     Artifact,
+    BlockChangedPayload,
     CodeResultPayload,
     CodeSubmittedPayload,
     ContentReference,
@@ -589,6 +590,20 @@ def _payload_int(payload: dict[str, object], key: str) -> int:
     return value
 
 
+def _payload_block_id(payload: dict[str, object]) -> str | None:
+    """Return the runner's block attribution for a code event.
+
+    ``block_id`` is optional in the journal; when the runner sends it, it must
+    be a non-empty string.
+    """
+    if "block_id" not in payload:
+        return None
+    value = payload["block_id"]
+    if not isinstance(value, str) or not value:
+        raise RuntimeError("runner event field 'block_id' is not a non-empty string")
+    return value
+
+
 def _event_recorder(
     store: ExperimentStore, run_id: str
 ) -> Callable[[RunnerEvent], None]:
@@ -700,6 +715,7 @@ def _event_recorder(
                     agent_name=agent_name,
                     block_index=block_index,
                     total_blocks=_payload_int(payload, "total_blocks"),
+                    block_id=_payload_block_id(payload),
                 ),
                 actor="agent-runner",
                 turn=turn,
@@ -760,6 +776,7 @@ def _event_recorder(
                     duration_ms=_payload_int(payload, "duration_ms"),
                     stdout_artifact_id=stdout_id,
                     stderr_artifact_id=stderr_id,
+                    block_id=_payload_block_id(payload),
                 ),
                 actor="agent-runner",
                 turn=turn,
@@ -792,6 +809,19 @@ def _event_recorder(
                     owner=item["owner"],
                     item=item,
                 ),
+                actor="agent-runner",
+                turn=turn,
+                current_agent=agent_name,
+            )
+            return
+        if event_type == "block_changed":
+            block = payload["block"]
+            if not isinstance(block, dict):
+                raise RuntimeError("runner event field 'block' is not an object")
+            store.append_run_event(
+                run_id,
+                event_type=EventType.block_changed,
+                payload=BlockChangedPayload(block=block),
                 actor="agent-runner",
                 turn=turn,
                 current_agent=agent_name,

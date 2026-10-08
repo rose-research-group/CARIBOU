@@ -11,6 +11,8 @@ from caribou.execution.evaluation import EvaluationContextTooLarge
 from caribou.execution.work_items import WorkItemNotFound
 from caribou.server.models import (
     ArtifactRecord,
+    BlockRecord,
+    BlocksResponse,
     BriefDecisionRequest,
     CodeEventRecord,
     EvaluationResult,
@@ -213,6 +215,21 @@ async def get_work_items(session_id: str) -> List[WorkItemSummary]:
         ]
     except KeyError as exc:
         raise HTTPException(404, "Session not found") from exc
+
+
+@router.get("/{session_id}/blocks", response_model=BlocksResponse)
+async def get_blocks(session_id: str) -> BlocksResponse:
+    # Only the unknown-session lookup maps to 404; a malformed blocks.json
+    # raises out of read_blocks and surfaces as a 500, never as [].
+    if session_manager.get_session(session_id) is None:
+        raise HTTPException(404, "Session not found")
+    index = session_manager.read_blocks(session_id)
+    if index is None:
+        return BlocksResponse(recorded=False, blocks=[])
+    return BlocksResponse(
+        recorded=True,
+        blocks=[BlockRecord.model_validate(block) for block in index["blocks"]],
+    )
 
 
 @router.get("/{session_id}/work-items/{item_id}", response_model=WorkItemDetail)

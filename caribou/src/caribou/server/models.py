@@ -265,6 +265,40 @@ class WorkItemDetail(WorkItemSummary):
     latest_commit: Optional[str] = None
 
 
+class BlockRecord(BaseModel):
+    """One workbench block (`caribou.block.v1`), as BlockTracker writes it to blocks.json."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: Literal["caribou.block.v1"]
+    block_id: str = Field(pattern=r"^blk-\d{4,}$")
+    session_id: str
+    index: int = Field(ge=1)
+    work_item_id: Optional[int]
+    attempt: int = Field(ge=1)
+    implicit: bool
+    title: str
+    kind: None
+    agents: List[str]
+    status: Literal["running", "ok", "warn", "error"]
+    turn_start: int
+    turn_end: int
+    action_ids: List[str]
+    failed_action_ids: List[str]
+    artifact_paths: List[str]
+    created_at: str
+    updated_at: str
+
+
+class BlocksResponse(BaseModel):
+    """`GET /api/sessions/{id}/blocks`; `recorded` is false when the session has no blocks.json."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    recorded: bool
+    blocks: List[BlockRecord]
+
+
 class WorkItemReviewResult(BaseModel):
     item: WorkItemDetail
     verdict: str
@@ -501,7 +535,8 @@ class WSStopMessage(BaseModel):
 #          seq: int }  — seq is assigned when the session manager appends the
 #          event to the session's log (session_state.append_session_event).
 # Types: token | message_complete | agent_switch | code_submitted |
-#        code_result | artifact | status_change | metrics_result | error | pong
+#        code_result | artifact | block_changed | status_change |
+#        metrics_result | error | pong
 
 
 def make_event(

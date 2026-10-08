@@ -203,14 +203,19 @@ def test_returns_frozen_result_and_emits_code_lifecycle(tmp_path):
     assert [event["event_type"] for event in events] == [
         "turn_started",
         "assistant_message",
+        "block_changed",
         "code_submitted",
         "code_result",
+        "block_changed",
         "session_end",
     ]
     assert all(event["schema_version"] == "caribou.runner_event.v1" for event in events)
     assert all(event["run_id"] == "run_durable_123" for event in events)
-    assert events[2]["payload"]["source"] == "print('hello')"
-    assert events[3]["payload"]["success"] is True
+    assert events[3]["payload"]["source"] == "print('hello')"
+    assert events[4]["payload"]["success"] is True
+    assert events[3]["payload"]["block_id"] == events[4]["payload"]["block_id"]
+    assert events[2]["payload"]["block"]["status"] == "running"
+    assert events[5]["payload"]["block"]["status"] == "ok"
     assert events[-1]["payload"]["end_reason"] == "max_turns_reached"
     assert sandbox.calls == ["print('hello')"]
 
@@ -745,8 +750,11 @@ def test_runaway_response_executes_only_first_block_and_records_ignored_blocks(
         "turn_started",
         "assistant_message",
         "code_blocks_ignored",
+        "block_changed",
         "code_submitted",
+        "block_changed",
         "code_result",
+        "block_changed",
         "session_end",
     ]
     assert events[1]["payload"]["content"] == response

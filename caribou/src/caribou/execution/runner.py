@@ -38,6 +38,7 @@ try:
         _count_code_blocks,
         _code_preview,
     )
+    from caribou.execution.blocks import BlockTracker, blocks_path_for
     from caribou.execution.event_ids import make_action_id
     from caribou.execution.path_utils import _init_paths, get_default_runs_dir
     from caribou.execution.report_generation import (
@@ -729,6 +730,26 @@ def run_agent_session(
         policy=work_item_policy,
         origin_run_id=run_id,
     )
+
+    def _emit_block_changed(block: Dict[str, object]) -> None:
+        # Bound late: the tracker only calls this from inside the turn loop or
+        # at session end, after `final_turn` and `current_agent` exist.
+        _emit_runner_event(
+            event_callback,
+            event_type="block_changed",
+            run_id=run_id,
+            turn=final_turn,
+            agent_name=current_agent.name,
+            payload={"block": block},
+        )
+
+    # Block attribution (workbench step 1): blocks.json next to work-items/.
+    block_tracker = BlockTracker(
+        blocks_path_for(work_items),
+        run_id,
+        work_items,
+        on_change=_emit_block_changed,
+    )
     frozen_brief: Optional["SessionBrief"] = brief
     ended_during_briefing = False
     should_run_briefing = (
@@ -1100,6 +1121,7 @@ def run_agent_session(
                     agent_name=current_agent.name,
                     payload={"item": work_result.changed_item},
                 )
+                block_tracker.on_work_item_changed(work_result.changed_item)
 
         # --- End session handling ---
         # Only end session if there's no delegation command also present
@@ -1327,6 +1349,7 @@ def run_agent_session(
                             agent_name=previous_agent_name,
                             payload={"item": transferred_item},
                         )
+                        block_tracker.on_work_item_changed(transferred_item)
             if new_agent:
                 _action_fired = True
                 if report_memory:
@@ -1440,6 +1463,9 @@ def run_agent_session(
                 last_code_snippet = code
                 console.print("[cyan]Executing code in sandbox…[/cyan]")
                 action_id = make_action_id(run_id, turn, idx)
+                block_id = block_tracker.begin_action(
+                    current_agent.name, turn, action_id
+                )
                 _emit_runner_event(
                     event_callback,
                     event_type="code_submitted",
@@ -1448,6 +1474,7 @@ def run_agent_session(
                     agent_name=current_agent.name,
                     payload={
                         "action_id": action_id,
+                        "block_id": block_id,
                         "source": code,
                         "block_index": idx,
                         "total_blocks": total_blocks,
@@ -1525,6 +1552,9 @@ def run_agent_session(
                     memory_manager.add_message("system", summary_msg)
                 history.append({"role": "assistant", "content": feedback})
                 display(console, "code execution result", feedback)
+                block_tracker.finish_action(
+                    action_id, exec_result.get("status") == "ok"
+                )
                 _emit_runner_event(
                     event_callback,
                     event_type="code_result",
@@ -1533,6 +1563,7 @@ def run_agent_session(
                     agent_name=current_agent.name,
                     payload={
                         "action_id": action_id,
+                        "block_id": block_id,
                         "success": exec_result.get("status") == "ok",
                         "status": str(exec_result.get("status", "unknown")),
                         "duration_ms": code_duration_ms,
@@ -1777,6 +1808,8 @@ def run_agent_session(
                 work_items=cast(WorkItemStore, work_items),
             )
             if dispatch_user_command(user_input, command_ctx):
+                # A user command (e.g. /evaluate) may have reviewed a work item.
+                block_tracker.sync()
                 continue
 
             if user_input:
@@ -1791,6 +1824,8 @@ def run_agent_session(
         if session_end_reason == "user_exit":
             break
 
+    # Session end closes every open block (before the session_end event).
+    block_tracker.close_all()
     session_end_ts = _utc_now()
     duration_seconds = round(
         prior_elapsed_seconds + time.monotonic() - session_start_time, 6
