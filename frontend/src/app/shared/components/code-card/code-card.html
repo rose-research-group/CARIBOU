@@ -1,42 +1,83 @@
 @let ev = codeEvent();
-<div class="code-header">
-  <span class="agent-tag">{{ ev.submitted.agent_name }}</span>
-  <span class="exec-status"
-    [class.ok]="ev.result?.success"
-    [class.fail]="ev.result?.success === false"
-    [attr.aria-label]="ev.result ? (ev.result.success ? 'succeeded' : 'failed') : 'running'">
-    @if (ev.result) {
-      @if (ev.result.success) {
-        <app-icon name="check" [size]="14" />
+@let open = expanded();
+<div class="code-header" [class.running]="!ev.result" [class.open]="open">
+  <button type="button" class="code-toggle" [attr.aria-expanded]="open" (click)="toggle()">
+    <app-icon class="chev" [name]="open ? 'chevron-down' : 'chevron-right'" [size]="14" aria-hidden="true" />
+    <span class="agent-tag">{{ ev.submitted.agent_name }}</span>
+    <span class="exec-status"
+      [class.ok]="ev.result?.success"
+      [class.fail]="ev.result?.success === false">
+      <span class="sr-only">{{ ev.result ? (ev.result.success ? 'succeeded' : 'failed') : 'running' }}</span>
+      @if (ev.result) {
+        @if (ev.result.success) {
+          <app-icon name="check" [size]="14" aria-hidden="true" />
+        } @else {
+          <app-icon name="x" [size]="14" aria-hidden="true" />
+        }
       } @else {
-        <app-icon name="x" [size]="14" />
+        <app-icon name="loader" [size]="14" class="spin" aria-hidden="true" />
       }
-    } @else {
-      <app-icon name="loader" [size]="14" class="spin" />
-    }
-  </span>
-  @if (ev.result) {
-    <span class="duration"
-      [class.slow]="isSlow()"
-      [title]="isSlow() ? 'This block took longer than the slow threshold' : ''">
-      @if (isSlow()) {
-        <app-icon name="alert-triangle" [size]="12" aria-hidden="true" />
-      }
-      {{ ev.result.duration_ms }}ms
     </span>
-  }
-  <button type="button" class="btn btn-ghost btn-xs code-copy"
-    aria-label="Copy code to clipboard"
-    title="Copy this code block to the clipboard"
-    (click)="copySource.emit(ev.submitted.source)">
-    <app-icon name="copy" />
-    <span>Copy</span>
+    <span class="code-summary" [title]="summary()">
+      <span class="summary-text">{{ summary() }}</span>
+      @if (errorLine(); as err) {
+        <span class="summary-error" [title]="err">{{ err }}</span>
+      }
+    </span>
+    <span class="line-count">{{ lineCount() }} {{ lineCount() === 1 ? 'line' : 'lines' }}</span>
+    @if (ev.result) {
+      <span class="duration"
+        [class.slow]="isSlow()"
+        [title]="isSlow() ? 'This block took longer than the slow threshold' : ''">
+        @if (isSlow()) {
+          <app-icon name="alert-triangle" [size]="12" aria-hidden="true" />
+        }
+        {{ ev.result.duration_ms }}ms
+      </span>
+    }
   </button>
+  @if (open) {
+    <button type="button" class="btn btn-ghost btn-xs code-copy"
+      aria-label="Copy code to clipboard"
+      title="Copy this code block to the clipboard"
+      (click)="copySource.emit(ev.submitted.source)">
+      <app-icon name="copy" />
+      <span>Copy</span>
+    </button>
+  }
 </div>
-<pre class="code-source">{{ ev.submitted.source }}</pre>
-@if (ev.result?.stdout) {
-  <pre class="code-stdout">{{ ev.result!.stdout }}</pre>
+@if (plots().length) {
+  <div class="plot-strip" role="group" aria-label="Plots from this code">
+    @for (plot of plots(); track plot.path) {
+      <button type="button" class="plot-thumb"
+        [title]="plot.filename + ' (click to enlarge)'"
+        (click)="lightboxArtifact.set(plot)">
+        <img [src]="previewUrl(plot)" [alt]="plot.filename" loading="lazy" />
+      </button>
+    }
+  </div>
 }
-@if (ev.result?.stderr) {
-  <pre class="code-stderr">{{ ev.result!.stderr }}</pre>
+@if (open) {
+  <pre class="code-source">{{ ev.submitted.source }}</pre>
+  @if (ev.result?.stdout) {
+    <pre class="code-stdout">{{ ev.result!.stdout }}</pre>
+  }
+  @if (ev.result?.stderr) {
+    <pre class="code-stderr">{{ ev.result!.stderr }}</pre>
+  }
+  @if (files().length) {
+    <div class="file-chips" role="group" aria-label="Files from this code">
+      @for (file of files(); track file.path) {
+        <a class="file-chip" [href]="downloadUrl(file)" [download]="file.filename"
+          [title]="'Download ' + file.path">
+          <app-icon name="download" [size]="12" aria-hidden="true" />
+          <span class="file-name">{{ file.filename }}</span>
+          <span class="file-size">{{ formatSize(file.size_bytes) }}</span>
+        </a>
+      }
+    </div>
+  }
+}
+@if (lightboxArtifact(); as art) {
+  <app-artifact-lightbox [artifact]="art" (closed)="lightboxArtifact.set(null)" />
 }

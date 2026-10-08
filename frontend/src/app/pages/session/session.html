@@ -324,7 +324,7 @@
           </button>
         }
 
-        @for (item of visibleChatItems(); track $index) {
+        @for (item of visibleChatItems(); track chatItemKey(item, $index)) {
           @if (item.kind === 'message' && item.message) {
             <div [attr.data-turn]="item.turn ?? item.message.turn">
               <app-message-bubble [message]="item.message" [streaming]="false" />
@@ -340,6 +340,7 @@
           }
           @if (item.kind === 'code' && item.codeEvent) {
             <div appCodeCard [codeEvent]="item.codeEvent" [attr.data-turn]="item.turn"
+              [artifacts]="codeArtifacts(item.codeEvent.submitted.action_id)"
               (copySource)="copyToClipboard($event)"></div>
           }
           @if (item.kind === 'error' && item.error) {

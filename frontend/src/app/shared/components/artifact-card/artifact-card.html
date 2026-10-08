@@ -20,19 +20,5 @@
 
 <!-- Lightbox overlay -->
 @if (lightboxOpen) {
-  <div class="lightbox-overlay" (click)="closeLightbox()">
-    <div class="lightbox-container" (click)="$event.stopPropagation()">
-      <button class="lightbox-close" (click)="closeLightbox()" aria-label="Close preview" title="Close">
-        <app-icon name="x" [size]="18" />
-      </button>
-      <img class="lightbox-img" [src]="previewUrl" [alt]="artifact.filename" />
-      <div class="lightbox-caption">
-        {{ artifact.filename }}
-        <a class="lightbox-download" [href]="downloadUrl" [download]="artifact.filename">
-          <app-icon name="download" [size]="14" />
-          <span>Download</span>
-        </a>
-      </div>
-    </div>
-  </div>
+  <app-artifact-lightbox [artifact]="artifact" (closed)="closeLightbox()" />
 }

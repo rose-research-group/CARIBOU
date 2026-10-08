@@ -14,9 +14,10 @@ import { AgentStreamService } from '../../core/services/agent-stream.service';
 import { ToastService } from '../../core/services/toast.service';
 import { PreferencesService } from '../../core/services/preferences.service';
 import { SessionStore } from '../../core/state/session-store.service';
-import { ErrorRecord } from '../../core/state/session-state.model';
+import { ChatItem, ErrorRecord } from '../../core/state/session-state.model';
+import { artifactsByAction } from '../../core/utils/artifacts';
 import {
-  MemoryState, EvaluationResult, EvaluatorModelConfig,
+  Artifact, MemoryState, EvaluationResult, EvaluatorModelConfig,
   RecoveryMode, SessionForkRequest, SessionResumeRequest,
   WorkItemSummary, SessionBriefFields,
 } from '../../core/models/session.model';
@@ -223,6 +224,29 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
     const hidden = this.hiddenChatItemCount();
     return hidden ? items.slice(hidden) : items;
   });
+  /** Artifacts by the code action that last wrote them, for the code cards. */
+  artifactsByAction = computed(() => artifactsByAction(this.artifacts()));
+  private readonly NO_ARTIFACTS: Artifact[] = [];
+  /** The artifacts a code card's action produced; none for a card without an action id. */
+  codeArtifacts(actionId: string | undefined): Artifact[] {
+    return (actionId ? this.artifactsByAction().get(actionId) : undefined) ?? this.NO_ARTIFACTS;
+  }
+  /**
+   * `@for` track key for the chat. A code item keeps its key when its result
+   * replaces the item object, and every key survives the visible window
+   * sliding (new items, "show earlier"), so a code card keeps its expanded
+   * state. Code items key on their action id (or the turn and block index the
+   * result is matched on); other items on their position in the full list.
+   */
+  chatItemKey(item: ChatItem, visibleIndex: number): string {
+    const submitted = item.kind === 'code' ? item.codeEvent?.submitted : undefined;
+    if (submitted) {
+      return submitted.action_id
+        ? `code:${submitted.action_id}`
+        : `code:${item.turn}:${submitted.block_index}`;
+    }
+    return `item:${this.hiddenChatItemCount() + visibleIndex}`;
+  }
   /** Turn -> chatItem index (first item at that turn). Used for jump-to-turn. */
   turnAnchors = computed(() => {
     const anchors: { id: string; turn: number; label: string; selector: string }[] = [];

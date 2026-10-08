@@ -15,27 +15,79 @@ app-icon.spin {
   border-radius: 8px;
   overflow: hidden;
   font-size: 0.8rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .code-header {
   display: flex;
   align-items: center;
+  gap: 0.3rem;
+  padding-right: 0.5rem;
+  background: var(--surface-2);
+  &.open { border-bottom: 1px solid var(--border-light); }
+
+  .code-copy { flex: none; }
+}
+
+/* The whole header line is one toggle button. */
+.code-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
   gap: 0.5rem;
   padding: 0.4rem 0.75rem;
-  border-bottom: 1px solid var(--border-light);
-  background: var(--surface-2);
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  &:hover { background: var(--border-light); }
+  &:focus-visible { outline-offset: -2px; }
 
-  .agent-tag { color: var(--cividis-blue); font-weight: 600; font-size: 0.75rem; }
+  .chev { flex: none; color: var(--text-muted); }
+  .agent-tag {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--cividis-blue); font-weight: 600; font-size: 0.75rem;
+  }
   .exec-status {
+    flex: none;
     font-weight: 700; font-size: 0.8rem;
     &.ok   { color: var(--success); }
     &.fail { color: var(--error); }
   }
+  .code-summary {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+  .summary-text, .summary-error {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .summary-text { font-family: monospace; font-size: 0.78rem; color: var(--cividis-navy); }
+  .summary-error { font-family: monospace; font-size: 0.74rem; color: var(--error); font-weight: 600; }
+  .line-count {
+    flex: none;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    white-space: nowrap;
+  }
   .duration {
-    margin-left: auto;
+    flex: none;
     color: var(--text-muted);
     font-family: monospace;
     font-size: 0.72rem;
+    white-space: nowrap;
     &.slow {
       color: var(--error);
       font-weight: 600;
@@ -45,13 +97,69 @@ app-icon.spin {
       padding: 0.1rem 0.4rem;
     }
   }
-  .code-copy { margin-left: 0.3rem; }
+}
+
+/* Plots the action produced; shown collapsed or expanded, scrolls sideways. */
+.plot-strip {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  overflow-x: auto;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border-light);
+  &:last-child { border-bottom: 0; }
+}
+
+.plot-thumb {
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow: hidden;
+  cursor: zoom-in;
+  &:hover { border-color: var(--cividis-blue); }
+
+  img {
+    display: block;
+    height: 96px;
+    width: auto;
+    max-width: 180px;
+    object-fit: contain;
+  }
+}
+
+/* Non-plot files the action produced (csv, h5ad, txt), as download chips. */
+.file-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--border-light);
+}
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 100%;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.72rem;
+  text-decoration: none;
+  &:hover { border-color: var(--cividis-blue); color: var(--cividis-blue); }
+
+  .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-size { flex: none; color: var(--text-muted); }
 }
 
 /* Running code pulse */
 .code-header.running {
   background: var(--primary-bg);
-  .exec-status { color: var(--cividis-warm); animation: pulse 1.2s ease-in-out infinite; }
+  .code-toggle .exec-status { color: var(--cividis-warm); animation: pulse 1.2s ease-in-out infinite; }
 }
 
 @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.4 } }

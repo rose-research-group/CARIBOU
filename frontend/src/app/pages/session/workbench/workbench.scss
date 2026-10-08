@@ -339,6 +339,21 @@ button.rail { cursor: pointer; &:hover { color: var(--primary); } }
   min-width: 0;
   > .row-head { flex: 1; min-width: 0; width: auto; }
 }
+/* An artifact row's link to the code row that produced it. */
+.from-code {
+  flex: none;
+  margin-right: 8px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font: inherit;
+  font-size: 0.72rem;
+  color: var(--cividis-blue);
+  cursor: pointer;
+  white-space: nowrap;
+  &:hover { border-color: var(--cividis-blue); }
+}
 .row-tools {
   flex: none;
   display: inline-flex;

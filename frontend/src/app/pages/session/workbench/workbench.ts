@@ -1,4 +1,4 @@
-import { Component, computed, effect, inject, input, output, signal, untracked } from '@angular/core';
+import { Component, Injector, afterNextRender, computed, effect, inject, input, output, signal, untracked } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router } from '@angular/router';
@@ -9,7 +9,7 @@ import { BlueprintContent } from '../../../core/models/blueprint.model';
 import { SessionService } from '../../../core/services/session.service';
 import { ConfigService } from '../../../core/services/config.service';
 import { ToastService } from '../../../core/services/toast.service';
-import { artifactPreviewUrl } from '../../../core/utils/artifacts';
+import { artifactPreviewUrl, artifactsByAction } from '../../../core/utils/artifacts';
 import { CodeCardComponent } from '../../../shared/components/code-card/code-card';
 import { ArtifactCardComponent } from '../../../shared/components/artifact-card/artifact-card';
 import { IconComponent } from '../../../shared/components/icon/icon';
@@ -63,6 +63,7 @@ export class WorkbenchComponent {
   private sessionSvc = inject(SessionService);
   private configSvc = inject(ConfigService);
   private toasts = inject(ToastService);
+  private injector = inject(Injector);
 
   /** A code card's Copy button; the page owns the clipboard and its toast. */
   readonly copySource = output<string>();
@@ -114,6 +115,11 @@ export class WorkbenchComponent {
     const b = this.selected();
     return b ? blockActions(b, this.store.chatItems()) : [];
   });
+  /** Action id → its 1-based code row, for the artifacts' "from code N". */
+  readonly actionPositions = computed(() => new Map(this.actions().map(a => [a.actionId, a.position])));
+  /** Artifacts by the action that last wrote them, for the code cards' plot strips. */
+  private readonly artifactsByAction = computed(() => artifactsByAction(this.store.artifacts()));
+  private readonly noArtifacts: Artifact[] = [];
   readonly loadedActionCount = computed(() => this.actions().filter(a => a.codeEvent).length);
   readonly artifactEntries = computed(() => {
     const b = this.selected();
@@ -137,6 +143,15 @@ export class WorkbenchComponent {
   });
 
   readonly session = this.sessionSvc.currentSession;
+
+  /** Why the composer is disabled, worded for the session's actual status. */
+  unavailableReason(): string {
+    const status = this.session()?.status;
+    if (status === 'running' || status === 'initializing' || status === 'recovering') {
+      return 'The agent is busy; you can write once it is idle.';
+    }
+    return `The session is ${status ?? 'not loaded'}; resume it to send a message.`;
+  }
 
   // The session's blueprint: its agents are the ticket owners, its
   // work_item_policy.qc_mode decides when a human review is accepted.
@@ -211,6 +226,30 @@ export class WorkbenchComponent {
 
   toggleRow(key: string): void {
     this.openRows.update(s => toggled(s, key));
+  }
+
+  setRow(key: string, open: boolean): void {
+    this.openRows.update(s => {
+      const next = new Set(s);
+      if (open) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }
+
+  actionArtifacts(actionId: string): Artifact[] {
+    return this.artifactsByAction().get(actionId) ?? this.noArtifacts;
+  }
+
+  /** Open the Code section, expand the action's code row and scroll to it. */
+  showCode(actionId: string): void {
+    this.openSections.update(s => new Set(s).add('code'));
+    this.setRow(actionId, true);
+    afterNextRender(() => {
+      const row = document.getElementById('wb-code-' + actionId);
+      if (!row) throw new Error(`Code row for action ${actionId} is not rendered`);
+      row.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, { injector: this.injector });
   }
 
   plotFor(block: Block): Artifact | null {
