@@ -139,3 +139,73 @@ def test_reused_output_dir_continues_block_ids_under_the_first_session(tmp_path)
     index = load_blocks(tmp_path / "blocks.json")
     assert index["session_id"] == "run_one"
     assert [b["block_id"] for b in index["blocks"]] == ["blk-0001", "blk-0002"]
+
+
+def test_user_input_syncs_blocks_before_the_next_llm_call(tmp_path, monkeypatch):
+    """A human reject made while the CLI waits for input is applied as soon as
+    the input is read, before the next LLM call."""
+    from caribou.execution.work_items import WorkItemPolicy, WorkItemStore
+
+    def human_reject():
+        store = WorkItemStore(
+            tmp_path / "work-items",
+            session_id="run_cli",
+            policy=WorkItemPolicy(qc_mode="optional"),
+        )
+        store.record_review(0, turn=3, verdict="reject", assessment="redo")
+
+    script = [(None, "close it"), (human_reject, "redo it"), (None, "exit")]
+
+    def scripted_ask(*_args, **_kwargs):
+        side_effect, answer = script.pop(0)
+        if side_effect is not None:
+            side_effect()
+        return answer
+
+    monkeypatch.setattr(runner.Prompt, "ask", scripted_ask)
+    events = []
+    agent_system, driver = _agents()
+    runner.run_agent_session(
+        console=Console(file=io.StringIO(), force_terminal=False),
+        agent_system=agent_system,
+        driver_agent=driver,
+        analysis_context="bounded test",
+        llm_client=SequenceLlm(
+            [
+                'open_work_item "QC" "filter low quality cells"',
+                "```python\nprint('qc')\n```",
+                'close_work_item 0 "filtered"',
+                "```python\nprint('qc again')\n```",
+            ]
+        ),
+        sandbox_manager=RecordingSandbox(),
+        history=[{"role": "system", "content": "policy"}],
+        is_auto=False,
+        max_turns=10,
+        output_dir=tmp_path,
+        durable_run_id="run_cli",
+        event_callback=events.append,
+    )
+
+    assert script == []
+    assistant = [
+        i for i, e in enumerate(events) if e["event_type"] == "assistant_message"
+    ]
+    # The fourth LLM response is the one after "redo it".
+    warned = [
+        i
+        for i, e in enumerate(events)
+        if e["event_type"] == "block_changed"
+        and e["payload"]["block"]["status"] == "warn"
+    ]
+    assert len(warned) == 1
+    assert assistant[2] < warned[0] < assistant[3]
+    assert events[warned[0]]["payload"]["block"]["block_id"] == "blk-0001"
+
+    submitted = _payloads(events, "code_submitted")
+    assert [s["block_id"] for s in submitted] == ["blk-0001", "blk-0002"]
+    index = load_blocks(tmp_path / "blocks.json")
+    assert [(b["attempt"], b["status"]) for b in index["blocks"]] == [
+        (1, "warn"),
+        (2, "ok"),
+    ]

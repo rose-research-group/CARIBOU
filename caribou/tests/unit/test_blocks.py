@@ -338,3 +338,106 @@ def test_emitted_records_are_snapshots_not_live_views(tmp_path):
     assert changes[0]["action_ids"] == ["a1"]
     tracker.blocks()[0]["action_ids"].append("tampered")
     assert tracker.blocks()[0]["action_ids"] == ["a1", "a2"]
+
+
+def test_a_reject_after_an_ok_close_turns_the_block_warn(tmp_path):
+    # Optional QC: an evaluator reject leaves the item Done, but the attempt
+    # that already closed ok is now known to be rejected.
+    store = _store(tmp_path)
+    tracker, changes = _tracker(store)
+    item = store.open("QC", "b", "coder", 1)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.finish_action("a1", True)
+    tracker.on_work_item_changed(store.close(item["id"], "s", "coder", 2))
+    assert tracker.blocks()[0]["status"] == "ok"
+
+    store.record_review(
+        item["id"], evaluator="qc", turn=3, verdict="reject", assessment="no"
+    )
+    tracker.sync()
+    assert tracker.blocks()[0]["status"] == "warn"
+    assert changes[-1]["block_id"] == "blk-0001"
+    assert changes[-1]["status"] == "warn"
+    count = len(changes)
+    tracker.sync()  # idempotent
+    assert len(changes) == count
+
+
+def test_an_approve_after_an_ok_close_leaves_it_ok(tmp_path):
+    store = _store(tmp_path)
+    tracker, changes = _tracker(store)
+    item = store.open("QC", "b", "coder", 1)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.on_work_item_changed(store.close(item["id"], "s", "coder", 2))
+    count = len(changes)
+    tracker.on_work_item_changed(
+        store.record_review(item["id"], turn=3, verdict="approve", assessment="")
+    )
+    assert tracker.blocks()[0]["status"] == "ok"
+    assert len(changes) == count
+
+
+def test_an_error_block_stays_error_after_a_reject(tmp_path):
+    store = _store(tmp_path)
+    tracker, _ = _tracker(store)
+    item = store.open("QC", "b", "coder", 1)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.finish_action("a1", False)
+    tracker.on_work_item_changed(store.close(item["id"], "s", "coder", 2))
+    tracker.on_work_item_changed(
+        store.record_review(item["id"], turn=3, verdict="reject", assessment="no")
+    )
+    assert tracker.blocks()[0]["status"] == "error"
+
+
+def test_human_reopen_moves_the_next_run_to_attempt_two(tmp_path):
+    store = _store(tmp_path)
+    tracker, changes = _tracker(store)
+    item = store.open("QC", "b", "coder", 1)
+
+    # 1. The item reaches Done; its attempt-1 block closes ok.
+    assert tracker.begin_action("coder", 1, "a1") == "blk-0001"
+    tracker.finish_action("a1", True)
+    tracker.on_work_item_changed(store.close(item["id"], "s", "coder", 2))
+    first = tracker.blocks()[0]
+    assert (first["work_item_id"], first["attempt"], first["status"]) == (
+        item["id"], 1, "ok",
+    )
+
+    # 2. A human rejects it (made outside the loop, e.g. the REST route):
+    #    the item goes back to In progress, and sync turns attempt 1 warn.
+    reopened = store.record_review(
+        item["id"], turn=3, verdict="reject", assessment="redo the thresholds"
+    )
+    assert reopened["status"] == "In progress"
+    tracker.sync()
+    assert tracker.blocks()[0]["status"] == "warn"
+    assert changes[-1]["block_id"] == "blk-0001"
+    assert changes[-1]["status"] == "warn"
+
+    # 3. The next code run goes to a new attempt-2 block.
+    assert tracker.begin_action("coder", 4, "a2") == "blk-0002"
+    tracker.finish_action("a2", True)
+    second = tracker.blocks()[1]
+    assert (second["work_item_id"], second["attempt"], second["status"]) == (
+        item["id"], 2, "running",
+    )
+    assert second["action_ids"] == ["a2"]
+    assert tracker.blocks()[0]["status"] == "warn"
+    assert tracker.blocks()[0]["action_ids"] == ["a1"]
+
+    # Closing again ends attempt 2 ok; attempt 1 stays warn.
+    tracker.on_work_item_changed(store.close(item["id"], "s2", "coder", 5))
+    assert [b["status"] for b in tracker.blocks()] == ["warn", "ok"]
+
+
+def test_human_reopen_without_an_explicit_sync_is_picked_up_by_begin_action(tmp_path):
+    store = _store(tmp_path)
+    tracker, _ = _tracker(store)
+    item = store.open("QC", "b", "coder", 1)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.on_work_item_changed(store.close(item["id"], "s", "coder", 2))
+    store.record_review(item["id"], turn=3, verdict="reject", assessment="redo")
+
+    assert tracker.begin_action("coder", 4, "a2") == "blk-0002"
+    assert [b["status"] for b in tracker.blocks()] == ["warn", "running"]

@@ -1818,6 +1818,9 @@ def run_agent_session(
                 history.append({"role": "user", "content": user_input})
                 display(console, "user", user_input)
                 auto_continue_budget = 1
+            # Pick up work-item changes made while waiting (reviews, reopens)
+            # before the next LLM call.
+            block_tracker.sync()
             break
 
         # if we broke out of the inner prompt loop due to exit, stop the session

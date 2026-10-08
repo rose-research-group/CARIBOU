@@ -430,6 +430,9 @@ def run_session_sync(
                     },
                     turn=next_turn,
                 )
+                # Pick up work-item changes made through the REST routes
+                # (human reviews, reopens) before the next LLM call.
+                block_tracker.sync()
                 return True
             except queue.Empty:
                 continue

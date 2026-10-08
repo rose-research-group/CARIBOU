@@ -18,10 +18,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 
-WORK_ITEM_SCHEMA = "caribou.work_item.v2"
+# v3 adds "anchor" (null for agent-opened items). A v2 item has no "anchor"
+# key; `read` reports it as null, since a v2 item was never anchored.
+WORK_ITEM_SCHEMA = "caribou.work_item.v3"
 WORK_ITEM_INDEX_SCHEMA = "caribou.work_item_index.v2"
 WORK_ITEM_STATUSES = ("Backlog", "Ready", "In progress", "In review", "Done")
 QcMode = Literal["optional", "required"]
+# The evaluator (and transition actor) name for every review a person makes.
+HUMAN_REVIEWER = "user"
+_ANCHOR_KEYS = ("block_id", "action_id", "artifact_path")
 
 
 def utc_now() -> str:
@@ -267,6 +272,16 @@ class WorkItemStore:
             )
         return index
 
+    def _fresh_index(self) -> Dict[str, Any]:
+        """The committed index, re-read for a mutation.
+
+        Mutations never trust the cache: another store instance on the same
+        directory may have committed since it was filled, and allocating an id
+        or rewriting the index from a stale copy would overwrite that commit.
+        """
+        self._index_cache = None
+        return self._index()
+
     def _item(self, item_id: int) -> Dict[str, Any]:
         item = self._read_head_json(f"items/{item_id}.json")
         if item is None:
@@ -297,6 +312,8 @@ class WorkItemStore:
     def read(self, item_id: int) -> Dict[str, Any]:
         with self._lock:
             item = dict(self._item(item_id))
+            # v2 items predate anchors; they were never anchored.
+            item.setdefault("anchor", None)
             log = self._git(
                 "log", "--format=%H", "--", f"items/{item_id}.json", check=False
             )
@@ -315,11 +332,49 @@ class WorkItemStore:
         summaries.sort(key=lambda value: int(value["id"]))
         index["items"] = summaries
 
-    def open(self, title: str, body: str, owner: str, turn: int) -> Dict[str, Any]:
+    @staticmethod
+    def _validate_anchor(anchor: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if anchor is None:
+            return None
+        if not isinstance(anchor, dict) or not set(anchor) <= set(_ANCHOR_KEYS):
+            raise WorkItemConflict(
+                "work-item anchor must be an object whose keys are among "
+                + ", ".join(_ANCHOR_KEYS)
+            )
+        # The keys are each optional (str or null); an absent key is null.
+        anchor = {key: anchor.get(key) for key in _ANCHOR_KEYS}
+        for key in _ANCHOR_KEYS:
+            value = anchor[key]
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise WorkItemConflict(
+                    f"work-item anchor {key} must be a non-empty string or null"
+                )
+        if all(anchor[key] is None for key in _ANCHOR_KEYS):
+            raise WorkItemConflict("work-item anchor needs at least one non-null value")
+        return anchor
+
+    def open(
+        self,
+        title: str,
+        body: str,
+        owner: str,
+        turn: int,
+        *,
+        opened_by: Optional[str] = None,
+        anchor: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Open an item owned by `owner`.
+
+        `opened_by` is the "opened" transition's actor (default: the owner);
+        a person opening a ticket passes `HUMAN_REVIEWER`. `anchor` optionally
+        ties the item to a block, code action and/or artifact.
+        """
         if not title.strip() or not body.strip():
             raise WorkItemConflict("work-item title and body must be non-empty")
+        anchor = self._validate_anchor(anchor)
+        actor = owner if opened_by is None else opened_by
         with self._lock:
-            index = self._index()
+            index = self._fresh_index()
             item_id = int(index.get("next_id", 0))
             timestamp = utc_now()
             item = {
@@ -341,7 +396,7 @@ class WorkItemStore:
                 "transitions": [
                     {
                         "kind": "opened",
-                        "actor": owner,
+                        "actor": actor,
                         "turn": turn,
                         "timestamp": timestamp,
                         "from_status": None,
@@ -352,6 +407,7 @@ class WorkItemStore:
                 ],
                 "reviews": [],
                 "notes": [],
+                "anchor": anchor,
             }
             index["next_id"] = item_id + 1
             self._update_index(index, item)
@@ -364,7 +420,7 @@ class WorkItemStore:
         if not summary.strip():
             raise WorkItemConflict("completion summary must be non-empty")
         with self._lock:
-            index = self._index()
+            index = self._fresh_index()
             item = self._item(item_id)
             if item["owner"] != actor:
                 raise WorkItemConflict(
@@ -403,7 +459,7 @@ class WorkItemStore:
         self, item_id: int, from_owner: str, to_owner: str, turn: int
     ) -> Dict[str, Any]:
         with self._lock:
-            index = self._index()
+            index = self._fresh_index()
             item = self._item(item_id)
             if item["owner"] != from_owner:
                 raise WorkItemConflict(
@@ -457,7 +513,7 @@ class WorkItemStore:
     def note(self, item_id: int, actor: str, turn: int, text: str) -> Dict[str, Any]:
         """Record a non-status-changing note on an item (e.g. a stall halt)."""
         with self._lock:
-            index = self._index()
+            index = self._fresh_index()
             item = self._item(item_id)
             timestamp = utc_now()
             item.setdefault("notes", []).append(
@@ -562,15 +618,25 @@ class WorkItemStore:
         self,
         item_id: int,
         *,
-        evaluator: str,
+        evaluator: str = HUMAN_REVIEWER,
         turn: int,
         verdict: Optional[Literal["approve", "reject"]],
         assessment: str,
         provider_receipt: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """Record one review.
+
+        Required QC: the review moves an In review item to Done (approve) or
+        back to In progress (reject). Optional QC: the item stays Done, except
+        that a human (`HUMAN_REVIEWER`) reject reopens it to In progress. A
+        human reject needs a non-empty assessment.
+        """
+        human = evaluator == HUMAN_REVIEWER
+        if human and verdict == "reject" and not assessment.strip():
+            raise WorkItemConflict("a human reject needs a non-empty assessment")
         with self._lock:
-            index = self._index()
+            index = self._fresh_index()
             item = self._item(item_id)
             if evaluator == item["owner"]:
                 raise WorkItemConflict(
@@ -596,6 +662,7 @@ class WorkItemStore:
                 "error": error,
             }
             item["reviews"].append(review)
+            reopened = False
             if not error and self.policy.qc_mode == "required":
                 previous = item["status"]
                 destination = "Done" if verdict == "approve" else "In progress"
@@ -615,8 +682,34 @@ class WorkItemStore:
                         "to_owner": item["owner"],
                     }
                 )
+            elif (
+                not error
+                and human
+                and verdict == "reject"
+                and self.policy.qc_mode == "optional"
+            ):
+                reopened = True
+                item["status"] = "In progress"
+                item["completed_turn"] = None
+                item["completed_at"] = None
+                item["closed_turn"] = None
+                item["closed_at"] = None
+                item["transitions"].append(
+                    {
+                        "kind": "reopened",
+                        "actor": HUMAN_REVIEWER,
+                        "turn": turn,
+                        "timestamp": timestamp,
+                        "from_status": "Done",
+                        "to_status": "In progress",
+                        "from_owner": item["owner"],
+                        "to_owner": item["owner"],
+                    }
+                )
             self._update_index(index, item)
             label = "failed" if error else str(verdict)
+            if reopened:
+                label += ", reopened"
             self._commit(f"work-item {item_id}: review {label}", index, item)
             return self.read(item_id)
 

@@ -151,9 +151,10 @@ class BlockTracker:
     """Attributes code actions to blocks and persists them to blocks.json.
 
     Single-threaded: drive it only from the session's runner loop. Work-item
-    changes made elsewhere (reviews from `/evaluate` or the web evaluate
-    route) are picked up by `sync()`, which `begin_action` and `close_all`
-    also run first.
+    changes made elsewhere (reviews from `/evaluate` or the web evaluate and
+    human-review routes) are picked up by `sync()`, which `begin_action` and
+    `close_all` also run first, and which both runner loops call when they
+    take a user message.
     """
 
     def __init__(
@@ -274,7 +275,16 @@ class BlockTracker:
 
     def _apply_item(self, item: Dict[str, Any]) -> None:
         for block in self._blocks:
-            if block["status"] != _OPEN or block["work_item_id"] != item["id"]:
+            if block["work_item_id"] != item["id"]:
+                continue
+            if block["status"] == "ok":
+                # A reject that arrives after the attempt closed ok (e.g. the
+                # item was Done, then reviewed) downgrades it to warn.
+                if _rejections(item) >= block["attempt"]:
+                    block["status"] = "warn"
+                    self._changed(block)
+                continue
+            if block["status"] != _OPEN:
                 continue
             reason = self._item_close_reason(item, block)
             if reason is not None:
@@ -282,20 +292,23 @@ class BlockTracker:
 
     def on_work_item_changed(self, item: Dict[str, Any]) -> None:
         """Close blocks the change ends: the item is Done (a), or the block's
-        attempt was rejected (b). `item` is a full item (`WorkItemStore.read`)."""
+        attempt was rejected (b); and turn an `ok` block whose attempt was
+        rejected afterwards into `warn`. `item` is a full item
+        (`WorkItemStore.read`)."""
         self._apply_item(item)
 
     def sync(self) -> None:
-        """Re-read the work item of every open work-item block and apply it.
+        """Re-read the work item of every open or `ok` work-item block and
+        apply it.
 
-        Catches reviews and Done transitions made outside the runner loop.
-        Idempotent.
+        Catches reviews, reopens and Done transitions made outside the runner
+        loop. Idempotent.
         """
         item_ids = sorted(
             {
                 block["work_item_id"]
                 for block in self._blocks
-                if block["status"] == _OPEN and not block["implicit"]
+                if block["status"] in (_OPEN, "ok") and not block["implicit"]
             }
         )
         for item_id in item_ids:

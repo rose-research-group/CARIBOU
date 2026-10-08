@@ -261,3 +261,22 @@ def test_evaluator_review_is_bounded_and_updates_required_lifecycle(tmp_path) ->
     payload = calls[0]["messages"][1]["content"]
     assert '"kind": "work_item_review"' in payload
     assert '"history"' not in payload
+
+
+def test_mutations_see_commits_from_another_store_instance(tmp_path) -> None:
+    # The web routes and the runner may hold different instances on one
+    # directory; a stale cached index must not reuse an id or drop an item.
+    def make():
+        return WorkItemStore(
+            tmp_path / "work-items", session_id="s", policy=WorkItemPolicy()
+        )
+
+    runner_store = make()
+    assert runner_store.list() == []  # fills the cache
+    route_store = make()
+    ticket = route_store.open("Ticket", "from a person", "coder", 1)
+    own = runner_store.open("Agent item", "b", "coder", 2)
+
+    assert (ticket["id"], own["id"]) == (0, 1)
+    assert route_store.read(0)["title"] == "Ticket"
+    assert [item["id"] for item in runner_store.list()] == [0, 1]
