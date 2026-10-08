@@ -1,5 +1,7 @@
 # CARIBOU UI Vision
 
+See [adaption.md](adaption.md) for how the current code base can adapt to this design.
+
 This folder holds the plan for the interface we want to build to replace the current chatbot, based on a whiteboard sketch (not kept in the repo). `workbench-demo.html` is a clickable mock of it. This note ties each part of the sketch to what CARIBOU does today, and lists what is missing. It comes from a sweep of the repo and manuscript done on 2026-10-07. Items marked "unverified" were not checked directly.
 
 ## The idea
