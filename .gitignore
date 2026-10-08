@@ -40,7 +40,7 @@ benchmarking/celltyping_benchmarks/clean_plots/tsp_large_intestine/
 manuscript/
 # Local AI assistant state
 .opencode/
-.codex/
+.codex
 .claude/
 /skills/
 .dev/CARIBOU_manuscript_revised.docx
