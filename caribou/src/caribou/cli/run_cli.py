@@ -34,7 +34,11 @@ from caribou.core.python_environments import (
 
 if TYPE_CHECKING:
     from caribou.agents.AgentSystem import AgentSystem
-    from caribou.execution.runner import SandboxManager
+    from caribou.execution.runner import (
+        RunnerEvent,
+        RunnerEventCallback,
+        SandboxManager,
+    )
 
 # --------------------------------------------------------------------------------------
 # Constants & Package Paths
@@ -156,6 +160,54 @@ def _prompt_for_benchmark_metric(console: Console) -> Optional[str]:
 
 
 # --------------------------------------------------------------------------------------
+# Runner event log
+# --------------------------------------------------------------------------------------
+CLI_EVENT_LOG_FILENAME = "events.jsonl"
+
+
+def _cli_event_log_callback(
+    output_dir: Optional[Path],
+) -> "RunnerEventCallback":
+    """Return a runner event callback that appends each event to events.jsonl.
+
+    The log lives in the runner's session artifacts directory (next to
+    ``notes.md`` and ``work-items/``): ``output_dir`` when the CLI was given
+    one, otherwise ``<default runs dir>/session_notes/<run_id>``, mirroring
+    ``run_agent_session``. The run id is taken from the first event because the
+    runner mints it. Each event is one ``json.dumps`` line, flushed as written;
+    a non-serializable payload raises instead of being coerced.
+    """
+    from caribou.execution.path_utils import get_default_runs_dir
+
+    log_path: Optional[Path] = None
+    log_run_id: Optional[str] = None
+
+    def record(event: "RunnerEvent") -> None:
+        nonlocal log_path, log_run_id
+        run_id = event["run_id"]
+        if log_path is None:
+            log_dir = (
+                output_dir
+                if output_dir is not None
+                else get_default_runs_dir() / "session_notes" / run_id
+            )
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / CLI_EVENT_LOG_FILENAME
+            log_run_id = run_id
+        elif run_id != log_run_id:
+            raise RuntimeError(
+                f"runner event run_id {run_id!r} does not match the event log's "
+                f"run_id {log_run_id!r}"
+            )
+        line = json.dumps(event, ensure_ascii=False)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+            handle.flush()
+
+    return record
+
+
+# --------------------------------------------------------------------------------------
 # Core Runner
 # --------------------------------------------------------------------------------------
 def _setup_and_run_session(
@@ -234,6 +286,9 @@ def _setup_and_run_session(
             model_parameters=context.model_parameters,
             compress_memory=context.compress_memory,
             output_dir=host_output_path if context.output_dir else None,
+            event_callback=_cli_event_log_callback(
+                host_output_path if context.output_dir else None
+            ),
             make_report=context.make_report,
             agent_report_memory=context.agent_report_memory,
             evaluator_runtime=context.evaluator_runtime,
@@ -260,6 +315,13 @@ def _setup_and_run_session(
                 {"name": f.name, "size": f"{f.stat().st_size / 1e6:.2f} MB"}
                 for f in host_output_path.iterdir()
                 if f.is_file()
+            ]
+
+        # The CLI's own event log is session bookkeeping, not an agent output;
+        # keep it from changing the generated-files report.
+        if auto_save_mode:
+            output_files_info = [
+                f for f in output_files_info if f.get("name") != CLI_EVENT_LOG_FILENAME
             ]
 
         if output_files_info:
