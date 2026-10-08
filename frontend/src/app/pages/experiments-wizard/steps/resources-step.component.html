@@ -90,7 +90,7 @@
               (ngModelChange)="executorChange.emit($event)"
               title="Choose where CARIBOU should execute the experiment"
             >
-              <option value="slurm">Slurm · peerd partition</option>
+              <option value="slurm">{{ slurmOptionLabel }}</option>
               <option value="local">Local control host</option>
             </select>
             <small>{{
@@ -98,6 +98,14 @@
                 ? 'Submitted as a durable scheduler job'
                 : 'Runs directly on this server host'
             }}</small>
+            @if (executor === 'slurm' && slurmPartitionError(); as e) {
+              <small class="field-error">{{ e }}</small>
+            } @else if (executor === 'slurm' && slurmPartition() === null) {
+              <small class="field-error">
+                No Slurm partition is configured. Set one in Settings or with
+                <code>caribou config set-slurm-partition</code> before submitting.
+              </small>
+            }
           </div>
         </div>
       </section>

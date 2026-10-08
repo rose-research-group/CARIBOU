@@ -12,7 +12,14 @@ from pydantic import BaseModel
 
 import shutil
 
-from caribou.config import CARIBOU_HOME, DEFAULT_AGENT_DIR, ENV_FILE
+from caribou.config import (
+    CARIBOU_HOME,
+    DEFAULT_AGENT_DIR,
+    ENV_FILE,
+    InvalidSlurmPartitionError,
+    read_caribou_slurm_partition,
+    validate_slurm_partition,
+)
 from caribou.core.python_environments import (
     PythonEnvironmentCandidate,
     PythonEnvironmentError,
@@ -205,6 +212,8 @@ class ServerSettings(BaseModel):
     api_keys: Dict[str, str]  # key name → masked value
     ollama_host: str
     ollama_model: str
+    # None when no partition is configured (no env var and no .env entry).
+    slurm_partition: Optional[str]
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -215,6 +224,16 @@ class UpdateSettingsRequest(BaseModel):
     openrouter_api_key: Optional[str] = None
     ollama_host: Optional[str] = None
     ollama_model: Optional[str] = None
+    slurm_partition: Optional[str] = None
+
+
+def _read_slurm_partition_or_500() -> Optional[str]:
+    try:
+        return read_caribou_slurm_partition()
+    except InvalidSlurmPartitionError as exc:
+        raise HTTPException(
+            500, f"Configured CARIBOU_SLURM_PARTITION is invalid: {exc}"
+        ) from exc
 
 
 @router.get("/settings", response_model=ServerSettings)
@@ -239,11 +258,22 @@ async def get_settings() -> ServerSettings:
         },
         ollama_host=normalize_host(os.environ.get("OLLAMA_HOST")),
         ollama_model=os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
+        slurm_partition=_read_slurm_partition_or_500(),
     )
 
 
 @router.patch("/settings")
 async def update_settings(body: UpdateSettingsRequest) -> dict:
+    # Validate before writing anything so a rejected partition never leaves
+    # the other requested keys half-saved.
+    slurm_partition: Optional[str] = None
+    if body.slurm_partition is not None:
+        slurm_partition = body.slurm_partition.strip()
+        try:
+            validate_slurm_partition(slurm_partition)
+        except InvalidSlurmPartitionError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
     ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
     if not ENV_FILE.exists():
         ENV_FILE.touch()
@@ -267,6 +297,9 @@ async def update_settings(body: UpdateSettingsRequest) -> dict:
     if body.ollama_model is not None:
         set_key(str(ENV_FILE), "OLLAMA_MODEL", body.ollama_model.strip())
         updated.append("OLLAMA_MODEL")
+    if slurm_partition is not None:
+        set_key(str(ENV_FILE), "CARIBOU_SLURM_PARTITION", slurm_partition)
+        updated.append("CARIBOU_SLURM_PARTITION")
 
     if body.sessions_dir is not None:
         p = Path(body.sessions_dir).expanduser()
@@ -278,6 +311,11 @@ async def update_settings(body: UpdateSettingsRequest) -> dict:
         updated.append("CARIBOU_SESSIONS_DIR")
 
     load_dotenv(dotenv_path=ENV_FILE, override=True)
+    if slurm_partition is not None:
+        # The partition resolver prefers the process environment over the
+        # .env file, so set it explicitly: this is what makes new Slurm
+        # submissions from this running server use the new partition.
+        os.environ["CARIBOU_SLURM_PARTITION"] = slurm_partition
     return {"updated": updated}
 
 

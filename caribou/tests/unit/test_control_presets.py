@@ -85,6 +85,40 @@ def test_presets_resolve_to_submit_ready_canonical_specs(
     assert validate_control_spec(spec, require_submit_adapter=True)
 
 
+def _resolve_slurm_preset(resolver: PresetResolver, tmp_path: Path):
+    dataset = tmp_path / "partition.h5ad"
+    dataset.write_bytes(b"frozen-dataset")
+    return resolver.resolve(
+        "single_agent_qc",
+        dataset_path=str(dataset),
+        model_provider="openai",
+        model_name="gpt-test-snapshot",
+        profile="fast",
+        max_turns=None,
+        executor="slurm",
+        owner="test-operator",
+        reviewer="test-reviewer",
+    )
+
+
+def test_slurm_preset_uses_configured_partition(
+    resolver: PresetResolver, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CARIBOU_SLURM_PARTITION", "gpu_a100")
+    spec = _resolve_slurm_preset(resolver, tmp_path)
+    assert spec.execution.partition == "gpu_a100"
+
+
+def test_slurm_preset_requires_configured_partition(
+    resolver: PresetResolver, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CARIBOU_SLURM_PARTITION")
+    with pytest.raises(ControlError) as exc_info:
+        _resolve_slurm_preset(resolver, tmp_path)
+    assert exc_info.value.code == "SLURM_PARTITION_NOT_CONFIGURED"
+    assert "caribou config set-slurm-partition" in exc_info.value.message
+
+
 def test_preset_catalog_exposes_only_supported_resolution_controls() -> None:
     catalog = get_preset_list()
 

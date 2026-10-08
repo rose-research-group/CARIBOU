@@ -4,6 +4,7 @@ import {
   EventEmitter,
   Input,
   OnChanges,
+  OnInit,
   Output,
   SimpleChanges,
   inject,
@@ -28,12 +29,15 @@ import { ConfigService } from '../../../core/services/config.service';
   templateUrl: './resources-step.component.html',
   styleUrls: ['./resources-step.component.scss'],
 })
-export class ResourcesStepComponent implements OnChanges {
+export class ResourcesStepComponent implements OnChanges, OnInit {
   readonly config = inject(ConfigService);
   readonly deepseekModels = DEEPSEEK_MODELS;
   readonly openrouterEndpoints = signal<OpenRouterEndpoint[]>([]);
   readonly loadingOpenrouterEndpoints = signal(false);
   readonly openrouterError = signal<string | null>(null);
+  /** Configured server partition; undefined while loading, null when not configured. */
+  readonly slurmPartition = signal<string | null | undefined>(undefined);
+  readonly slurmPartitionError = signal<string | null>(null);
 
   @Input() preset: PresetSummary | null = null;
   @Input() profile: PresetProfile = 'fast';
@@ -53,6 +57,25 @@ export class ResourcesStepComponent implements OnChanges {
   @Output() executorChange = new EventEmitter<PresetExecutor>();
   @Output() ownerChange = new EventEmitter<string>();
   @Output() reviewerChange = new EventEmitter<string>();
+
+  ngOnInit(): void {
+    this.config.getSettings().subscribe({
+      next: (settings) => this.slurmPartition.set(settings.slurm_partition),
+      error: (error) => {
+        this.slurmPartitionError.set(
+          error?.error?.detail ?? 'Unable to load the configured Slurm partition.',
+        );
+      },
+    });
+  }
+
+  get slurmOptionLabel(): string {
+    if (this.slurmPartitionError()) return 'Slurm · partition unavailable';
+    const partition = this.slurmPartition();
+    if (partition === undefined) return 'Slurm · loading partition…';
+    if (partition === null) return 'Slurm · partition not configured';
+    return `Slurm · ${partition} partition`;
+  }
 
   ngOnChanges(changes: SimpleChanges): void {
     if (

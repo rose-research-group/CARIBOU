@@ -32,7 +32,10 @@ def _completed(
 
 
 def _slurm_store(
-    tmp_path: Path, *, idempotency_key: str = "slurm-unit"
+    tmp_path: Path,
+    *,
+    idempotency_key: str = "slurm-unit",
+    partition: str = "peerd",
 ) -> tuple[ExperimentStore, str]:
     base = make_spec()
     condition = base.conditions[0].model_copy(
@@ -53,7 +56,7 @@ def _slurm_store(
     execution = base.execution.model_copy(
         update={
             "executor": ExecutorKind.slurm,
-            "partition": "peerd",
+            "partition": partition,
             "resources": resources,
         }
     )
@@ -84,6 +87,7 @@ def _bind_job(
     handle = SlurmExecutionHandle(
         run_id=run_id,
         job_id=job_id,
+        partition=store.run(run_id).partition,
         script_path=str(script_path.relative_to(store.run_dir(run_id))),
         script_hash=script_hash,
         stdout_path="slurm-%j.out",
@@ -102,6 +106,7 @@ def _write_partial_handle(
     partial = SlurmExecutionHandle(
         run_id=run_id,
         job_id=job_id,
+        partition=run.partition,
         script_path=str(script_path.relative_to(store.run_dir(run_id))),
         script_hash=script_hash,
         stdout_path="slurm-%j.out",
@@ -110,14 +115,16 @@ def _write_partial_handle(
     return partial
 
 
-def _terminal_sacct(job_id: str, state: str, exit_code: str) -> str:
+def _terminal_sacct(
+    job_id: str, state: str, exit_code: str, *, partition: str = "peerd"
+) -> str:
     root = (
         f"{job_id}|{state}|{exit_code}|12|3|3072M||node-a|"
-        "2026-07-14T01:00:00|2026-07-14T01:00:12|peerd"
+        f"2026-07-14T01:00:00|2026-07-14T01:00:12|{partition}"
     )
     batch = (
         f"{job_id}.batch|{state}|{exit_code}|12|3|3072M|2048K|node-a|"
-        "2026-07-14T01:00:00|2026-07-14T01:00:12|peerd"
+        f"2026-07-14T01:00:00|2026-07-14T01:00:12|{partition}"
     )
     return f"{root}\n{batch}\n"
 
@@ -1282,3 +1289,203 @@ def test_duplicate_and_stale_cancel_do_not_repeat_scancel(
     assert stale.applied is False
     assert stale.scheduler_signalled is False
     assert commands == [["scancel", "742"]]
+
+
+# --- Configurable partition: new work vs. already-submitted jobs -----------
+
+
+def test_non_default_partition_flows_into_script_and_sbatch_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CARIBOU_SLURM_PARTITION", "gpu_a100")
+    store, run_id = _slurm_store(
+        tmp_path, idempotency_key="gpu-partition", partition="gpu_a100"
+    )
+    executor = SlurmExecutor()
+    commands: list[list[str]] = []
+
+    def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if command[0] == "squeue":
+            return _completed(command)
+        if command[0] == "sbatch":
+            return _completed(command, stdout="742;cluster\n")
+        if command == ["scontrol", "release", "742"]:
+            return _completed(command)
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(executor, "_run", run)
+    launched = executor.launch(store, run_id)
+
+    assert launched.launched is True
+    assert launched.handle.partition == "gpu_a100"
+    sbatch = next(command for command in commands if command[0] == "sbatch")
+    assert "--partition=gpu_a100" in sbatch
+    assert not any(arg.startswith("--partition=peerd") for arg in sbatch)
+    script = store.scheduler_script_path(run_id).read_text(encoding="utf-8")
+    assert "#SBATCH --partition=gpu_a100" in script
+    assert "--partition=peerd" not in script
+
+
+def test_new_submission_refuses_spec_partition_other_than_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CARIBOU_SLURM_PARTITION", "gpu_a100")
+    with pytest.raises(ControlError) as exc_info:
+        _slurm_store(tmp_path, idempotency_key="spec-mismatch", partition="peerd")
+    assert exc_info.value.code == "SLURM_PARTITION_MISMATCH"
+    assert exc_info.value.details["partition"] == "peerd"
+    assert exc_info.value.details["configured_partition"] == "gpu_a100"
+
+
+def test_new_submission_requires_a_configured_partition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CARIBOU_SLURM_PARTITION")
+    with pytest.raises(ControlError) as exc_info:
+        _slurm_store(tmp_path, idempotency_key="unconfigured")
+    assert exc_info.value.code == "SLURM_PARTITION_NOT_CONFIGURED"
+    assert "caribou config set-slurm-partition" in exc_info.value.message
+
+
+def test_launch_refuses_new_sbatch_after_partition_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, run_id = _slurm_store(tmp_path, idempotency_key="switch-before-launch")
+    monkeypatch.setenv("CARIBOU_SLURM_PARTITION", "gpu_a100")
+    executor = SlurmExecutor()
+    commands: list[list[str]] = []
+
+    def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if command[0] == "squeue":
+            return _completed(command)
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(executor, "_run", run)
+    with pytest.raises(ControlError) as exc_info:
+        executor.launch(store, run_id)
+
+    assert exc_info.value.code == "SLURM_PARTITION_MISMATCH"
+    assert exc_info.value.details["partition"] == "peerd"
+    assert exc_info.value.details["configured_partition"] == "gpu_a100"
+    assert [command[0] for command in commands] == ["squeue"]
+    assert store.scheduler_submission(run_id) is None
+    assert store.scheduler_handle(run_id) is None
+    failed = store.run(run_id)
+    assert failed.scheduler_job_id is None
+    assert failed.state == RunState.failed
+    assert failed.end_reason == "Slurm submission failure: SLURM_PARTITION_MISMATCH"
+
+
+def test_records_from_partition_a_still_load_after_switch_to_b(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, run_id = _slurm_store(tmp_path, idempotency_key="reload-after-switch")
+    handle = _bind_job(store, run_id, job_id="742")
+    experiment_id = store.run(run_id).experiment_id
+    monkeypatch.setenv("CARIBOU_SLURM_PARTITION", "gpu_a100")
+
+    reopened = ExperimentStore(store.root)
+    assert reopened.run(run_id).partition == "peerd"
+    assert reopened.spec(experiment_id).execution.partition == "peerd"
+    loaded = reopened.scheduler_handle(run_id)
+    assert loaded == handle
+    assert loaded.partition == "peerd"
+
+
+def test_status_cancel_and_accounting_use_recorded_partition_after_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, run_id = _slurm_store(tmp_path, idempotency_key="cancel-after-switch")
+    _bind_job(store, run_id, job_id="742")
+    monkeypatch.setenv("CARIBOU_SLURM_PARTITION", "gpu_a100")
+    raw = _terminal_sacct("742", "CANCELLED", "0:15", partition="peerd")
+    commands, run = _terminal_runner(raw)
+    executor = SlurmExecutor()
+    monkeypatch.setattr(executor, "_run", run)
+    service = ExperimentService(store=store, slurm_executor=executor)
+
+    observation = executor.inspect(store, run_id)
+    assert observation.partition == "peerd"
+
+    cancelled = service.cancel(run_id, reason="cancel after partition switch")
+    assert cancelled.applied is True
+    assert cancelled.scheduler_signalled is True
+
+    reconciled = service.reconcile_scheduler(run_id)
+    assert reconciled.run.state == RunState.cancelled
+    assert reconciled.accounting is not None
+    assert reconciled.accounting.partition == "peerd"
+    assert store.scheduler_accounting(run_id).partition == "peerd"
+    assert ["scancel", "742"] in commands
+
+
+def test_partial_handle_recovery_after_switch_uses_recorded_partition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, run_id = _slurm_store(tmp_path, idempotency_key="recover-after-switch")
+    _write_partial_handle(store, run_id)
+    monkeypatch.setenv("CARIBOU_SLURM_PARTITION", "gpu_a100")
+    executor = SlurmExecutor()
+    commands: list[list[str]] = []
+
+    def run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        assert command == ["scontrol", "release", "742"]
+        return _completed(command)
+
+    monkeypatch.setattr(executor, "_run", run_command)
+    result = executor.launch(store, run_id)
+
+    assert result.launched is False
+    assert result.handle.partition == "peerd"
+    assert store.run(run_id).scheduler_job_id == "742"
+    assert commands == [["scontrol", "release", "742"]]
+
+
+def test_held_job_recovery_after_switch_matches_run_partition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, run_id = _slurm_store(tmp_path, idempotency_key="held-after-switch")
+    monkeypatch.setenv("CARIBOU_SLURM_PARTITION", "gpu_a100")
+    executor = SlurmExecutor()
+    commands: list[list[str]] = []
+    held_row = f"742|caribou_{run_id}|peerd|JobHeldUser|{os.geteuid()}\n"
+
+    def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if command[0] == "squeue":
+            return _completed(command, stdout=held_row)
+        if command == ["scontrol", "release", "742"]:
+            return _completed(command)
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(executor, "_run", run)
+    result = executor.launch(store, run_id)
+
+    assert result.handle.job_id == "742"
+    assert result.handle.partition == "peerd"
+    assert not any(command[0] == "sbatch" for command in commands)
+    assert store.run(run_id).scheduler_job_id == "742"
+
+
+def test_bind_rejects_handle_partition_differing_from_run(
+    tmp_path: Path,
+) -> None:
+    store, run_id = _slurm_store(tmp_path, idempotency_key="bind-mismatch")
+    script_path, script_hash = store.write_scheduler_script(
+        run_id, "#!/bin/bash\nexit 0\n"
+    )
+    handle = SlurmExecutionHandle(
+        run_id=run_id,
+        job_id="742",
+        partition="gpu_a100",
+        script_path=str(script_path.relative_to(store.run_dir(run_id))),
+        script_hash=script_hash,
+        stdout_path="slurm-%j.out",
+    )
+    with pytest.raises(ControlError) as exc_info:
+        store.bind_scheduler_job(handle)
+    assert exc_info.value.code == "SLURM_PARTITION_MISMATCH"
+    assert store.scheduler_handle(run_id) is None

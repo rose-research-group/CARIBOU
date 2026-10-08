@@ -392,8 +392,13 @@ def test_identifiers_hashes_reviewers_and_slurm_partition_are_validated() -> Non
     data["reviewers"] = []
     with pytest.raises(ValidationError):
         ExperimentSpec.model_validate_json(json.dumps(data))
-    with pytest.raises(ValidationError, match="partition 'peerd'"):
-        make_run(executor=ExecutorKind.slurm, partition="gpu")
+    with pytest.raises(ValidationError, match="invalid Slurm partition"):
+        make_run(executor=ExecutorKind.slurm, partition="gpu --qos=x")
+    with pytest.raises(ValidationError, match="requires a Slurm partition"):
+        make_run(executor=ExecutorKind.slurm, partition=None)
+    # A stored run keeps whichever valid partition it was created on; it is
+    # never compared against the currently configured partition on load.
+    assert make_run(executor=ExecutorKind.slurm, partition="gpu").partition == "gpu"
 
 
 def test_generated_ids_are_type_distinguishable_path_safe_and_collision_resistant() -> (

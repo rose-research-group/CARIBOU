@@ -20,7 +20,11 @@ from caribou.domain.serialization import file_hash, sha256_bytes
 from .api import ControlError, ExitCode
 from .executor import LaunchResult
 from .records import SlurmAccounting, SlurmExecutionHandle
-from .specs import ADAPTER_PARAMETER, CARIBOU_AGENT_ADAPTER
+from .specs import (
+    ADAPTER_PARAMETER,
+    CARIBOU_AGENT_ADAPTER,
+    require_configured_slurm_partition,
+)
 from .store import ExperimentStore, TERMINAL_RUN_STATES
 
 
@@ -187,7 +191,7 @@ def _render_script(store: ExperimentStore, run: Run) -> str:
     memory_mib = (run.resources.memory_bytes + 1024**2 - 1) // 1024**2
     directives = [
         f"#SBATCH --job-name={_job_name(run.run_id)}",
-        "#SBATCH --partition=peerd",
+        f"#SBATCH --partition={run.partition}",
         f"#SBATCH --cpus-per-task={run.resources.cpu_cores}",
         f"#SBATCH --mem={memory_mib}M",
         f"#SBATCH --time={_slurm_time(run.resources.wall_seconds)}",
@@ -266,7 +270,7 @@ def _render_script(store: ExperimentStore, run: Run) -> str:
 
 
 class SlurmExecutor:
-    """Submit exactly one held peerd job and bind it before release."""
+    """Submit exactly one held job on the run's Slurm partition and bind it before release."""
 
     def __init__(
         self,
@@ -476,6 +480,7 @@ class SlurmExecutor:
         return SlurmExecutionHandle(
             run_id=run.run_id,
             job_id=job_id,
+            partition=run.partition,
             account=spec.execution.account,
             qos=spec.execution.qos,
             script_path=str(script_path.relative_to(store.run_dir(run.run_id))),
@@ -523,15 +528,21 @@ class SlurmExecutor:
             if observed_name != name:
                 continue
             if (
-                partition != "peerd"
+                partition != run.partition
                 or not reason.startswith("JobHeld")
                 or user_id != str(os.geteuid())
             ):
                 raise ControlError(
                     "SLURM_RECOVERY_MISMATCH",
-                    "a same-name recovery candidate violates the held peerd contract",
+                    "a same-name recovery candidate is not a held job of this user "
+                    "on the run's Slurm partition",
                     exit_code=ExitCode.integrity,
-                    details={"run_id": run.run_id, "job_id": job_id},
+                    details={
+                        "run_id": run.run_id,
+                        "job_id": job_id,
+                        "expected_partition": run.partition,
+                        "observed_partition": partition,
+                    },
                 )
             if _JOB_ID.fullmatch(job_id) is None:
                 raise ControlError(
@@ -570,12 +581,12 @@ class SlurmExecutor:
 
     def launch(self, store: ExperimentStore, run_id: str) -> LaunchResult:
         run = store.run(run_id)
-        if run.executor != ExecutorKind.slurm or run.partition != "peerd":
+        if run.executor != ExecutorKind.slurm:
             raise ControlError(
                 "RUN_NOT_SLURM",
-                "the Slurm executor requires a peerd Slurm run",
+                "the Slurm executor can launch only a Slurm run",
                 exit_code=ExitCode.conflict,
-                details={"run_id": run_id},
+                details={"run_id": run_id, "executor": run.executor.value},
             )
         script_path, script_hash = store.write_scheduler_script(
             run_id, _render_script(store, run)
@@ -663,6 +674,13 @@ class SlurmExecutor:
                                     "grace_seconds": _SUBMISSION_VISIBILITY_GRACE_SECONDS,
                                 },
                             )
+                        # New sbatch submission: the run must target the
+                        # partition CARIBOU is currently configured for.
+                        require_configured_slurm_partition(
+                            current.partition,
+                            subject=f"run {run_id}",
+                            details={"run_id": run_id},
+                        )
                         store._record_scheduler_submission_attempt_unlocked(
                             run_id=run_id,
                             job_name=_job_name(run_id),
@@ -674,7 +692,7 @@ class SlurmExecutor:
                                     self.sbatch,
                                     "--parsable",
                                     "--hold",
-                                    "--partition=peerd",
+                                    f"--partition={current.partition}",
                                     "--export=NIL",
                                     str(script_path),
                                 ]
@@ -1012,7 +1030,7 @@ class SlurmExecutor:
                 accounting = SlurmAccounting(
                     run_id=run_id,
                     job_id=observation.job_id,
-                    partition="peerd",
+                    partition=observation.partition,
                     state=observation.state,
                     terminal=True,
                     exit_code=observation.exit_code,

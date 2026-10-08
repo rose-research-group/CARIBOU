@@ -199,6 +199,19 @@ export interface LLMBackend {
   suggested_fix?: string | null;
 }
 
+/** Response of GET /api/settings. */
+export interface ServerSettings {
+  caribou_home: string;
+  sessions_dir: string;
+  uploads_dir: string;
+  env_file: string;
+  api_keys: Record<string, string>;
+  ollama_host: string;
+  ollama_model: string;
+  /** null when no Slurm partition is configured on the server. */
+  slurm_partition: string | null;
+}
+
 export interface OllamaModelsResponse {
   host: string;
   running: boolean;

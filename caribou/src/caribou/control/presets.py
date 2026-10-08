@@ -45,7 +45,11 @@ from caribou.domain.models import (
 from caribou.domain.serialization import file_hash, sha256_bytes
 
 from .api import ControlError, ExitCode
-from .specs import ADAPTER_PARAMETER, CARIBOU_AGENT_ADAPTER
+from .specs import (
+    ADAPTER_PARAMETER,
+    CARIBOU_AGENT_ADAPTER,
+    configured_slurm_partition,
+)
 
 
 PresetProfile = Literal["fast", "thorough"]
@@ -494,7 +498,11 @@ class PresetResolver:
                     gpu_enabled=False,
                     network_enabled=False,
                 ),
-                partition="peerd" if executor_kind == ExecutorKind.slurm else None,
+                partition=(
+                    configured_slurm_partition({"preset_id": preset_id})
+                    if executor_kind == ExecutorKind.slurm
+                    else None
+                ),
                 output_root=f"runs/presets/{preset_id}-{spec_id.removeprefix('spec_')}",
             ),
             budget=_unlimited_budget(),
