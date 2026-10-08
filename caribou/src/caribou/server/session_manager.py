@@ -53,7 +53,11 @@ from caribou.execution.blocks import (
     load_blocks,
 )
 from caribou.execution.work_item_runtime import copy_work_items
-from caribou.execution.work_items import WorkItemPolicy, WorkItemStore
+from caribou.execution.work_items import (
+    HUMAN_REVIEWER,
+    WorkItemPolicy,
+    WorkItemStore,
+)
 from caribou.execution.token_utils import estimate_tokens
 from caribou.server.models import (
     ArtifactRecord,
@@ -150,6 +154,10 @@ def _close_session_logger(logger: logging.Logger) -> None:
         except Exception:
             pass
         logger.removeHandler(handler)
+
+
+class UnknownWorkItemOwner(ValueError):
+    """A human ticket named an owner that is not an agent in the blueprint."""
 
 
 class SessionManager:
@@ -1359,6 +1367,70 @@ class SessionManager:
         self._emit_work_item_change(session, changed_item)
         return result
 
+    def _running_work_item_session(self, session_id: str) -> _Session:
+        # Human work-item writes need the blueprint: its agents are the valid
+        # owners and its work_item_policy decides what a review does.
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise KeyError("Session not found")
+        if session.agent_system is None:
+            raise ValueError(
+                "Session is not running — start or restart it before changing "
+                "work items."
+            )
+        return session
+
+    async def open_human_work_item(
+        self,
+        session_id: str,
+        *,
+        title: str,
+        body: str,
+        owner: str,
+        anchor: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Open a ticket a person filed for one of the blueprint's agents."""
+        session = self._running_work_item_session(session_id)
+        if owner not in session.agent_system.agents:
+            raise UnknownWorkItemOwner(
+                f"owner {owner!r} is not an agent in this session's blueprint "
+                f"(agents: {sorted(session.agent_system.agents)})"
+            )
+        store = self._work_item_store(session)
+        item = await asyncio.to_thread(
+            store.open,
+            title,
+            body,
+            owner,
+            session.current_turn,
+            opened_by=HUMAN_REVIEWER,
+            anchor=anchor,
+        )
+        self._emit_work_item_change(session, item)
+        return item
+
+    async def record_human_review(
+        self,
+        session_id: str,
+        item_id: int,
+        *,
+        verdict: str,
+        assessment: str,
+    ) -> Dict[str, Any]:
+        """Record a person's approve/reject on a work item."""
+        session = self._running_work_item_session(session_id)
+        store = self._work_item_store(session)
+        item = await asyncio.to_thread(
+            store.record_review,
+            item_id,
+            evaluator=HUMAN_REVIEWER,
+            turn=session.current_turn,
+            verdict=verdict,
+            assessment=assessment,
+        )
+        self._emit_work_item_change(session, item)
+        return item
+
     def _emit_work_item_change(
         self, session: _Session, item: Dict[str, object]
     ) -> None:
@@ -1579,13 +1651,35 @@ class SessionManager:
     async def send_user_message(self, session_id: str, content: str) -> bool:
         """Queue one message only while a live interactive runner is waiting."""
         session = self._sessions.get(session_id)
+        if not session:
+            return False
         if (
-            not session
-            or session.config.mode != SessionMode.interactive
+            session.config.mode != SessionMode.interactive
             or session.status != SessionStatus.idle
             or not session.runner_task
             or session.runner_task.done()
         ):
+            # Record the rejection in the log so the sender sees it; the
+            # message used to vanish without a trace.
+            self._on_event(
+                session,
+                {
+                    "type": "error",
+                    "session_id": session.id,
+                    "turn": session.current_turn,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "data": {
+                        "code": "MESSAGE_NOT_ACCEPTED",
+                        "message": (
+                            "Message not delivered: the session accepts messages "
+                            f"only while idle in interactive mode (status: "
+                            f"{SessionStatus(session.status).value}, mode: "
+                            f"{SessionMode(session.config.mode).value})."
+                        ),
+                        "fatal": False,
+                    },
+                },
+            )
             return False
         self._on_event(
             session,

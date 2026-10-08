@@ -115,6 +115,12 @@ def test_stopped_session_rejects_user_messages(tmp_path, monkeypatch):
 
         assert accepted is False
         assert session.user_input_queue.empty()
+        # The rejection is logged as a non-fatal error, not dropped silently.
+        rejection = session.events[-1]
+        assert rejection["type"] == "error"
+        assert rejection["data"]["code"] == "MESSAGE_NOT_ACCEPTED"
+        assert rejection["data"]["fatal"] is False
+        assert isinstance(rejection["seq"], int)
 
     asyncio.run(run_test())
 
@@ -132,6 +138,7 @@ def test_only_one_user_message_is_accepted_while_waiting(tmp_path, monkeypatch):
 
         assert first is True
         assert second is False
+        assert session.events[-1]["data"]["code"] == "MESSAGE_NOT_ACCEPTED"
         assert session.status == SessionStatus.running
         assert session.user_input_queue.get_nowait() == "First"
         assert session.user_input_queue.empty()

@@ -252,10 +252,25 @@ class WorkItemSummary(BaseModel):
     completed_at: Optional[str] = None
 
 
+class WorkItemAnchor(BaseModel):
+    """What a human ticket points at; the store requires at least one non-null."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    block_id: Optional[str] = None
+    action_id: Optional[str] = None
+    artifact_path: Optional[str] = None
+
+
 class WorkItemDetail(WorkItemSummary):
     schema_version: str
-    run_id: str
+    # The store writes session_id/origin_run_id; it has never written run_id
+    # since work items became session-owned.
+    session_id: str
+    origin_run_id: str
     body: str
+    # Null for agent-opened items and for v2 items written before anchors.
+    anchor: Optional[WorkItemAnchor] = None
     completion_summary: Optional[str] = None
     closed_turn: Optional[int] = None
     closed_at: Optional[str] = None
@@ -297,6 +312,26 @@ class BlocksResponse(BaseModel):
 
     recorded: bool
     blocks: List[BlockRecord]
+
+
+class WorkItemCreateRequest(BaseModel):
+    """`POST /api/sessions/{id}/work-items`: a ticket a person opens for an agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    body: str
+    owner: str
+    anchor: Optional[WorkItemAnchor] = None
+
+
+class WorkItemHumanReviewRequest(BaseModel):
+    """`POST /api/sessions/{id}/work-items/{n}/human-review`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: Literal["approve", "reject"]
+    assessment: str
 
 
 class WorkItemReviewResult(BaseModel):

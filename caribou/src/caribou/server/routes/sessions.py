@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 from caribou.core.python_environments import PythonEnvironmentError
 from caribou.execution.evaluation import EvaluationContextTooLarge
-from caribou.execution.work_items import WorkItemNotFound
+from caribou.execution.work_items import WorkItemConflict, WorkItemNotFound
 from caribou.server.models import (
     ArtifactRecord,
     BlockRecord,
@@ -23,11 +23,13 @@ from caribou.server.models import (
     SessionForkRequest,
     SessionResumeRequest,
     SessionResponse,
+    WorkItemCreateRequest,
     WorkItemDetail,
+    WorkItemHumanReviewRequest,
     WorkItemReviewResult,
     WorkItemSummary,
 )
-from caribou.server.session_manager import session_manager
+from caribou.server.session_manager import UnknownWorkItemOwner, session_manager
 
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -215,6 +217,57 @@ async def get_work_items(session_id: str) -> List[WorkItemSummary]:
         ]
     except KeyError as exc:
         raise HTTPException(404, "Session not found") from exc
+
+
+@router.post(
+    "/{session_id}/work-items", response_model=WorkItemDetail, status_code=201
+)
+async def create_work_item(
+    session_id: str, body: WorkItemCreateRequest
+) -> WorkItemDetail:
+    """Open a human ticket for one of the session's agents."""
+    try:
+        item = await session_manager.open_human_work_item(
+            session_id,
+            title=body.title,
+            body=body.body,
+            owner=body.owner,
+            anchor=body.anchor.model_dump() if body.anchor is not None else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+    except UnknownWorkItemOwner as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except ValueError as exc:
+        # WorkItemConflict (empty title/body, bad anchor) or a stopped session.
+        raise HTTPException(409, str(exc)) from exc
+    return WorkItemDetail.model_validate(item)
+
+
+@router.post(
+    "/{session_id}/work-items/{item_id}/human-review", response_model=WorkItemDetail
+)
+async def human_review_work_item(
+    session_id: str, item_id: int, body: WorkItemHumanReviewRequest
+) -> WorkItemDetail:
+    """Record a person's approve/reject; optional-QC rejects reopen a Done item."""
+    try:
+        item = await session_manager.record_human_review(
+            session_id,
+            item_id,
+            verdict=body.verdict,
+            assessment=body.assessment,
+        )
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
+    except WorkItemNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except WorkItemConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        # The session is not running, so its blueprint policy is unknown.
+        raise HTTPException(409, str(exc)) from exc
+    return WorkItemDetail.model_validate(item)
 
 
 @router.get("/{session_id}/blocks", response_model=BlocksResponse)
