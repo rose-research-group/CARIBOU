@@ -13,6 +13,8 @@ from caribou.server.models import (
     ArtifactRecord,
     BlockRecord,
     BlocksResponse,
+    BranchRequest,
+    BranchSummary,
     BriefDecisionRequest,
     CodeEventRecord,
     EvaluationResult,
@@ -29,7 +31,11 @@ from caribou.server.models import (
     WorkItemReviewResult,
     WorkItemSummary,
 )
-from caribou.server.session_manager import UnknownWorkItemOwner, session_manager
+from caribou.server.session_manager import (
+    SessionLimitReached,
+    UnknownWorkItemOwner,
+    session_manager,
+)
 
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -41,6 +47,8 @@ async def create_session(body: SessionCreateRequest) -> SessionResponse:
         return await session_manager.create_session(body)
     except PythonEnvironmentError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SessionLimitReached as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def _lifecycle_error(exc: Exception) -> HTTPException:
@@ -67,6 +75,35 @@ async def fork_session(session_id: str, body: SessionForkRequest) -> SessionResp
         return await session_manager.fork_session(session_id, body)
     except (KeyError, ValueError) as exc:
         raise _lifecycle_error(exc) from exc
+
+
+@router.post(
+    "/{session_id}/blocks/{block_id}/branch",
+    response_model=SessionResponse,
+    status_code=201,
+)
+async def branch_session(
+    session_id: str, block_id: str, body: BranchRequest
+) -> SessionResponse:
+    """Start a new session from `block_id`'s entry checkpoint.
+
+    409 when a precondition fails (source running, unknown block, a block
+    without an entry checkpoint, the restore mode's requirements, or the
+    active-session limit). The restore runs in the background.
+    """
+    try:
+        return await session_manager.branch_session(session_id, block_id, body)
+    except (KeyError, ValueError) as exc:
+        raise _lifecycle_error(exc) from exc
+
+
+@router.get("/{session_id}/branches", response_model=List[BranchSummary])
+async def list_branches(session_id: str) -> List[BranchSummary]:
+    """Direct branch children of the session, oldest first."""
+    try:
+        return session_manager.list_branches(session_id)
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
 
 
 @router.post(

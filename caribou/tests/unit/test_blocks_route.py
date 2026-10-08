@@ -101,7 +101,54 @@ def test_blocks_file_is_returned_validated(client: TestClient, session) -> None:
     response = client.get("/api/sessions/source-id/blocks")
 
     assert response.status_code == 200
+    # v1 records are legacy: they read as entry=null, inherited_from=null.
+    assert response.json() == {
+        "recorded": True,
+        "blocks": [{**block, "entry": None, "inherited_from": None} for block in blocks],
+    }
+
+
+def test_v2_blocks_carry_entry_and_inheritance(client: TestClient, session) -> None:
+    entry = {
+        "turn": 4,
+        "checkpoint_id": "checkpoint_abc",
+        "checkpoint_complete": True,
+        "fingerprint": {
+            "n_obs": 3,
+            "n_vars": 2,
+            "obs_keys": ["qc"],
+            "var_keys": [],
+            "obsm_keys": [],
+            "layers_keys": [],
+        },
+        "work_items_commit": "deadbeef",
+    }
+    blocks = [
+        _block(
+            1,
+            schema_version="caribou.block.v2",
+            entry=entry,
+            inherited_from={"session_id": "parent-id", "block_id": "blk-0001"},
+        ),
+        _block(2, schema_version="caribou.block.v2", entry=None, inherited_from=None),
+    ]
+    _write_blocks(_blocks_path(session), blocks)
+
+    response = client.get("/api/sessions/source-id/blocks")
+
+    assert response.status_code == 200
     assert response.json() == {"recorded": True, "blocks": blocks}
+
+
+def test_block_record_rejects_v2_fields_on_v1_and_missing_ones_on_v2() -> None:
+    from pydantic import ValidationError
+
+    from caribou.server.models import BlockRecord
+
+    with pytest.raises(ValidationError):
+        BlockRecord.model_validate(_block(1, entry=None))
+    with pytest.raises(ValidationError):
+        BlockRecord.model_validate(_block(1, schema_version="caribou.block.v2"))
 
 
 def test_malformed_blocks_file_is_500_not_empty(client: TestClient, session) -> None:

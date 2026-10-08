@@ -72,6 +72,14 @@ class RecoveryMode(str, Enum):
     literal_replay = "literal_replay"
 
 
+class BranchRestoreMode(str, Enum):
+    """How a branch child rebuilds the state at its block's entry checkpoint."""
+
+    replay = "replay"
+    checkpoint = "checkpoint"
+    llm_regen = "llm_regen"
+
+
 class RecoveryStatus(str, Enum):
     none = "none"
     awaiting_checkpoint = "awaiting_checkpoint"
@@ -280,12 +288,42 @@ class WorkItemDetail(WorkItemSummary):
     latest_commit: Optional[str] = None
 
 
-class BlockRecord(BaseModel):
-    """One workbench block (`caribou.block.v1`), as BlockTracker writes it to blocks.json."""
+class BlockEntry(BaseModel):
+    """What the web loop captured when a block was created: its entry checkpoint.
+
+    `checkpoint_id` is null when no checkpoint exists (the CLI loop records
+    entries without one); such a block cannot be branched from.
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    schema_version: Literal["caribou.block.v1"]
+    turn: int
+    checkpoint_id: Optional[str]
+    checkpoint_complete: bool
+    fingerprint: Optional[Dict[str, Any]]
+    work_items_commit: Optional[str]
+
+
+class BlockInheritedFrom(BaseModel):
+    """The parent block a branch child's block was copied from."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    session_id: str
+    block_id: str
+
+
+class BlockRecord(BaseModel):
+    """One workbench block, as BlockTracker writes it to blocks.json.
+
+    `caribou.block.v2` adds `entry` and `inherited_from`; both are required
+    keys in v2 (possibly null). A `caribou.block.v1` record has neither: it
+    is legitimate legacy and reads as entry=null, inherited_from=null.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: Literal["caribou.block.v1", "caribou.block.v2"]
     block_id: str = Field(pattern=r"^blk-\d{4,}$")
     session_id: str
     index: int = Field(ge=1)
@@ -303,6 +341,29 @@ class BlockRecord(BaseModel):
     artifact_paths: List[str]
     created_at: str
     updated_at: str
+    entry: Optional[BlockEntry] = None
+    inherited_from: Optional[BlockInheritedFrom] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fields_match_schema_version(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        version = value.get("schema_version")
+        v2_fields = ("entry", "inherited_from")
+        if version == "caribou.block.v1":
+            present = [name for name in v2_fields if name in value]
+            if present:
+                raise ValueError(
+                    f"a caribou.block.v1 record cannot carry {present}"
+                )
+        elif version == "caribou.block.v2":
+            missing = [name for name in v2_fields if name not in value]
+            if missing:
+                raise ValueError(
+                    f"a caribou.block.v2 record must carry {missing} (null allowed)"
+                )
+        return value
 
 
 class BlocksResponse(BaseModel):
@@ -385,6 +446,10 @@ class SessionResponse(BaseModel):
     can_evaluate: bool = False
     parent_session_id: Optional[str] = None
     forked_from_checkpoint_id: Optional[str] = None
+    # Set only on a branch child (POST /blocks/{block_id}/branch).
+    forked_from_block_id: Optional[str] = None
+    branch_restore_mode: Optional[BranchRestoreMode] = None
+    branch_instruction: Optional[str] = None
     attempt_number: int = 1
     recovery_mode: Optional[RecoveryMode] = None
     recovery_status: RecoveryStatus = RecoveryStatus.none
@@ -428,6 +493,44 @@ class SessionForkRequest(SessionResumeRequest):
     _normalize_reason = field_validator("model_change_reason", mode="before")(
         _normalize_optional_reason
     )
+
+
+class BranchRequest(BaseModel):
+    """`POST /api/sessions/{id}/blocks/{block_id}/branch`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    instruction: str = Field(min_length=1, max_length=4000)
+    restore_mode: BranchRestoreMode
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    acknowledge_unverified: bool = False
+
+    @field_validator("instruction")
+    @classmethod
+    def _instruction_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("instruction cannot be blank")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not value.strip():
+            raise ValueError("name cannot be blank")
+        return value
+
+
+class BranchSummary(BaseModel):
+    """One entry of `GET /api/sessions/{id}/branches`."""
+
+    session_id: str
+    name: str
+    status: SessionStatus
+    recovery_status: RecoveryStatus
+    forked_from_block_id: str
+    branch_restore_mode: Optional[BranchRestoreMode] = None
+    branch_instruction: Optional[str] = None
+    created_at: datetime
 
 
 class PythonEnvironmentPathRequest(BaseModel):

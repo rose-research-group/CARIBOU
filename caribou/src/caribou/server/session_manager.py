@@ -49,6 +49,7 @@ from caribou.execution.blocks import (
     BLOCKS_FILENAME,
     BlockError,
     fork_blocks,
+    inherit_blocks,
     init_blocks,
     load_blocks,
 )
@@ -56,6 +57,7 @@ from caribou.execution.user_input import UserTurn
 from caribou.execution.work_item_runtime import copy_work_items
 from caribou.execution.work_items import (
     HUMAN_REVIEWER,
+    copy_work_items_at,
     WorkItemPolicy,
     WorkItemStore,
 )
@@ -63,6 +65,9 @@ from caribou.execution.token_utils import estimate_tokens
 from caribou.server.models import (
     ArtifactRecord,
     ArtifactType,
+    BranchRequest,
+    BranchRestoreMode,
+    BranchSummary,
     CodeEventRecord,
     EvaluatorModelState,
     EvaluatorModelUpdateRequest,
@@ -92,6 +97,7 @@ from caribou.server.session_setup import (
     resolve_evaluator_model_info,
 )
 from caribou.server.session_state import (
+    read_max_active_sessions,
     SANDBOX_DATA_PATH,
     SANDBOX_REF_DATA_PATH,
     SESSIONS_DIR,
@@ -103,12 +109,15 @@ from caribou.server.session_state import (
 from caribou.execution.session_recovery import (
     bootstrap_anndata,
     capture_checkpoint,
+    LEDGER_BASE_ORIGINAL,
     checkpoint_dataset_path,
     copy_output_tree,
+    copy_unchanged_artifacts,
     literal_replay,
     load_checkpoint,
     publish_checkpoint_pointer,
     smart_rebuild,
+    verify_fingerprint,
 )
 
 # Backwards-compatible re-exports for callers that reach into this module.
@@ -161,6 +170,45 @@ class UnknownWorkItemOwner(ValueError):
     """A human ticket named an owner that is not an agent in the blueprint."""
 
 
+class SessionLimitReached(ValueError):
+    """Starting another sandbox container would exceed the Settings limit."""
+
+
+class BranchConflict(ValueError):
+    """A branch request whose preconditions do not hold (HTTP 409)."""
+
+
+# Sessions in these states hold (or are about to start) a sandbox container.
+_ACTIVE_WITH_SANDBOX = {
+    SessionStatus.initializing,
+    SessionStatus.idle,
+    SessionStatus.running,
+    SessionStatus.recovering,
+}
+# Counted even before `sandbox_manager` exists: their container is starting,
+# so two quick creates cannot both pass the limit (A6).
+_ACTIVE_STARTING = {SessionStatus.initializing, SessionStatus.recovering}
+_BRANCHABLE_STATUSES = {SessionStatus.idle, SessionStatus.stopped, SessionStatus.error}
+# The RecoveryMode a branch child reports for each restore mode (resume and
+# retry keep accepting only smart/literal_replay).
+_BRANCH_RECOVERY_MODE = {
+    BranchRestoreMode.replay: RecoveryMode.literal_replay,
+    BranchRestoreMode.checkpoint: None,
+    BranchRestoreMode.llm_regen: RecoveryMode.smart,
+}
+# Source events a fork or branch child keeps in its own log.
+_RETAINED_EVENT_TYPES = {
+    "message_complete",
+    "system_message",
+    "recovery_completed",
+    "agent_switch",
+    "code_submitted",
+    "code_result",
+    "artifact",
+    "error",
+}
+
+
 class SessionManager:
     def __init__(self) -> None:
         self._deleted_session_ids: set[str] = set()
@@ -181,6 +229,38 @@ class SessionManager:
         return session_dir(session_id, _SESSIONS_DIR)
 
     # ------------------------------------------------------------------
+    # Active-session limit (Settings: CARIBOU_MAX_ACTIVE_SESSIONS)
+    # ------------------------------------------------------------------
+
+    def _active_session_count(self) -> int:
+        return sum(
+            1
+            for session in self._sessions.values()
+            if session.status in _ACTIVE_STARTING
+            or (
+                session.sandbox_manager is not None
+                and session.status in _ACTIVE_WITH_SANDBOX
+            )
+        )
+
+    def _check_session_limit(self) -> None:
+        """Raise SessionLimitReached when no container slot is free.
+
+        Callers hold `self._lock` and, without awaiting in between, mark the
+        session that takes the slot as initializing/recovering (the
+        reservation), so concurrent requests cannot both pass.
+        """
+        limit = read_max_active_sessions(ENV_FILE)
+        if limit is None:
+            return
+        active = self._active_session_count()
+        if active >= limit:
+            raise SessionLimitReached(
+                f"Active session limit reached ({active} of {limit}). Stop a "
+                "session or raise the limit in Settings."
+            )
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -199,10 +279,6 @@ class SessionManager:
 
         session_id = str(uuid4())
         output_dir = SESSIONS_DIR / session_id / "outputs"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        # Before the runner starts, so the page's first /blocks request
-        # already sees a block-recording session.
-        init_blocks(output_dir.parent / BLOCKS_FILENAME, session_id)
 
         session = _Session(
             id=session_id,
@@ -243,6 +319,13 @@ class SessionManager:
         )
 
         async with self._lock:
+            # Check and reserve with no await in between: the slot is taken
+            # by registering the initializing session.
+            self._check_session_limit()
+            output_dir.mkdir(parents=True, exist_ok=True)
+            # Before the runner starts, so the page's first /blocks request
+            # already sees a block-recording session.
+            init_blocks(output_dir.parent / BLOCKS_FILENAME, session_id)
             self._deleted_session_ids.discard(session_id)
             self._sessions[session_id] = session
 
@@ -281,7 +364,11 @@ class SessionManager:
         if session.recovery_task and not session.recovery_task.done():
             raise ValueError("Session recovery is already in progress")
 
-        self._apply_target_mode(session, request)
+        async with self._lock:
+            self._check_session_limit()
+            # Validated before the reservation so a bad request changes nothing.
+            self._apply_target_mode(session, request)
+            session.status = SessionStatus.recovering
         session.attempt_number += 1
         session.attempts.append(
             {
@@ -412,10 +499,11 @@ class SessionManager:
         # Validate/resolve mode before publishing the child so invalid requests
         # cannot leave an orphaned recovering session in the registry.
         self._apply_target_mode(child, request)
-        child.output_dir.mkdir(parents=True, exist_ok=True)
-        # A placeholder until _fork_work_items copies the parent's blocks.
-        init_blocks(child.output_dir.parent / BLOCKS_FILENAME, child_id)
         async with self._lock:
+            self._check_session_limit()
+            child.output_dir.mkdir(parents=True, exist_ok=True)
+            # A placeholder until _fork_work_items copies the parent's blocks.
+            init_blocks(child.output_dir.parent / BLOCKS_FILENAME, child_id)
             self._deleted_session_ids.discard(child_id)
             self._sessions[child_id] = child
         child.logger = _create_session_logger(child_id, child.output_dir.parent)
@@ -424,6 +512,519 @@ class SessionManager:
             self._complete_fork(source, child, request)
         )
         return child.to_response()
+
+    # ------------------------------------------------------------------
+    # Branching from a block (contract §5)
+    # ------------------------------------------------------------------
+
+    async def branch_session(
+        self, source_id: str, block_id: str, request: BranchRequest
+    ) -> SessionResponse:
+        """Create a branch child that starts at `block_id`'s entry checkpoint.
+
+        Every precondition failure raises BranchConflict (409); an unknown
+        session raises KeyError (404). The child's restore runs in the
+        background and reports through the recovery_* fields and events.
+        """
+        source = self._sessions.get(source_id)
+        if source is None:
+            raise KeyError("Session not found")
+        if source.status not in _BRANCHABLE_STATUSES:
+            raise BranchConflict(
+                f"Session {source_id} is {SessionStatus(source.status).value}; "
+                "branch only from a session that is idle, stopped or in error."
+            )
+        index = load_blocks(source.output_dir.parent / BLOCKS_FILENAME)
+        blocks = index["blocks"] if index is not None else []
+        block = next((item for item in blocks if item["block_id"] == block_id), None)
+        if block is None:
+            raise BranchConflict(f"Block {block_id} does not exist in session {source_id}.")
+        inherited = block.get("inherited_from")
+        if inherited is not None:
+            # Its entry checkpoint lives in the parent's .checkpoints.
+            raise BranchConflict(
+                f"Block {block_id} is inherited from {inherited['session_id']}; "
+                "branch from it in that session."
+            )
+        entry = block.get("entry")
+        if not entry or not entry.get("checkpoint_id"):
+            raise BranchConflict(
+                f"Block {block_id} was recorded before branching support; it has "
+                "no entry checkpoint."
+            )
+        running = [
+            item["block_id"]
+            for item in blocks
+            if item["index"] < block["index"] and item["status"] == "running"
+        ]
+        if running:
+            raise BranchConflict(
+                f"Blocks {running} before {block_id} are still running, so they "
+                "cannot be inherited; stop the source session first."
+            )
+        checkpoint = load_checkpoint(source.output_dir, entry["checkpoint_id"])
+        if checkpoint is None:
+            raise BranchConflict(
+                f"Entry checkpoint {entry['checkpoint_id']} of block {block_id} is "
+                "missing from the session's checkpoints."
+            )
+        if checkpoint.get("pin_block_id") != block_id:
+            raise BranchConflict(
+                f"Checkpoint {entry['checkpoint_id']} is pinned to "
+                f"{checkpoint.get('pin_block_id')!r}, not to block {block_id}."
+            )
+        self._check_branch_mode(
+            checkpoint,
+            block_id,
+            request.restore_mode,
+            acknowledge_unverified=request.acknowledge_unverified,
+        )
+
+        mode = request.restore_mode
+        suffix = f" · branch from {block_id}"
+        if request.name is not None:
+            name = request.name.strip()
+        else:
+            # The persisted config caps names at 120 characters; shorten the
+            # source name rather than the block reference.
+            name = source.name[: max(0, 120 - len(suffix))].rstrip() + suffix
+        child_id = str(uuid4())
+        child_config = source.config.model_copy(
+            update={"name": name, "initial_prompt": None}
+        )
+        child_resolved_model = resolve_model_info(child_config)
+        now = datetime.utcnow()
+        child = _Session(
+            id=child_id,
+            name=name,
+            config=child_config,
+            status=SessionStatus.recovering,
+            current_agent=str(checkpoint.get("current_agent") or source.current_agent),
+            current_turn=int(checkpoint["turn"]),
+            messages=[],
+            artifacts=[],
+            code_events=[],
+            output_dir=SESSIONS_DIR / child_id / "outputs",
+            events=[],
+            event_condition=asyncio.Condition(),
+            stop_flag=threading.Event(),
+            cancel_response_flag=threading.Event(),
+            user_input_queue=queue.Queue(),
+            created_at=now,
+            updated_at=now,
+            resolved_model=child_resolved_model,
+            resolved_evaluator_model=resolve_evaluator_model_info(
+                child_config, worker_resolved=child_resolved_model
+            ),
+            python_environment=source.python_environment.model_copy(deep=True),
+            parent_session_id=source.id,
+            forked_from_checkpoint_id=checkpoint["checkpoint_id"],
+            forked_from_block_id=block_id,
+            branch_restore_mode=mode,
+            branch_instruction=request.instruction,
+            attempt_number=1,
+            recovery_mode=_BRANCH_RECOVERY_MODE[mode],
+            recovery_status=RecoveryStatus.recovering,
+            recovery_detail="Copying the block's entry checkpoint.",
+            recovery_phase="copying_checkpoint",
+            recovery_step=1,
+            recovery_total_steps=RECOVERY_TOTAL_STEPS,
+            attempts=[
+                {
+                    "attempt_number": 1,
+                    "kind": "branch",
+                    "started_at": now.isoformat(),
+                    "source_session_id": source.id,
+                    "source_block_id": block_id,
+                    "source_checkpoint_id": checkpoint["checkpoint_id"],
+                    "restore_mode": mode.value,
+                    "acknowledge_unverified": request.acknowledge_unverified,
+                    # Enough of the block to re-run the restore on a retry,
+                    # even after the source session is deleted.
+                    "source_block": {
+                        "block_id": block_id,
+                        "index": int(block["index"]),
+                        "title": str(block.get("title") or ""),
+                        "entry": dict(block["entry"]),
+                    },
+                }
+            ],
+        )
+        async with self._lock:
+            self._check_session_limit()
+            child.output_dir.mkdir(parents=True, exist_ok=True)
+            # A placeholder until inherit_blocks copies the parent's blocks.
+            init_blocks(child.output_dir.parent / BLOCKS_FILENAME, child_id)
+            self._deleted_session_ids.discard(child_id)
+            self._sessions[child_id] = child
+        child.logger = _create_session_logger(child_id, child.output_dir.parent)
+        self._save_session(child)
+        child.recovery_task = asyncio.create_task(
+            self._complete_branch(source, child, checkpoint, block)
+        )
+        return child.to_response()
+
+    @staticmethod
+    def _check_branch_mode(
+        checkpoint: Dict[str, Any],
+        block_id: str,
+        mode: BranchRestoreMode,
+        *,
+        acknowledge_unverified: bool,
+    ) -> None:
+        """The restore mode's requirements on the entry checkpoint (§4, A4)."""
+        if mode == BranchRestoreMode.replay:
+            base = checkpoint.get("ledger_base")
+            if base != LEDGER_BASE_ORIGINAL:
+                raise BranchConflict(
+                    f"Replay needs an action ledger that runs from the original "
+                    f"dataset; the entry checkpoint of block {block_id} records "
+                    f"ledger_base={base!r}. Use checkpoint or llm_regen."
+                )
+            if checkpoint.get("fingerprint") is None and not acknowledge_unverified:
+                raise BranchConflict(
+                    f"The entry checkpoint of block {block_id} has no AnnData "
+                    "fingerprint, so a replay cannot be verified. Set "
+                    "acknowledge_unverified to replay anyway."
+                )
+            return
+        if not checkpoint.get("complete"):
+            raise BranchConflict(
+                f"{mode.value} needs a complete entry checkpoint, but the "
+                f"checkpoint of block {block_id} is incomplete"
+                + (
+                    f": {checkpoint['capture_error']}"
+                    if checkpoint.get("capture_error")
+                    else "."
+                )
+            )
+
+    def list_branches(self, session_id: str) -> List[BranchSummary]:
+        """Direct branch children of `session_id`, oldest first."""
+        if session_id not in self._sessions:
+            raise KeyError("Session not found")
+        children = sorted(
+            (
+                item
+                for item in self._sessions.values()
+                if item.parent_session_id == session_id
+                and item.forked_from_block_id is not None
+            ),
+            key=lambda item: item.created_at,
+        )
+        return [
+            BranchSummary(
+                session_id=item.id,
+                name=item.name or item.id[:8],
+                status=item.status,
+                recovery_status=item.recovery_status,
+                forked_from_block_id=item.forked_from_block_id,
+                branch_restore_mode=item.branch_restore_mode,
+                branch_instruction=item.branch_instruction,
+                created_at=item.created_at,
+            )
+            for item in children
+        ]
+
+    def _copy_brief(self, source: _Session, child: _Session) -> None:
+        """Carry the source's frozen brief (Goal) into a fork or branch child."""
+        source_brief = source.output_dir.parent / "brief.json"
+        if source_brief.is_file():
+            shutil.copy2(source_brief, child.output_dir.parent / "brief.json")
+        child.brief = copy.deepcopy(source.brief)
+        child.phase = source.phase
+
+    def _copy_branch_transcript(
+        self, source: _Session, child: _Session, *, entry_turn: int
+    ) -> None:
+        """The child's visible transcript up to the block's entry.
+
+        The entry checkpoint is taken in turn `entry_turn` before the
+        assistant message that opened the block, so its history holds every
+        earlier turn plus turn `entry_turn`'s user message. The transcript
+        matches: earlier turns in full, and only the user message of
+        `entry_turn`.
+        """
+
+        def keep(turn: int, role: str) -> bool:
+            return turn < entry_turn or (turn == entry_turn and role == "user")
+
+        child.messages = [
+            MessageRecord(
+                session_id=child.id,
+                turn=item.turn,
+                role=item.role,
+                agent_name=item.agent_name,
+                content=item.content,
+                is_delegation=item.is_delegation,
+            )
+            for item in source.messages
+            if keep(item.turn, item.role)
+        ]
+        child.code_events = [
+            CodeEventRecord(
+                session_id=child.id,
+                turn=item.turn,
+                agent_name=item.agent_name,
+                source=item.source,
+                stdout=item.stdout,
+                stderr=item.stderr,
+                success=item.success,
+                duration_ms=item.duration_ms,
+            )
+            for item in source.code_events
+            if item.turn < entry_turn
+        ]
+        for source_event in source.events:
+            event_type = source_event.get("type")
+            turn = int(source_event.get("turn", 0) or 0)
+            if event_type not in _RETAINED_EVENT_TYPES:
+                continue
+            if event_type == "error" and bool(
+                (source_event.get("data") or {}).get("fatal")
+            ):
+                continue
+            role = (
+                ((source_event.get("data") or {}).get("message") or {}).get("role")
+                if event_type == "message_complete"
+                else None
+            )
+            if not keep(turn, role or ""):
+                continue
+            child_event = copy.deepcopy(source_event)
+            child_event["session_id"] = child.id
+            # The parent's seq belongs to the parent's log.
+            del child_event["seq"]
+            append_session_event(child, child_event)
+
+    def _branch_artifact_records(
+        self, source: _Session, child: _Session, *, entry_turn: int
+    ) -> List[ArtifactRecord]:
+        """Records for the source artifacts that exist in the child's outputs
+        after the restore, stamped with the child's own file mtimes."""
+        records: List[ArtifactRecord] = []
+        for item in source.artifacts:
+            if item.turn >= entry_turn:
+                continue
+            path = child.output_dir / item.path
+            if not path.is_file():
+                continue
+            records.append(
+                ArtifactRecord(
+                    session_id=child.id,
+                    turn=item.turn,
+                    type=item.type,
+                    filename=item.filename,
+                    mime_type=item.mime_type,
+                    size_bytes=path.stat().st_size,
+                    created_at=item.created_at,
+                    local_path=str(path),
+                    path=item.path,
+                    mtime_ns=path.stat().st_mtime_ns,
+                    action_id=item.action_id,
+                )
+            )
+        return records
+
+    async def _complete_branch(
+        self,
+        source: _Session,
+        child: _Session,
+        checkpoint: Dict[str, Any],
+        block: Dict[str, Any],
+    ) -> None:
+        """Copy the child's starting state from the source, then restore it."""
+        try:
+            if self._is_deleted(child.id):
+                return
+            self._set_recovery_progress(
+                child,
+                phase="copying_checkpoint",
+                detail="Copying the block's entry checkpoint, blocks, work items and brief.",
+                step=1,
+            )
+            checkpoint_id = checkpoint["checkpoint_id"]
+            child_root = child.output_dir.parent / ".checkpoints"
+            child_root.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(
+                shutil.copytree,
+                source.output_dir.parent / ".checkpoints" / checkpoint_id,
+                child_root / checkpoint_id,
+            )
+            # In the child, E is a clean starting point (its history ends
+            # before the block's old attempt), so it is the child's latest
+            # until the child's first turn boundary publishes its own.
+            await asyncio.to_thread(
+                publish_checkpoint_pointer, child.output_dir, checkpoint_id
+            )
+            child.checkpoint_id = checkpoint_id
+            child.checkpoint_turn = int(checkpoint["turn"])
+            child.checkpoint_healthy = bool(checkpoint.get("complete"))
+            skipped: List[str] = []
+            if child.branch_restore_mode != BranchRestoreMode.replay:
+                # Replay regenerates the files, so its output dir starts empty.
+                skipped = await asyncio.to_thread(
+                    copy_unchanged_artifacts,
+                    source.output_dir,
+                    child.output_dir,
+                    manifest=checkpoint.get("artifacts") or [],
+                )
+            if self._is_deleted(child.id):
+                return
+            await asyncio.to_thread(
+                inherit_blocks,
+                source.output_dir.parent / BLOCKS_FILENAME,
+                child.output_dir.parent / BLOCKS_FILENAME,
+                below_index=int(block["index"]),
+                parent_session_id=source.id,
+                child_session_id=child.id,
+            )
+            commit = block["entry"].get("work_items_commit")
+            if commit is not None:
+                child.work_item_store = await asyncio.to_thread(
+                    copy_work_items_at,
+                    source.output_dir.parent / "work-items",
+                    child.output_dir.parent / "work-items",
+                    commit=commit,
+                    child_session_id=child.id,
+                    forked_from_session_id=source.id,
+                )
+            # A null commit: the source had no work-item commits yet, and the
+            # child's store is created empty on first use.
+            await asyncio.to_thread(self._copy_brief, source, child)
+            self._copy_branch_transcript(
+                source, child, entry_turn=int(block["entry"]["turn"])
+            )
+            # A retry re-runs only the restore, so it needs this copy phase
+            # to have completed.
+            child.attempts[0]["prepared"] = True
+            self._save_session(child)
+            await self._restore_branch(child, checkpoint, block, skipped)
+        except Exception as exc:
+            await self._fail_branch(child, str(exc))
+
+    async def _fail_branch(self, child: _Session, detail: str) -> None:
+        """Mark a branch restore failed and release any sandbox it started."""
+        if child.sandbox_manager is not None:
+            sandbox, child.sandbox_manager = child.sandbox_manager, None
+            try:
+                await asyncio.to_thread(sandbox.stop_container)
+            except Exception as stop_exc:
+                detail = f"{detail} (stopping its sandbox also failed: {stop_exc})"
+        child.status = SessionStatus.stopped
+        child.recovery_status = RecoveryStatus.failed
+        child.recovery_detail = detail
+        child.recovery_phase = "failed"
+        self._finish_latest_attempt(child, "recovery_failed")
+        self._save_session(child)
+
+    async def _restore_branch(
+        self,
+        child: _Session,
+        checkpoint: Dict[str, Any],
+        block: Dict[str, Any],
+        skipped: List[str],
+    ) -> None:
+        """Run the child's restore mode (§4, A3) in its new sandbox, then
+        launch its runner with the branch's first user turn."""
+        mode = child.branch_restore_mode
+        if mode == BranchRestoreMode.replay:
+            dataset_source = Path(child.config.dataset_path)
+        else:
+            dataset_source = checkpoint_dataset_path(child.output_dir, checkpoint)
+        runtime = await self._start_recovered_runtime(child, checkpoint, dataset_source)
+        if runtime is None:
+            return
+        llm_client, model_name, driver = runtime
+        emit = self._recovery_progress_emitter(child)
+        self._set_recovery_progress(
+            child,
+            phase="restoring_dataset",
+            detail=(
+                "Loading the original dataset for replay."
+                if mode == BranchRestoreMode.replay
+                else "Loading the AnnData saved at the block's entry."
+            ),
+            step=6,
+        )
+        boot_ok, boot_detail = await asyncio.to_thread(
+            bootstrap_anndata, child.sandbox_manager
+        )
+        if not boot_ok:
+            raise RuntimeError(f"AnnData could not be loaded: {boot_detail}")
+        if mode == BranchRestoreMode.replay:
+            replayed, detail = await asyncio.to_thread(
+                literal_replay,
+                sandbox=child.sandbox_manager,
+                checkpoint=checkpoint,
+                emit=emit,
+            )
+            if not replayed:
+                raise RuntimeError(f"Replay diverged from the recorded attempts: {detail}")
+            expected = checkpoint.get("fingerprint")
+            if expected is None:
+                detail += " The AnnData fingerprint was not verified (no fingerprint; acknowledged)."
+            else:
+                self._set_recovery_progress(
+                    child,
+                    phase="verifying_fingerprint",
+                    detail="Comparing the replayed AnnData with the checkpoint fingerprint.",
+                    step=7,
+                )
+                matched, fingerprint_detail = await asyncio.to_thread(
+                    verify_fingerprint, child.sandbox_manager, expected
+                )
+                if not matched:
+                    raise RuntimeError(fingerprint_detail)
+                detail += " " + fingerprint_detail
+        elif mode == BranchRestoreMode.checkpoint:
+            detail = "Restored the AnnData saved at the block's entry checkpoint."
+        else:
+            rebuilt, detail = await asyncio.to_thread(
+                smart_rebuild,
+                sandbox=child.sandbox_manager,
+                llm_client=llm_client,
+                model_name=model_name,
+                current_agent_prompt=driver.get_full_prompt(None),
+                checkpoint=checkpoint,
+                emit=emit,
+            )
+            if not rebuilt:
+                raise RuntimeError(f"LLM regeneration failed: {detail}")
+        if skipped:
+            detail += (
+                " Output files not copied because they changed or are missing "
+                f"since the checkpoint: {', '.join(skipped)}."
+            )
+        if self._is_deleted(child.id):
+            await asyncio.to_thread(child.sandbox_manager.stop_container)
+            return
+        entry_turn = int(block["entry"]["turn"])
+        source = self._sessions.get(child.parent_session_id or "")
+        if source is not None:
+            child.artifacts = self._branch_artifact_records(
+                source, child, entry_turn=entry_turn
+            )
+        child.recovery_detail = detail
+        self._set_recovery_progress(
+            child,
+            phase="finalizing",
+            detail="Restore checks passed; starting the branch's runner.",
+            step=8,
+        )
+        child.recovery_detail = detail
+        child.recovery_status = RecoveryStatus.recovered
+        child.recovery_phase = "completed"
+        self._save_session(child)
+        self._emit_recovery_completed(child)
+        title = str(block.get("title") or "")
+        await self._launch_recovered_runner(
+            child,
+            branch_turn=(
+                f'[Branch from {block["block_id"]} "{title}" · {mode.value}]\n'
+                f"{child.branch_instruction}"
+            ),
+        )
 
     async def retry_recovery(
         self, session_id: str, request: SessionResumeRequest
@@ -437,6 +1038,14 @@ class SessionManager:
         }:
             raise ValueError("Only partial or failed recovery can be retried")
         self._validate_recovery_request(request)
+        if session.forked_from_block_id is not None:
+            return await self._retry_branch_recovery(session, request)
+        async with self._lock:
+            # A retry starts a new container. The session's own partial
+            # sandbox is not counted: its status is stopped.
+            self._check_session_limit()
+            self._apply_target_mode(session, request)
+            session.status = SessionStatus.recovering
         if session.sandbox_manager is not None:
             try:
                 await asyncio.to_thread(session.sandbox_manager.stop_container)
@@ -464,13 +1073,123 @@ class SessionManager:
         session.recovery_detail = (
             "Reloading the latest safe checkpoint for a clean retry."
         )
-        session.status = SessionStatus.recovering
-        self._apply_target_mode(session, request)
         self._save_session(session)
         session.recovery_task = asyncio.create_task(
             self._recover_session(session, request)
         )
         return session.to_response()
+
+    async def _retry_branch_recovery(
+        self, session: _Session, request: SessionResumeRequest
+    ) -> SessionResponse:
+        """Retry a branch child's restore against its block-entry checkpoint.
+
+        The requested recovery mode maps to a branch mode (smart → llm_regen,
+        literal_replay → replay); checkpoint mode is retried by branching
+        again. The mode's requirements apply exactly as on the branch
+        endpoint, and the branch instruction is queued again.
+        """
+        mode = {
+            RecoveryMode.smart: BranchRestoreMode.llm_regen,
+            RecoveryMode.literal_replay: BranchRestoreMode.replay,
+        }[request.recovery_mode]
+        branch_attempt = next(
+            (item for item in session.attempts if item.get("kind") == "branch"), None
+        )
+        if branch_attempt is None or "source_block" not in branch_attempt:
+            raise BranchConflict(
+                f"Session {session.id} has no record of the block it branched "
+                "from; branch from the parent again."
+            )
+        if not branch_attempt.get("prepared"):
+            raise BranchConflict(
+                f"Branch {session.id} never finished copying its blocks, work "
+                "items and transcript from the parent; branch again instead."
+            )
+        block = branch_attempt["source_block"]
+        block_id = session.forked_from_block_id
+        checkpoint = load_checkpoint(session.output_dir, session.forked_from_checkpoint_id)
+        if checkpoint is None:
+            raise BranchConflict(
+                f"Entry checkpoint {session.forked_from_checkpoint_id} of block "
+                f"{block_id} is missing from the branch's checkpoints."
+            )
+        self._check_branch_mode(
+            checkpoint,
+            block_id,
+            mode,
+            acknowledge_unverified=bool(branch_attempt.get("acknowledge_unverified")),
+        )
+        if mode != BranchRestoreMode.replay and (
+            self._sessions.get(session.parent_session_id or "") is None
+        ):
+            raise BranchConflict(
+                f"{mode.value} copies output files from the parent session, "
+                "which no longer exists."
+            )
+        async with self._lock:
+            self._check_session_limit()
+            self._apply_target_mode(session, request)
+            session.status = SessionStatus.recovering
+        if session.sandbox_manager is not None:
+            sandbox, session.sandbox_manager = session.sandbox_manager, None
+            await asyncio.to_thread(sandbox.stop_container)
+        self._finish_latest_attempt(session, "recovery_failed")
+        session.attempt_number += 1
+        session.attempts.append(
+            {
+                "attempt_number": session.attempt_number,
+                "kind": "branch_retry",
+                "started_at": datetime.utcnow().isoformat(),
+                "source_checkpoint_id": checkpoint["checkpoint_id"],
+                "restore_mode": mode.value,
+            }
+        )
+        session.branch_restore_mode = mode
+        session.recovery_mode = _BRANCH_RECOVERY_MODE[mode]
+        session.recovery_status = RecoveryStatus.recovering
+        session.recovery_phase = "copying_checkpoint"
+        session.recovery_step = 1
+        session.recovery_total_steps = RECOVERY_TOTAL_STEPS
+        session.recovery_substep = None
+        session.recovery_substep_total = None
+        session.recovery_detail = (
+            f"Retrying the branch restore in {mode.value} mode from block "
+            f"{block_id}'s entry checkpoint."
+        )
+        self._save_session(session)
+        session.recovery_task = asyncio.create_task(
+            self._retry_branch(session, checkpoint, block)
+        )
+        return session.to_response()
+
+    async def _retry_branch(
+        self, child: _Session, checkpoint: Dict[str, Any], block: Dict[str, Any]
+    ) -> None:
+        """Reset the child's outputs for `branch_restore_mode`, then restore."""
+        try:
+            # The runner never ran (the restore failed), so everything in the
+            # output dir is a byproduct of the failed restore.
+            if child.output_dir.exists():
+                await asyncio.to_thread(shutil.rmtree, child.output_dir)
+            child.output_dir.mkdir(parents=True)
+            skipped: List[str] = []
+            if child.branch_restore_mode != BranchRestoreMode.replay:
+                source = self._sessions.get(child.parent_session_id or "")
+                if source is None:
+                    raise RuntimeError(
+                        "the parent session no longer exists, so its output "
+                        "files cannot be copied"
+                    )
+                skipped = await asyncio.to_thread(
+                    copy_unchanged_artifacts,
+                    source.output_dir,
+                    child.output_dir,
+                    manifest=checkpoint.get("artifacts") or [],
+                )
+            await self._restore_branch(child, checkpoint, block, skipped)
+        except Exception as exc:
+            await self._fail_branch(child, str(exc))
 
     async def accept_partial_recovery(self, session_id: str) -> SessionResponse:
         session = self._sessions.get(session_id)
@@ -527,13 +1246,18 @@ class SessionManager:
                     "total_steps": RECOVERY_TOTAL_STEPS,
                     "substep": substep,
                     "substep_total": substep_total,
-                    "mode": session.recovery_mode.value
-                    if session.recovery_mode
-                    else None,
+                    "mode": self._recovery_mode_label(session),
                     "attempt_number": session.attempt_number,
                 },
             },
         )
+
+    @staticmethod
+    def _recovery_mode_label(session: _Session) -> Optional[str]:
+        """A branch child reports its restore mode; other sessions their recovery mode."""
+        if session.branch_restore_mode is not None:
+            return session.branch_restore_mode.value
+        return session.recovery_mode.value if session.recovery_mode else None
 
     def _emit_recovery_completed(
         self, session: _Session, *, accepted_partial: bool = False
@@ -546,9 +1270,7 @@ class SessionManager:
                 "turn": session.current_turn,
                 "timestamp": datetime.utcnow().isoformat(),
                 "data": {
-                    "mode": session.recovery_mode.value
-                    if session.recovery_mode
-                    else "best_effort",
+                    "mode": self._recovery_mode_label(session) or "best_effort",
                     "attempt_number": session.attempt_number,
                     "checkpoint_id": session.checkpoint_id,
                     "checkpoint_turn": session.checkpoint_turn,
@@ -631,6 +1353,8 @@ class SessionManager:
             if self._is_deleted(child.id):
                 return
             await asyncio.to_thread(self._fork_work_items, source, child)
+            # The fork keeps the source's Goal (frozen brief).
+            await asyncio.to_thread(self._copy_brief, source, child)
             if self._is_deleted(child.id):
                 return
             source_checkpoint_dir = (
@@ -700,16 +1424,7 @@ class SessionManager:
                 for item in source.code_events
                 if item.turn <= checkpoint["turn"]
             ]
-            retained_event_types = {
-                "message_complete",
-                "system_message",
-                "recovery_completed",
-                "agent_switch",
-                "code_submitted",
-                "code_result",
-                "artifact",
-                "error",
-            }
+            retained_event_types = _RETAINED_EVENT_TYPES
             # Recovery-progress events already emitted on the child stay in
             # its log; the retained history is appended after them under the
             # child's own seq counter.
@@ -786,148 +1501,18 @@ class SessionManager:
                     pass
             if self._is_deleted(session.id):
                 return
-            load_dotenv(dotenv_path=ENV_FILE, override=True)
-            from caribou.agents.AgentSystem import AgentSystem
-
-            self._set_recovery_progress(
-                session,
-                phase="loading_configuration",
-                detail="Loading the agent system and selected LLM backend.",
-                step=3,
-            )
-            agent_system = AgentSystem.load_from_json(
-                str(find_blueprint(session.config.agent_system))
-            )
-            state = dict(checkpoint.get("runner_state") or {})
-            current_name = state.get("current_agent_name") or next(
-                iter(agent_system.agents)
-            )
-            driver = agent_system.get_agent(current_name) or agent_system.get_agent(
-                next(iter(agent_system.agents))
-            )
-            session.agent_system = agent_system
-            session.brief_policy = resolve_brief_policy(
-                agent_system.brief_policy, session.config.brief_mode
-            )
-            session.driver_agent = driver
-            session.current_agent = driver.name
-            llm_client, model_name = build_llm_client(session.config)
-            session.llm_client = llm_client
-            session.model_name = model_name
-            session.resolved_model = resolve_model_info(
-                session.config, resolved_model_name=model_name
-            )
-            (
-                session.evaluator_llm_client,
-                session.evaluator_model_name,
-                session.resolved_evaluator_model,
-            ) = build_evaluator_client(
-                session.config,
-                worker_client=llm_client,
-                worker_model_name=model_name,
-            )
             dataset_source = (
                 Path(session.config.dataset_path)
                 if request.recovery_mode == RecoveryMode.literal_replay
                 else checkpoint_dataset_path(session.output_dir, checkpoint)
             )
-            runtime_config = session.config.model_copy(
-                update={"dataset_path": str(dataset_source)}
+            runtime = await self._start_recovered_runtime(
+                session, checkpoint, dataset_source
             )
-            self._set_recovery_progress(
-                session,
-                phase="starting_sandbox",
-                detail=(
-                    f"Starting a fresh {session.config.sandbox_type.value} sandbox; "
-                    "container startup can take a little while."
-                ),
-                step=4,
-            )
-            sandbox_manager = await asyncio.to_thread(
-                build_sandbox, runtime_config, session.output_dir
-            )
-            if self._is_deleted(session.id):
-                try:
-                    await asyncio.to_thread(sandbox_manager.stop_container)
-                except Exception:
-                    pass
+            if runtime is None:
                 return
-            try:
-                assert_environment_unchanged(
-                    session.python_environment,
-                    getattr(
-                        sandbox_manager,
-                        "python_environment",
-                        session.python_environment,
-                    ),
-                )
-            except Exception:
-                await asyncio.to_thread(sandbox_manager.stop_container)
-                raise
-            session.sandbox_manager = sandbox_manager
-            session.python_environment = getattr(
-                sandbox_manager, "python_environment", session.python_environment
-            )
-            self._save_session(session)
-            session.analysis_context = textwrap.dedent(f"""\
-                Primary dataset path: **{SANDBOX_DATA_PATH}**
-
-                RECOVERED SESSION: durable AnnData, transcript, action history, and files were restored.
-                Arbitrary Python globals, open handles, GPU objects, and external process state were not directly restored.
-                Save all generated outputs to /workspace/outputs/.
-            """).strip()
-            self._set_recovery_progress(
-                session,
-                phase="restoring_history",
-                detail="Restoring transcript, memory state, runner position, and copied files.",
-                step=5,
-            )
-            history = [dict(item) for item in checkpoint.get("history", [])]
-            if not history or history[0].get("role") != "system":
-                history = [
-                    {
-                        "role": "system",
-                        "content": f"**GLOBAL POLICY**: {agent_system.global_policy}\n",
-                    },
-                    {
-                        "role": "system",
-                        "content": driver.get_full_prompt(None)
-                        + "\n\n"
-                        + session.analysis_context,
-                    },
-                    *history,
-                ]
-            session.initial_history = history[:2]
-            session.resume_history = history
-            session.resume_runner_state = state
-            session.resume_memory_state = checkpoint.get("memory")
-
-            loop = asyncio.get_running_loop()
-
-            def emit(progress: Dict[str, Any]) -> None:
-                phase = str(progress.get("phase") or "verifying_recovery")
-                substep = int(progress.get("step", 0) or 0) or None
-                substep_total = int(progress.get("total", 0) or 0) or None
-                if phase == "literal_replay":
-                    detail = (
-                        f"Replaying recorded code attempt {substep} of {substep_total}, "
-                        "including attempts that originally failed."
-                    )
-                else:
-                    detail = (
-                        f"Agent-guided environment rebuild attempt {substep} of "
-                        f"{substep_total}."
-                    )
-                loop.call_soon_threadsafe(
-                    lambda: self._set_recovery_progress(
-                        session,
-                        phase=phase,
-                        detail=detail,
-                        step=7,
-                        substep=substep,
-                        substep_total=substep_total,
-                    )
-                )
+            llm_client, model_name, driver = runtime
+            emit = self._recovery_progress_emitter(session)
 
             if request.recovery_mode == RecoveryMode.smart:
                 self._set_recovery_progress(
@@ -1008,7 +1593,171 @@ class SessionManager:
             self._finish_latest_attempt(session, "recovery_failed")
             self._save_session(session)
 
-    async def _launch_recovered_runner(self, session: _Session) -> None:
+    async def _start_recovered_runtime(
+        self, session: _Session, checkpoint: Dict[str, Any], dataset_source: Path
+    ) -> Optional[tuple]:
+        """Steps 3-5 of a recovery: agent system, LLM clients, a fresh sandbox
+        holding `dataset_source` as its primary dataset, and the restored
+        transcript/runner position from `checkpoint`.
+
+        Returns `(llm_client, model_name, driver)`, or None when the session
+        was deleted meanwhile (its new sandbox is then stopped).
+        """
+        load_dotenv(dotenv_path=ENV_FILE, override=True)
+        from caribou.agents.AgentSystem import AgentSystem
+
+        self._set_recovery_progress(
+            session,
+            phase="loading_configuration",
+            detail="Loading the agent system and selected LLM backend.",
+            step=3,
+        )
+        agent_system = AgentSystem.load_from_json(
+            str(find_blueprint(session.config.agent_system))
+        )
+        state = dict(checkpoint.get("runner_state") or {})
+        current_name = state.get("current_agent_name") or next(
+            iter(agent_system.agents)
+        )
+        driver = agent_system.get_agent(current_name) or agent_system.get_agent(
+            next(iter(agent_system.agents))
+        )
+        session.agent_system = agent_system
+        session.brief_policy = resolve_brief_policy(
+            agent_system.brief_policy, session.config.brief_mode
+        )
+        session.driver_agent = driver
+        session.current_agent = driver.name
+        llm_client, model_name = build_llm_client(session.config)
+        session.llm_client = llm_client
+        session.model_name = model_name
+        session.resolved_model = resolve_model_info(
+            session.config, resolved_model_name=model_name
+        )
+        (
+            session.evaluator_llm_client,
+            session.evaluator_model_name,
+            session.resolved_evaluator_model,
+        ) = build_evaluator_client(
+            session.config,
+            worker_client=llm_client,
+            worker_model_name=model_name,
+        )
+        runtime_config = session.config.model_copy(
+            update={"dataset_path": str(dataset_source)}
+        )
+        self._set_recovery_progress(
+            session,
+            phase="starting_sandbox",
+            detail=(
+                f"Starting a fresh {session.config.sandbox_type.value} sandbox; "
+                "container startup can take a little while."
+            ),
+            step=4,
+        )
+        sandbox_manager = await asyncio.to_thread(
+            build_sandbox, runtime_config, session.output_dir
+        )
+        if self._is_deleted(session.id):
+            try:
+                await asyncio.to_thread(sandbox_manager.stop_container)
+            except Exception:
+                pass
+            return None
+        try:
+            assert_environment_unchanged(
+                session.python_environment,
+                getattr(
+                    sandbox_manager,
+                    "python_environment",
+                    session.python_environment,
+                ),
+            )
+        except Exception:
+            await asyncio.to_thread(sandbox_manager.stop_container)
+            raise
+        session.sandbox_manager = sandbox_manager
+        session.python_environment = getattr(
+            sandbox_manager, "python_environment", session.python_environment
+        )
+        self._save_session(session)
+        session.analysis_context = textwrap.dedent(f"""\
+            Primary dataset path: **{SANDBOX_DATA_PATH}**
+
+            RECOVERED SESSION: durable AnnData, transcript, action history, and files were restored.
+            Arbitrary Python globals, open handles, GPU objects, and external process state were not directly restored.
+            Save all generated outputs to /workspace/outputs/.
+        """).strip()
+        self._set_recovery_progress(
+            session,
+            phase="restoring_history",
+            detail="Restoring transcript, memory state, runner position, and copied files.",
+            step=5,
+        )
+        history = [dict(item) for item in checkpoint.get("history", [])]
+        if not history or history[0].get("role") != "system":
+            history = [
+                {
+                    "role": "system",
+                    "content": f"**GLOBAL POLICY**: {agent_system.global_policy}\n",
+                },
+                {
+                    "role": "system",
+                    "content": driver.get_full_prompt(None)
+                    + "\n\n"
+                    + session.analysis_context,
+                },
+                *history,
+            ]
+        session.initial_history = history[:2]
+        session.resume_history = history
+        session.resume_runner_state = state
+        session.resume_memory_state = checkpoint.get("memory")
+
+        return llm_client, model_name, driver
+
+    def _recovery_progress_emitter(self, session: _Session):
+        """A thread-safe `emit` for literal_replay / smart_rebuild progress."""
+        loop = asyncio.get_running_loop()
+
+        def emit(progress: Dict[str, Any]) -> None:
+            phase = str(progress.get("phase") or "verifying_recovery")
+            substep = int(progress.get("step", 0) or 0) or None
+            substep_total = int(progress.get("total", 0) or 0) or None
+            if phase == "literal_replay":
+                detail = (
+                    f"Replaying recorded code attempt {substep} of {substep_total}, "
+                    "including attempts that originally failed."
+                )
+            else:
+                detail = (
+                    f"Agent-guided environment rebuild attempt {substep} of "
+                    f"{substep_total}."
+                )
+            loop.call_soon_threadsafe(
+                lambda: self._set_recovery_progress(
+                    session,
+                    phase=phase,
+                    detail=detail,
+                    step=7,
+                    substep=substep,
+                    substep_total=substep_total,
+                )
+            )
+
+        return emit
+
+    async def _launch_recovered_runner(
+        self, session: _Session, *, branch_turn: Optional[str] = None
+    ) -> None:
+        """Start the runner of a recovered session.
+
+        `branch_turn` (branch children only) is the branch's first user turn.
+        Interactive: it is pre-loaded onto the fresh `user_input_queue`, which
+        the runner (start_waiting) takes as its first input. Auto: the runner
+        reads no queue, so it is appended to the restored history as the last
+        user message, and the runner continues from it.
+        """
         session.stop_flag.clear()
         session.cancel_response_flag.clear()
         session.user_input_queue = queue.Queue()
@@ -1019,7 +1768,7 @@ class SessionManager:
             "role": "system",
             "content": (
                 f"RECOVERY NOTICE (attempt {session.attempt_number}): a fresh sandbox was "
-                f"created using {session.recovery_mode.value if session.recovery_mode else 'best-effort'} recovery. "
+                f"created using {self._recovery_mode_label(session) or 'best-effort'} recovery. "
                 "The checkpointed AnnData, files, transcript, and recorded memory were restored. "
                 "Arbitrary Python globals, open handles, GPU objects, and external process state "
                 "were not directly restored; verify or rebuild transient state before relying on it. "
@@ -1067,6 +1816,34 @@ class SessionManager:
                         "data": {
                             "content": model_notice["content"],
                             "category": "Configuration change",
+                        },
+                    },
+                )
+        if branch_turn is not None:
+            if session.config.mode == SessionMode.interactive:
+                # After the queue reset above, before the runner thread first
+                # reads it (A7); never via send_user_message, which refuses
+                # messages while the session is still `recovering`.
+                session.user_input_queue.put(UserTurn(content=branch_turn, block_id=None))
+            else:
+                history.append({"role": "user", "content": branch_turn})
+                turn = session.current_turn + 1
+                self._on_event(
+                    session,
+                    {
+                        "type": "message_complete",
+                        "session_id": session.id,
+                        "turn": turn,
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "data": {
+                            "message": {
+                                "id": f"msg_{session.id}_branch_turn",
+                                "turn": turn,
+                                "role": "user",
+                                "agent_name": "",
+                                "content": branch_turn,
+                                "timestamp": datetime.utcnow().isoformat(),
+                            }
                         },
                     },
                 )
@@ -1716,6 +2493,18 @@ class SessionManager:
                     "in this session.",
                 )
                 return False
+            block = next(b for b in index["blocks"] if b["block_id"] == block_id)
+            if block.get("inherited_from") is not None:
+                # Inherited blocks are immutable in a branch (A5); focusing
+                # one would fail the runner.
+                self._reject_user_message(
+                    session,
+                    "INHERITED_BLOCK",
+                    f"Message not delivered: block {block_id} is inherited from "
+                    f"session {block['inherited_from']['session_id']} and cannot "
+                    "be focused in this branch.",
+                )
+                return False
         self._on_event(
             session,
             {
@@ -1870,6 +2659,21 @@ class SessionManager:
                 return
             loop.call_soon_threadsafe(self._checkpoint_published, session, checkpoint)
 
+        def _block_entry_checkpoint(
+            entry_history: List[Dict], entry_state: Dict[str, Any], block_id: str
+        ) -> Dict[str, Any]:
+            # Called synchronously in the runner thread before a new block's
+            # first action. Never published (A1): it is taken mid-turn, so
+            # resume and fork must not load it as latest. Whatever it raises
+            # propagates to the runner as a runner error.
+            return capture_checkpoint(
+                session=session,
+                history=entry_history,
+                runner_state=entry_state,
+                pin_block_id=block_id,
+                publish=False,
+            )
+
         async def _guarded_runner() -> None:
             # Ensures the sandbox is torn down and the stop flag reset even if the
             # runner task is cancelled mid-turn (e.g., session deleted, server
@@ -1896,6 +2700,7 @@ class SessionManager:
                     memory_manager=memory_manager,
                     report_memory=report_memory,
                     checkpoint_callback=_checkpoint_callback,
+                    block_entry_checkpoint=_block_entry_checkpoint,
                     resume_state=resume_state,
                     start_waiting=start_waiting,
                     work_item_store=self._work_item_store(session),

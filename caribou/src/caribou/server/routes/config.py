@@ -6,9 +6,9 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from dotenv import load_dotenv, set_key
+from dotenv import dotenv_values, load_dotenv, set_key, unset_key
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictInt
 
 import shutil
 
@@ -36,6 +36,10 @@ from caribou.server.models import (
     PythonEnvironmentPathRequest,
     SaveBlueprintRequest,
     ServerStatus,
+)
+from caribou.server.session_state import (
+    MAX_ACTIVE_SESSIONS_KEY,
+    read_max_active_sessions,
 )
 from caribou.server.ollama_service import (
     DEFAULT_OLLAMA_MODEL,
@@ -206,6 +210,8 @@ class ServerSettings(BaseModel):
     api_keys: Dict[str, str]  # key name → masked value
     ollama_host: str
     ollama_model: str
+    # None = no limit on sessions holding a live sandbox container.
+    max_active_sessions: Optional[int] = None
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -216,6 +222,9 @@ class UpdateSettingsRequest(BaseModel):
     openrouter_api_key: Optional[str] = None
     ollama_host: Optional[str] = None
     ollama_model: Optional[str] = None
+    # An int >= 1 sets the limit; an explicit JSON null removes it; omitting
+    # the field leaves it unchanged.
+    max_active_sessions: Optional[StrictInt] = Field(default=None, ge=1)
 
 
 @router.get("/settings", response_model=ServerSettings)
@@ -240,6 +249,7 @@ async def get_settings() -> ServerSettings:
         },
         ollama_host=normalize_host(os.environ.get("OLLAMA_HOST")),
         ollama_model=os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
+        max_active_sessions=read_max_active_sessions(ENV_FILE),
     )
 
 
@@ -277,6 +287,22 @@ async def update_settings(body: UpdateSettingsRequest) -> dict:
             raise HTTPException(400, f"Cannot create sessions directory: {exc}")
         set_key(str(ENV_FILE), "CARIBOU_SESSIONS_DIR", str(p))
         updated.append("CARIBOU_SESSIONS_DIR")
+
+    if "max_active_sessions" in body.model_fields_set:
+        if body.max_active_sessions is None:
+            if MAX_ACTIVE_SESSIONS_KEY in dotenv_values(ENV_FILE):
+                removed, _ = unset_key(str(ENV_FILE), MAX_ACTIVE_SESSIONS_KEY)
+                if not removed:
+                    raise HTTPException(
+                        500, f"Could not remove {MAX_ACTIVE_SESSIONS_KEY} from {ENV_FILE}"
+                    )
+            # load_dotenv below never unsets a key, so drop it here too.
+            os.environ.pop(MAX_ACTIVE_SESSIONS_KEY, None)
+        else:
+            set_key(
+                str(ENV_FILE), MAX_ACTIVE_SESSIONS_KEY, str(body.max_active_sessions)
+            )
+        updated.append(MAX_ACTIVE_SESSIONS_KEY)
 
     load_dotenv(dotenv_path=ENV_FILE, override=True)
     return {"updated": updated}

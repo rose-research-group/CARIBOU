@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict
 
 from caribou.server.models import (
     ArtifactRecord,
+    BranchRestoreMode,
     CodeEventRecord,
     MessageRecord,
     ResolvedModelInfo,
@@ -97,6 +98,13 @@ def save_session(
             "event_seq_reserved": session.event_seq + SEQ_RESERVATION_BLOCK,
             "parent_session_id": session.parent_session_id,
             "forked_from_checkpoint_id": session.forked_from_checkpoint_id,
+            "forked_from_block_id": session.forked_from_block_id,
+            "branch_restore_mode": (
+                session.branch_restore_mode.value
+                if session.branch_restore_mode is not None
+                else None
+            ),
+            "branch_instruction": session.branch_instruction,
             "attempt_number": session.attempt_number,
             "attempts": session.attempts,
             "recovery_mode": (
@@ -245,6 +253,14 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
                 python_environment=python_environment,
                 parent_session_id=data.get("parent_session_id"),
                 forked_from_checkpoint_id=data.get("forked_from_checkpoint_id"),
+                # Absent from files written before branching existed.
+                forked_from_block_id=data.get("forked_from_block_id"),
+                branch_restore_mode=(
+                    BranchRestoreMode(data["branch_restore_mode"])
+                    if data.get("branch_restore_mode")
+                    else None
+                ),
+                branch_instruction=data.get("branch_instruction"),
                 attempt_number=max(1, int(data.get("attempt_number", 1))),
                 recovery_mode=(
                     RecoveryMode(data["recovery_mode"])

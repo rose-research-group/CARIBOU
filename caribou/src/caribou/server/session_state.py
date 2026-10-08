@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from dotenv import dotenv_values
+
 from caribou.config import CARIBOU_HOME
 from caribou.core.python_environments import (
     PythonEnvironmentKind,
@@ -22,6 +24,7 @@ from caribou.core.python_environments import (
 )
 from caribou.server.models import (
     ArtifactRecord,
+    BranchRestoreMode,
     CodeEventRecord,
     EvaluatorModelState,
     MemoryConfigResponse,
@@ -41,6 +44,36 @@ SESSIONS_DIR = CARIBOU_HOME / "server_sessions"
 # Sandbox paths mounted inside every session's container
 SANDBOX_DATA_PATH = "/workspace/dataset.h5ad"
 SANDBOX_REF_DATA_PATH = "/workspace/reference.h5ad"
+
+# Settings key (in the server .env) capping how many sessions may hold a live
+# sandbox container at once. Unset means no limit.
+MAX_ACTIVE_SESSIONS_KEY = "CARIBOU_MAX_ACTIVE_SESSIONS"
+
+
+def read_max_active_sessions(env_file: Path) -> Optional[int]:
+    """The active-session limit stored in `env_file`, or None when unset.
+
+    Read from the file itself (not os.environ): `load_dotenv` never removes a
+    key that was unset in the file, so the process environment can hold a
+    stale value. A stored value that is not a positive integer raises.
+    """
+    if not Path(env_file).is_file():
+        return None
+    raw = dotenv_values(env_file).get(MAX_ACTIVE_SESSIONS_KEY)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        value = int(raw.strip())
+    except ValueError as exc:
+        raise ValueError(
+            f"{MAX_ACTIVE_SESSIONS_KEY}={raw!r} in {env_file} is not an integer"
+        ) from exc
+    if value < 1:
+        raise ValueError(
+            f"{MAX_ACTIVE_SESSIONS_KEY}={raw!r} in {env_file} must be at least 1"
+        )
+    return value
+
 
 # Events that don't need to be persisted mid-stream (too frequent)
 SKIP_PERSIST_TYPES = {"token", "pong"}
@@ -181,6 +214,11 @@ class _Session:
     memory_manager: Any = None
     parent_session_id: Optional[str] = None
     forked_from_checkpoint_id: Optional[str] = None
+    # Branch lineage (POST /blocks/{block_id}/branch); all None on sessions
+    # that are not branch children.
+    forked_from_block_id: Optional[str] = None
+    branch_restore_mode: Optional[BranchRestoreMode] = None
+    branch_instruction: Optional[str] = None
     attempt_number: int = 1
     recovery_mode: Optional[RecoveryMode] = None
     recovery_status: RecoveryStatus = RecoveryStatus.none
@@ -287,6 +325,9 @@ class _Session:
             ),
             parent_session_id=self.parent_session_id,
             forked_from_checkpoint_id=self.forked_from_checkpoint_id,
+            forked_from_block_id=self.forked_from_block_id,
+            branch_restore_mode=self.branch_restore_mode,
+            branch_instruction=self.branch_instruction,
             attempt_number=self.attempt_number,
             recovery_mode=self.recovery_mode,
             recovery_status=self.recovery_status,
