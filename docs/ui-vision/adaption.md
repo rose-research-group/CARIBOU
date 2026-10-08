@@ -93,6 +93,8 @@ These fixes are worth doing even if the workbench never ships. Every item was ch
 
 Each step keeps the CLI text view and the chat view working.
 
+**Status (2026-10-08):** step 0 and steps 1–3 are implemented on this branch. The block code is `execution/blocks.py`, `GET /api/sessions/{id}/blocks`, the CLI `/blocks` command, `SessionStore`, and `pages/session/workbench/` (open it with `?view=workbench`). Code that runs with no active work item goes to an implicit "no work item" block. Steps 4–6 are not started.
+
 **Step 1: tag every event with its block.**
 - Add `block_id` to `code_submitted`, `code_result`, `agent_switch` and `artifact` payloads in both loops, from one shared helper.
 - Add `action_id` to artifact events.
