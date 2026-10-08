@@ -85,7 +85,8 @@ from caribou.server.session_state import (
     SESSIONS_DIR,
     SKIP_PERSIST_TYPES,
     _Session,
-    trim_events,
+    append_session_event,
+    seq_reservation_exhausted,
 )
 from caribou.execution.session_recovery import (
     bootstrap_anndata,
@@ -649,10 +650,6 @@ class SessionManager:
             for item in source.artifacts:
                 if item.turn > checkpoint["turn"]:
                     continue
-                try:
-                    relative_path = Path(item.local_path).relative_to(source.output_dir)
-                except (TypeError, ValueError):
-                    relative_path = Path(item.filename)
                 child.artifacts.append(
                     ArtifactRecord(
                         session_id=child.id,
@@ -662,7 +659,10 @@ class SessionManager:
                         mime_type=item.mime_type,
                         size_bytes=item.size_bytes,
                         created_at=item.created_at,
-                        local_path=str(child.output_dir / relative_path),
+                        local_path=str(child.output_dir / item.path),
+                        path=item.path,
+                        mtime_ns=item.mtime_ns,
+                        action_id=item.action_id,
                     )
                 )
             child.code_events = [
@@ -689,7 +689,9 @@ class SessionManager:
                 "artifact",
                 "error",
             }
-            child.events = []
+            # Recovery-progress events already emitted on the child stay in
+            # its log; the retained history is appended after them under the
+            # child's own seq counter.
             for source_event in source.events:
                 if (
                     source_event.get("type") not in retained_event_types
@@ -702,7 +704,9 @@ class SessionManager:
                     continue
                 child_event = copy.deepcopy(source_event)
                 child_event["session_id"] = child.id
-                child.events.append(child_event)
+                # The parent's seq belongs to the parent's log.
+                del child_event["seq"]
+                append_session_event(child, child_event)
             child.recovery_status = RecoveryStatus.recovering
             child.status = SessionStatus.recovering
             self._save_session(child)
@@ -1510,16 +1514,16 @@ class SessionManager:
                 ):
                     session.status = SessionStatus.stopped
                     session.updated_at = datetime.utcnow()
-                    session.events.append(
+                    append_session_event(
+                        session,
                         {
                             "type": "status_change",
                             "session_id": session.id,
                             "turn": session.current_turn,
                             "timestamp": session.updated_at.isoformat(),
                             "data": {"status": "stopped", "reason": "server shutdown"},
-                        }
+                        },
                     )
-                    trim_events(session.events)
                     self._save_session(session)
 
             if session.logger:
@@ -1729,6 +1733,12 @@ class SessionManager:
                     brief_decision_queue=(
                         session.brief_decision_queue if not is_auto else None
                     ),
+                    brief=session.brief,
+                    # Files already recorded (e.g. before a resume) are not
+                    # re-emitted unless they change.
+                    known_artifacts={
+                        record.path: record.mtime_ns for record in session.artifacts
+                    },
                 )
             except asyncio.CancelledError:
                 # Propagate after cleanup so shutdown_all/delete_session can await it.
@@ -1778,10 +1788,11 @@ class SessionManager:
 
     def append_event(self, session: _Session, event: Dict[str, Any]) -> None:
         """Synchronously append event and update derived state."""
-        session.events.append(event)
-        trim_events(session.events)
-        session.updated_at = datetime.utcnow()
+        # Derived state first: if the event is inconsistent (e.g. a
+        # code_result with no code_submitted) it raises before being logged.
         self._process_event(session, event)
+        append_session_event(session, event)
+        session.updated_at = datetime.utcnow()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1791,11 +1802,14 @@ class SessionManager:
         """Called from run_session_async (main thread via call_soon_threadsafe)."""
         if self._is_deleted(session.id):
             return
-        session.events.append(event)
-        trim_events(session.events)
-        session.updated_at = datetime.utcnow()
+        # Derived state first: if the event is inconsistent (e.g. a
+        # code_result with no code_submitted) it raises before being logged.
         self._process_event(session, event)
-        if event.get("type") not in SKIP_PERSIST_TYPES:
+        append_session_event(session, event)
+        session.updated_at = datetime.utcnow()
+        if event.get("type") not in SKIP_PERSIST_TYPES or seq_reservation_exhausted(
+            session
+        ):
             self._save_session(session)
         asyncio.ensure_future(self._notify_condition(session))
 
@@ -1860,13 +1874,29 @@ class SessionManager:
         elif t == "agent_switch":
             session.current_agent = data.get("to_agent", session.current_agent)
 
+        elif t == "code_submitted":
+            action_id = data["action_id"]
+            if action_id in session.pending_code_sources:
+                raise RuntimeError(
+                    f"code_submitted for action {action_id!r} while an earlier "
+                    "submission of it has no code_result yet"
+                )
+            session.pending_code_sources[action_id] = data["source"]
+
         elif t == "code_result":
+            action_id = data["action_id"]
+            if action_id not in session.pending_code_sources:
+                raise RuntimeError(
+                    f"code_result for action {action_id!r} has no matching "
+                    "code_submitted"
+                )
+            source = session.pending_code_sources.pop(action_id)
             session.code_events.append(
                 CodeEventRecord(
                     session_id=session.id,
                     turn=event.get("turn", 0),
                     agent_name=data.get("agent_name", ""),
-                    source="",  # source is in the preceding code_submitted event
+                    source=source,
                     stdout=data.get("stdout", ""),
                     stderr=data.get("stderr", ""),
                     success=data.get("success", True),
@@ -1889,8 +1919,26 @@ class SessionManager:
                 mime_type=art.get("mime_type", "application/octet-stream"),
                 size_bytes=art.get("size_bytes", 0),
                 local_path=art.get("local_path", ""),
+                path=art["path"],
+                mtime_ns=art["mtime_ns"],
+                action_id=art["action_id"],
             )
-            session.artifacts.append(record)
+            # `path` is the artifact's identity: an overwrite replaces the
+            # earlier record in place (keeping its id, so download URLs stay
+            # valid) instead of adding a duplicate.
+            existing = next(
+                (
+                    index
+                    for index, item in enumerate(session.artifacts)
+                    if item.path == record.path
+                ),
+                None,
+            )
+            if existing is None:
+                session.artifacts.append(record)
+            else:
+                record.id = session.artifacts[existing].id
+                session.artifacts[existing] = record
 
         elif t == "phase_change":
             session.phase = data.get("phase", session.phase)

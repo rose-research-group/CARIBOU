@@ -220,6 +220,12 @@ export interface Artifact {
   created_at: string;
   local_path: string;
   download_url: string;
+  /** Posix path relative to the session output_dir; the artifact's identity. */
+  path: string;
+  /** Code block that produced it (opaque), or null if produced outside one. */
+  action_id: string | null;
+  /** File mtime; changes when the same `path` is overwritten. */
+  mtime_ns: number;
 }
 
 export interface CodeEvent {

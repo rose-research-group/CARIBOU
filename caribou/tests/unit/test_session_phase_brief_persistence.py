@@ -65,7 +65,7 @@ def test_phase_and_brief_round_trip(tmp_path: Path) -> None:
 
     save_session(session, lambda _: False, tmp_path)
     record = json.loads((tmp_path / session.id / "session.json").read_text())
-    assert record["schema_version"] == "caribou.web_session.v4"
+    assert record["schema_version"] == "caribou.web_session.v5"
     assert record["phase"] == "execution"
     assert record["brief"]["deliverable"] == "Ship the parser"
 

@@ -25,9 +25,7 @@ export class PreferencesService {
   constructor() {
     effect(() => {
       const value = this.prefs();
-      try {
-        localStorage.setItem(KEY, JSON.stringify(value));
-      } catch {}
+      localStorage.setItem(KEY, JSON.stringify(value));
     });
   }
 

@@ -39,6 +39,12 @@ export class AgentStreamService implements OnDestroy {
   private tokenBuffer = '';
   private tokenFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Highest event seq applied for `seqSessionId`; survives reconnects so the
+  // server's full-log replay on connect is not re-applied.
+  private seqSessionId: string | null = null;
+  private _lastSeq = signal(0);
+  readonly lastSeq = this._lastSeq.asReadonly();
+
   private _events$ = new Subject<AgentEvent>();
   readonly events$: Observable<AgentEvent> = this._events$.asObservable();
 
@@ -68,15 +74,29 @@ export class AgentStreamService implements OnDestroy {
   readonly connectionState = signal<WsConnectionState>('closed');
   readonly nextRetryAt = signal<number | null>(null);
 
+  /**
+   * Open the stream for `sessionId`. Reconnecting to the session already
+   * tracked keeps the seq high-water mark, so the server's full-log replay is
+   * not re-applied; a different session starts from 0.
+   */
   connect(sessionId: string): void {
-    this.disconnect();
+    const keepSeq = this.seqSessionId === sessionId ? this._lastSeq() : 0;
+    this._teardown();
     this.sessionId = sessionId;
+    this.seqSessionId = sessionId;
+    this._lastSeq.set(keepSeq);
     this.retries = 0;
     this.connectionState.set('connecting');
     this._doConnect();
   }
 
   disconnect(): void {
+    this._teardown();
+    this.seqSessionId = null;
+    this._lastSeq.set(0);
+  }
+
+  private _teardown(): void {
     this._clearPing();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
@@ -149,17 +169,20 @@ export class AgentStreamService implements OnDestroy {
     this.ws = new WebSocket(url);
 
     this.ws.onmessage = (ev) => {
-      try {
-        const event: AgentEvent = JSON.parse(ev.data);
-        this._handleEvent(event);
-        // Tokens are handled separately (buffered) so we suppress re-emitting
-        // each one; the message_complete event still fires downstream.
-        if (event.type !== 'token') {
-          this._events$.next(event);
-        } else {
-          this._events$.next(event);
-        }
-      } catch { /* malformed message */ }
+      // No catch: a malformed frame or a handler error must surface as an
+      // uncaught error (reported by the global error listeners), not vanish.
+      const frame = JSON.parse(ev.data) as { type: string; seq?: unknown };
+      if (frame.type === 'pong') return;   // keepalive reply, not a session event
+      if (typeof frame.seq !== 'number' || !Number.isInteger(frame.seq)) {
+        throw new Error(`WebSocket event '${frame.type}' has no integer seq`);
+      }
+      const event = frame as AgentEvent;
+      // The server replays the full event log on every (re)connect; every
+      // event at or below the high-water mark has already been applied.
+      if (event.seq <= this._lastSeq()) return;
+      this._lastSeq.set(event.seq);
+      this._handleEvent(event);
+      this._events$.next(event);
     };
 
     this.ws.onopen = () => {

@@ -6,6 +6,8 @@ export interface AgentEventEnvelope<T = unknown> {
   turn: number;
   timestamp: string;
   data: T;
+  /** Server-assigned, strictly increasing per session (starts at 1); present on replay too. */
+  seq: number;
 }
 
 export type AgentEventType =

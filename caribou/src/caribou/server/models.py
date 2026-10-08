@@ -201,6 +201,14 @@ class ArtifactRecord(BaseModel):
     size_bytes: int
     created_at: datetime = Field(default_factory=datetime.utcnow)
     local_path: str = ""
+    # Posix path relative to the session's output_dir — the artifact's
+    # identity. An overwrite of the same path replaces the record.
+    path: str
+    # st_mtime_ns of the file version this record describes.
+    mtime_ns: int
+    # The code block that produced it (execution.event_ids.make_action_id),
+    # or None when produced outside a code block.
+    action_id: Optional[str] = None
 
     @property
     def download_url(self) -> str:
@@ -489,7 +497,9 @@ class WSStopMessage(BaseModel):
 # ---------------------------------------------------------------------------
 # WebSocket events (server → client)  — raw dicts emitted by streaming_runner
 # ---------------------------------------------------------------------------
-# Shape: { type: str, session_id: str, turn: int, timestamp: str, data: dict }
+# Shape: { type: str, session_id: str, turn: int, timestamp: str, data: dict,
+#          seq: int }  — seq is assigned when the session manager appends the
+#          event to the session's log (session_state.append_session_event).
 # Types: token | message_complete | agent_switch | code_submitted |
 #        code_result | artifact | status_change | metrics_result | error | pong
 

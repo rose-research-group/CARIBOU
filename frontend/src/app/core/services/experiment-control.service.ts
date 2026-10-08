@@ -29,12 +29,8 @@ export class ExperimentControlService {
   setAccessToken(value: string): void {
     const token = value.trim();
     this.accessToken.set(token);
-    try {
-      if (token) sessionStorage.setItem(CONTROL_TOKEN_STORAGE_KEY, token);
-      else sessionStorage.removeItem(CONTROL_TOKEN_STORAGE_KEY);
-    } catch {
-      // The in-memory value remains usable for this page when storage is blocked.
-    }
+    if (token) sessionStorage.setItem(CONTROL_TOKEN_STORAGE_KEY, token);
+    else sessionStorage.removeItem(CONTROL_TOKEN_STORAGE_KEY);
   }
 
   clearAccessToken(): void {

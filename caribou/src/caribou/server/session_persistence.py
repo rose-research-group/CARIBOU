@@ -15,7 +15,7 @@ import threading
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict
+from typing import Any, Callable, Dict
 
 from caribou.server.models import (
     ArtifactRecord,
@@ -31,7 +31,13 @@ from caribou.core.python_environments import (
     PythonEnvironmentKind,
     ResolvedPythonEnvironment,
 )
-from caribou.server.session_state import SESSIONS_DIR, _Session
+from caribou.server.session_state import (
+    SEQ_RESERVATION_BLOCK,
+    SESSIONS_DIR,
+    _Session,
+    append_session_event,
+    backfill_event_seq,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -61,7 +67,7 @@ def save_session(
         path = session_file(session.id, sessions_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {
-            "schema_version": "caribou.web_session.v4",
+            "schema_version": "caribou.web_session.v5",
             "phase": session.phase,
             "brief": session.brief,
             "id": session.id,
@@ -88,6 +94,7 @@ def save_session(
             "artifacts": [a.model_dump() for a in session.artifacts],
             "code_events": [c.model_dump() for c in session.code_events],
             "events": session.events,
+            "event_seq_reserved": session.event_seq + SEQ_RESERVATION_BLOCK,
             "parent_session_id": session.parent_session_id,
             "forked_from_checkpoint_id": session.forked_from_checkpoint_id,
             "attempt_number": session.attempt_number,
@@ -120,9 +127,40 @@ def save_session(
             temporary.unlink(missing_ok=True)
             return
         os.replace(temporary, path)
+        session.event_seq_saved = data["event_seq_reserved"] - SEQ_RESERVATION_BLOCK
     except Exception as exc:
         # Persistence failure must never crash the server, but do log it.
         _log.warning("Failed to persist session %s: %s", session.id, exc)
+
+
+def backfill_artifact_record(raw: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
+    """Give an artifact record from a pre-v5 session file its `path` and `mtime_ns`.
+
+    The old artifact scanner only looked at the top level of output_dir, so
+    an old record's path is its filename. Its mtime_ns is read from the file
+    on disk; a record whose file no longer exists raises (the session is then
+    skipped on load) rather than being given an invented mtime.
+    """
+    has_path, has_mtime = "path" in raw, "mtime_ns" in raw
+    if has_path and has_mtime:
+        return raw
+    if has_path or has_mtime:
+        raise ValueError(
+            f"artifact record {raw.get('id')!r} has only one of path/mtime_ns"
+        )
+    filename = raw["filename"]
+    if Path(raw.get("local_path") or filename).name != filename:
+        raise ValueError(
+            f"legacy artifact record {raw.get('id')!r} local_path "
+            f"{raw.get('local_path')!r} does not end in its filename {filename!r}"
+        )
+    file_path = output_dir / filename
+    if not file_path.is_file():
+        raise FileNotFoundError(
+            f"legacy artifact record {raw.get('id')!r}: {file_path} no longer exists, "
+            "so its mtime_ns cannot be backfilled"
+        )
+    return {**raw, "path": filename, "mtime_ns": file_path.stat().st_mtime_ns}
 
 
 def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Session]:
@@ -161,6 +199,12 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
             if raw_status in ("running", "initializing", "recovering"):
                 raw_status = "stopped"
             status = SessionStatus(raw_status)
+            # v4 and older files have no seq on events and no reservation;
+            # number their events in log order so every event carries seq.
+            # Otherwise resume from the reservation, past any seq handed out
+            # to tokens that were never saved.
+            events = data.get("events", [])
+            event_seq = backfill_event_seq(events, data.get("event_seq_reserved"))
 
             session = _Session(
                 id=data["id"],
@@ -170,10 +214,17 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
                 current_agent=data.get("current_agent", ""),
                 current_turn=data.get("current_turn", 0),
                 messages=[MessageRecord(**m) for m in data.get("messages", [])],
-                artifacts=[ArtifactRecord(**a) for a in data.get("artifacts", [])],
+                artifacts=[
+                    ArtifactRecord(**backfill_artifact_record(a, sess_dir / "outputs"))
+                    for a in data.get("artifacts", [])
+                ],
                 code_events=[CodeEventRecord(**c) for c in data.get("code_events", [])],
                 output_dir=sess_dir / "outputs",
-                events=data.get("events", []),
+                events=events,
+                event_seq=event_seq,
+                # The file on disk reserves nothing beyond event_seq, so the
+                # first new event forces a save (new reservation).
+                event_seq_saved=event_seq - SEQ_RESERVATION_BLOCK,
                 event_condition=asyncio.Condition(),
                 stop_flag=threading.Event(),
                 cancel_response_flag=threading.Event(),
@@ -231,14 +282,15 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
             )
             # If the session was interrupted, record that in the event log
             if raw_status != data.get("status"):
-                session.events.append(
+                append_session_event(
+                    session,
                     {
                         "type": "status_change",
                         "session_id": session.id,
                         "turn": session.current_turn,
                         "timestamp": datetime.utcnow().isoformat(),
                         "data": {"status": "stopped", "reason": "server restarted"},
-                    }
+                    },
                 )
             sessions[session.id] = session
         except Exception as exc:
