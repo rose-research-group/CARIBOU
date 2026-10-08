@@ -1319,7 +1319,19 @@ def run_agent_session(
                 console.print("[cyan]Executing code in sandbox…[/cyan]")
                 action_id = make_action_id(run_id, turn, idx)
                 block_id = block_tracker.begin_action(
-                    current_agent.name, turn, action_id
+                    current_agent.name,
+                    turn,
+                    action_id,
+                    # The CLI takes no checkpoints (branching is a web
+                    # feature): a new block's entry records the turn and the
+                    # work-item commit only.
+                    on_new_block=lambda _new_block_id: {
+                        "turn": turn,
+                        "checkpoint_id": None,
+                        "checkpoint_complete": False,
+                        "fingerprint": None,
+                        "work_items_commit": work_items.head_commit(),
+                    },
                 )
                 _emit_runner_event(
                     event_callback,

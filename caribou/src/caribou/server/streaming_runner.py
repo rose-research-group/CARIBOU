@@ -130,6 +130,9 @@ def run_session_sync(
     brief_decision_queue: Optional[queue.Queue] = None,
     brief: Optional[Dict[str, Any]] = None,
     known_artifacts: Optional[Dict[str, int]] = None,
+    block_entry_checkpoint: Optional[
+        Callable[[List[Dict], Dict[str, Any], str], Dict[str, Any]]
+    ] = None,
 ) -> None:
     """
     Main agent session loop. Replaces Console output with emit() calls.
@@ -159,6 +162,21 @@ def run_session_sync(
     turn loop and REST work-item routes see the same in-memory index cache
     (see WS-0). Constructed locally only when not supplied, e.g. by direct
     unit tests of this function.
+
+    `block_entry_checkpoint(history, runner_state, block_id)`: called in this
+    thread whenever the block tracker creates a NEW block, before that
+    block's first action runs; it returns the captured checkpoint dict, which
+    becomes the block's `entry` (`turn`, `checkpoint_id`,
+    `checkpoint_complete`, `fingerprint`, `work_items_commit`). `history` is
+    cut just before the assistant message whose code opens the block, so a
+    branch from that block never sees the block's old attempt as its own last
+    message. Consequence: when an earlier code block of the same message went
+    to the previous block, that message's text (and the feedback of its
+    earlier code blocks) is not in the cut history either; their effects are
+    still in `runner_state["action_ledger"]`, which is the in-memory ledger
+    of every attempt so far. Whatever the hook raises propagates as a runner
+    error. `None` (direct callers, tests) records the CLI-style entry: no
+    checkpoint, the work-item commit only.
     """
     from caribou.execution.ActionSpace import AgentActionSpace
     from caribou.execution.agent_management import (
@@ -354,25 +372,52 @@ def run_session_sync(
     # at most AUTO_CONTINUE_LIMIT in a row; reset by every real user message.
     auto_continue_budget = AUTO_CONTINUE_LIMIT
 
+    def _runner_state() -> Dict[str, Any]:
+        return {
+            "schema_version": "caribou.web_runner_checkpoint_state.v1",
+            "current_agent_name": current_agent.name,
+            "turns_completed": turns_completed,
+            "next_turn": turns_completed + 1,
+            "consecutive_exec_failures": consecutive_failures,
+            "consecutive_no_action": consecutive_no_action,
+            "action_space_past_actions": [
+                dict(item) for item in action_space.past_actions
+            ],
+            "action_ledger": [dict(item) for item in action_ledger],
+            "current_agent_history_start": current_agent_history_start,
+        }
+
     def _checkpoint_boundary() -> None:
         if checkpoint_callback is None:
             return
-        checkpoint_callback(
-            [dict(item) for item in history],
-            {
-                "schema_version": "caribou.web_runner_checkpoint_state.v1",
-                "current_agent_name": current_agent.name,
-                "turns_completed": turns_completed,
-                "next_turn": turns_completed + 1,
-                "consecutive_exec_failures": consecutive_failures,
-                "consecutive_no_action": consecutive_no_action,
-                "action_space_past_actions": [
-                    dict(item) for item in action_space.past_actions
-                ],
-                "action_ledger": [dict(item) for item in action_ledger],
-                "current_agent_history_start": current_agent_history_start,
-            },
+        checkpoint_callback([dict(item) for item in history], _runner_state())
+
+    def _block_entry(turn: int, history_cut: int, block_id: str) -> Dict[str, Any]:
+        """The `entry` of a block the tracker is creating (contract §1, A2).
+
+        Runs before the block's first action, so the ledger holds every
+        earlier attempt with its recorded result and not this one.
+        """
+        if block_entry_checkpoint is None:
+            return {
+                "turn": turn,
+                "checkpoint_id": None,
+                "checkpoint_complete": False,
+                "fingerprint": None,
+                "work_items_commit": work_items.head_commit(),
+            }
+        checkpoint = block_entry_checkpoint(
+            [dict(item) for item in history[:history_cut]],
+            _runner_state(),
+            block_id,
         )
+        return {
+            "turn": turn,
+            "checkpoint_id": checkpoint["checkpoint_id"],
+            "checkpoint_complete": bool(checkpoint["complete"]),
+            "fingerprint": checkpoint["fingerprint"],
+            "work_items_commit": work_items.head_commit(),
+        }
 
     def _drain_control_messages(turn: int) -> None:
         if control_message_queue is None:
@@ -792,6 +837,9 @@ def run_session_sync(
                     return
                 continue
 
+            # Where a block opened by this message's code cuts the history
+            # handed to the block-entry checkpoint (A2).
+            message_history_index = len(history)
             history.append({"role": "assistant", "content": msg})
             if memory_manager is not None:
                 memory_manager.add_message("assistant", msg)
@@ -882,7 +930,12 @@ def run_session_sync(
 
                     action_id = make_action_id(session_id, turn, idx)
                     block_id = block_tracker.begin_action(
-                        current_agent.name, turn, action_id
+                        current_agent.name,
+                        turn,
+                        action_id,
+                        on_new_block=lambda new_block_id: _block_entry(
+                            turn, message_history_index, new_block_id
+                        ),
                     )
                     _emit(
                         "code_submitted",
@@ -1372,6 +1425,9 @@ async def run_session_async(
     brief_decision_queue: Optional[queue.Queue] = None,
     brief: Optional[Dict[str, Any]] = None,
     known_artifacts: Optional[Dict[str, int]] = None,
+    block_entry_checkpoint: Optional[
+        Callable[[List[Dict], Dict[str, Any], str], Dict[str, Any]]
+    ] = None,
 ) -> None:
     """
     Runs run_session_sync in a thread so it doesn't block the event loop.
@@ -1429,6 +1485,7 @@ async def run_session_async(
         brief_decision_queue=brief_decision_queue,
         brief=brief,
         known_artifacts=known_artifacts,
+        block_entry_checkpoint=block_entry_checkpoint,
     )
     # Deliveries queued before the thread finished have run by now (the
     # loop runs call_soon_threadsafe callbacks in order); surface any failure
