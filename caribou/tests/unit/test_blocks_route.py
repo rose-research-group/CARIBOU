@@ -10,7 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from caribou.execution.blocks import BlockError, load_blocks
+from caribou.execution.blocks import BlockError, init_blocks, load_blocks
 from caribou.server.routes import sessions as session_routes
 
 from .test_session_resume_fork_lifecycle import _manager, _stopped_session
@@ -143,10 +143,52 @@ def test_fork_copies_blocks_next_to_work_items(tmp_path: Path, session) -> None:
     assert load_blocks(_blocks_path(session))["session_id"] == session.id
 
 
-def test_fork_without_source_blocks_copies_nothing(tmp_path: Path, session) -> None:
+def test_fork_without_source_blocks_gives_the_child_an_empty_index(
+    tmp_path: Path, session
+) -> None:
     child = _child(tmp_path)
     _manager(session)._fork_work_items(session, child)
-    assert not (child.output_dir.parent / "blocks.json").exists()
+    copied = load_blocks(child.output_dir.parent / "blocks.json")
+    assert copied == {
+        "schema_version": "caribou.block_index.v1",
+        "session_id": child.id,
+        "blocks": [],
+    }
+
+
+def test_fork_replaces_the_childs_empty_placeholder(tmp_path: Path, session) -> None:
+    _write_blocks(_blocks_path(session), [_block(1)])
+    child = _child(tmp_path)
+    init_blocks(child.output_dir.parent / "blocks.json", child.id)
+
+    _manager(session)._fork_work_items(session, child)
+
+    copied = load_blocks(child.output_dir.parent / "blocks.json")
+    assert [b["block_id"] for b in copied["blocks"]] == ["blk-0001"]
+
+
+def test_fork_refuses_to_replace_a_child_index_with_blocks(
+    tmp_path: Path, session
+) -> None:
+    _write_blocks(_blocks_path(session), [_block(1)])
+    child = _child(tmp_path)
+    _write_blocks(
+        child.output_dir.parent / "blocks.json",
+        [_block(1, session_id=child.id)],
+        session_id=child.id,
+    )
+    with pytest.raises(BlockError, match="already has blocks.json"):
+        _manager(session)._fork_work_items(session, child)
+
+
+def test_init_blocks_writes_an_empty_index_and_refuses_to_overwrite(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "sess" / "blocks.json"
+    init_blocks(path, "sess")
+    assert load_blocks(path)["blocks"] == []
+    with pytest.raises(BlockError, match="already exists"):
+        init_blocks(path, "sess")
 
 
 def test_fork_with_malformed_source_blocks_raises(tmp_path: Path, session) -> None:

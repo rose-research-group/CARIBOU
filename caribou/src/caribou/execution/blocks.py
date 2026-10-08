@@ -106,6 +106,25 @@ def _write_index(blocks_path: Path, index: Dict[str, Any]) -> None:
     os.replace(temporary, blocks_path)
 
 
+def init_blocks(blocks_path: Path, session_id: str) -> None:
+    """Write an empty blocks.json for a new session; raises if one exists.
+
+    Called when the session is created, before its runner (and tracker)
+    starts, so the session reads as "recording blocks, none yet" from the
+    first request rather than as one recorded before blocks existed.
+    """
+    if not session_id:
+        raise ValueError("session_id must be non-empty")
+    blocks_path = Path(blocks_path)
+    if blocks_path.exists():
+        raise BlockError(f"blocks file already exists: {blocks_path}")
+    blocks_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_index(
+        blocks_path,
+        {"schema_version": BLOCK_INDEX_SCHEMA, "session_id": session_id, "blocks": []},
+    )
+
+
 def fork_blocks(src_path: Path, dst_path: Path, *, child_session_id: str) -> bool:
     """Copy a session's blocks.json for a forked child session.
 
@@ -160,17 +179,9 @@ class BlockTracker:
             self.session_id = index["session_id"]
             self._blocks = index["blocks"]
         else:
-            # Write the empty index up front so a new session reads as
-            # "recording blocks, none yet" rather than as a session recorded
-            # before blocks existed (no file).
-            _write_index(
-                self.blocks_path,
-                {
-                    "schema_version": BLOCK_INDEX_SCHEMA,
-                    "session_id": self.session_id,
-                    "blocks": self._blocks,
-                },
-            )
+            # Sessions the web server creates already have one (init_blocks);
+            # CLI and control runs get theirs here.
+            init_blocks(self.blocks_path, self.session_id)
         self._by_action: Dict[str, Dict[str, Any]] = {
             action_id: block
             for block in self._blocks

@@ -45,7 +45,13 @@ from caribou.execution.evaluation import (
     evaluation_response_metadata,
 )
 from caribou.execution.session_brief import resolve_brief_policy
-from caribou.execution.blocks import BLOCKS_FILENAME, fork_blocks, load_blocks
+from caribou.execution.blocks import (
+    BLOCKS_FILENAME,
+    BlockError,
+    fork_blocks,
+    init_blocks,
+    load_blocks,
+)
 from caribou.execution.work_item_runtime import copy_work_items
 from caribou.execution.work_items import WorkItemPolicy, WorkItemStore
 from caribou.execution.token_utils import estimate_tokens
@@ -185,6 +191,9 @@ class SessionManager:
         session_id = str(uuid4())
         output_dir = SESSIONS_DIR / session_id / "outputs"
         output_dir.mkdir(parents=True, exist_ok=True)
+        # Before the runner starts, so the page's first /blocks request
+        # already sees a block-recording session.
+        init_blocks(output_dir.parent / BLOCKS_FILENAME, session_id)
 
         session = _Session(
             id=session_id,
@@ -395,6 +404,8 @@ class SessionManager:
         # cannot leave an orphaned recovering session in the registry.
         self._apply_target_mode(child, request)
         child.output_dir.mkdir(parents=True, exist_ok=True)
+        # A placeholder until _fork_work_items copies the parent's blocks.
+        init_blocks(child.output_dir.parent / BLOCKS_FILENAME, child_id)
         async with self._lock:
             self._deleted_session_ids.discard(child_id)
             self._sessions[child_id] = child
@@ -1227,11 +1238,22 @@ class SessionManager:
             child.work_item_store = copied_store
         # blocks.json sits next to work-items/; copied (re-stamped with the
         # child's session id) before the child's runner can start a tracker.
-        fork_blocks(
+        # The child was given an empty placeholder at fork time; replace it.
+        child_blocks = child.output_dir.parent / BLOCKS_FILENAME
+        placeholder = load_blocks(child_blocks)
+        if placeholder is not None:
+            if placeholder["blocks"] or placeholder["session_id"] != child.id:
+                raise BlockError(
+                    f"fork child already has blocks.json with content: {child_blocks}"
+                )
+            child_blocks.unlink()
+        copied = fork_blocks(
             source.output_dir.parent / BLOCKS_FILENAME,
-            child.output_dir.parent / BLOCKS_FILENAME,
+            child_blocks,
             child_session_id=child.id,
         )
+        if not copied:
+            init_blocks(child_blocks, child.id)
 
     def _work_item_store(self, session: _Session) -> WorkItemStore:
         # Cached on the session so this method, the turn loop
