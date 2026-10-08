@@ -20,8 +20,10 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
+
+from caribou.execution.session_recovery import LIVE_DATASET
 
 # Consecutive no-action / code-exec failures we tolerate before ending the run.
 MAX_CONSECUTIVE_NO_ACTION = 3
@@ -59,6 +61,41 @@ def _stream_tokens(llm_client, model: str, messages: List[Dict]) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Artifact discovery
+# ---------------------------------------------------------------------------
+
+# Top-level entries of output_dir that are CARIBOU/sandbox internals, never
+# agent-produced artifacts. Excluded by exact name only; every other file,
+# including agent-created subfolders such as `plots/` or `qc/`, is scanned.
+_ARTIFACT_SCAN_EXCLUDED = frozenset(
+    {
+        # Live AnnData checkpoint the sandbox writes for session recovery
+        # (session_recovery.LIVE_DATASET), plus its atomic-write temp file.
+        LIVE_DATASET,
+        LIVE_DATASET + ".tmp",
+        # fontconfig/XDG cache older sandbox images wrote into the mount.
+        ".cache",
+        # Legacy work-item store location (a git repo); current sessions
+        # keep it beside output_dir, but older session dirs still hold it.
+        "work-items",
+    }
+)
+
+
+def _iter_artifact_files(output_dir: Path) -> List[Path]:
+    """Every file under output_dir, sorted, minus `_ARTIFACT_SCAN_EXCLUDED`."""
+    files: List[Path] = []
+    for entry in sorted(output_dir.iterdir()):
+        if entry.name in _ARTIFACT_SCAN_EXCLUDED:
+            continue
+        if entry.is_file():
+            files.append(entry)
+        elif entry.is_dir():
+            files.extend(path for path in sorted(entry.rglob("*")) if path.is_file())
+    return files
+
+
+# ---------------------------------------------------------------------------
 # Sync runner (runs inside a ThreadPoolExecutor thread)
 # ---------------------------------------------------------------------------
 
@@ -91,6 +128,8 @@ def run_session_sync(
     phase: str = "execution",
     brief_policy: Optional["BriefPolicy"] = None,
     brief_decision_queue: Optional[queue.Queue] = None,
+    brief: Optional[Dict[str, Any]] = None,
+    known_artifacts: Optional[Dict[str, int]] = None,
 ) -> None:
     """
     Main agent session loop. Replaces Console output with emit() calls.
@@ -103,6 +142,18 @@ def run_session_sync(
     `session_manager._initialize_session` before this function is ever
     called (same as `runner.py`'s history[1] injection) — this function
     only needs `phase` to know whether to run the interview.
+
+    `brief`: the session's already-frozen brief as a plain dict
+    (`session.brief`) — a pre-authored brief, or one accepted before a
+    resume. Its `deliverable` is shown as the BRIEF GOAL line of the ambient
+    work-item state each turn. `None` when no brief was accepted (briefing
+    is opt-in); a brief accepted by this call's own interview replaces it.
+
+    `known_artifacts`: relative path -> mtime_ns of every artifact already
+    reported for this session (from its persisted artifact records). Seeds
+    the scan's dedupe map so a resumed session does not re-emit unchanged
+    files under the first new code block's action_id. `None`/`{}` for a
+    fresh session.
 
     `work_item_store`: pass the session's cached singleton instance so the
     turn loop and REST work-item routes see the same in-memory index cache
@@ -122,6 +173,7 @@ def run_session_sync(
         detect_rag,
         extract_labeled_block,
     )
+    from caribou.execution.event_ids import make_action_id
     from caribou.execution.rag_client import get_rag_client
     from caribou.execution.work_items import (
         WorkItemError,
@@ -151,7 +203,11 @@ def run_session_sync(
     console = Console(quiet=True)
     cancel_response_flag = cancel_response_flag or threading.Event()
     output_dir.mkdir(parents=True, exist_ok=True)
-    emitted_artifacts: Set[str] = set()
+    # Relative posix path -> st_mtime_ns of the last emitted `artifact`
+    # event for that file. A file is (re-)emitted whenever its mtime differs
+    # from the recorded one, so an overwritten plot is reported again.
+    emitted_artifacts: Dict[str, int] = dict(known_artifacts or {})
+    brief_goal: Optional[str] = brief["deliverable"] if brief is not None else None
     work_item_policy = getattr(agent_system, "work_item_policy", WorkItemPolicy())
     evaluator_agent_name = getattr(agent_system, "evaluator_agent_name", None)
     # `output_dir` is the sandbox mount: agent code executing in it can edit
@@ -191,8 +247,14 @@ def run_session_sync(
             }
         )
 
-    def _scan_new_artifacts(turn: int) -> None:
-        """Emit artifact events for any new files in output_dir."""
+    def _scan_new_artifacts(turn: int, action_id: Optional[str]) -> None:
+        """Emit artifact events for new or overwritten files in output_dir.
+
+        Walks output_dir recursively, skipping `_ARTIFACT_SCAN_EXCLUDED`.
+        `action_id` is the code block that just ran (contract: `None` for a
+        scan outside a code block). The same `path` is emitted again with a
+        newer `mtime_ns` when the file changes; consumers replace by `path`.
+        """
         mime_map = {
             ".png": ("plot", "image/png"),
             ".jpg": ("plot", "image/jpeg"),
@@ -204,24 +266,29 @@ def run_session_sync(
         }
         if not output_dir.exists():
             return
-        for fpath in sorted(output_dir.iterdir()):
-            if not fpath.is_file() or fpath.name in emitted_artifacts:
+        for fpath in _iter_artifact_files(output_dir):
+            relative = fpath.relative_to(output_dir).as_posix()
+            stat = fpath.stat()
+            if emitted_artifacts.get(relative) == stat.st_mtime_ns:
                 continue
             suffix = fpath.suffix.lower()
             art_type, mime_type = mime_map.get(
                 suffix, ("data", "application/octet-stream")
             )
-            emitted_artifacts.add(fpath.name)
+            emitted_artifacts[relative] = stat.st_mtime_ns
             _emit(
                 "artifact",
                 {
                     "artifact": {
                         "filename": fpath.name,
+                        "path": relative,
                         "type": art_type,
                         "mime_type": mime_type,
-                        "size_bytes": fpath.stat().st_size,
+                        "size_bytes": stat.st_size,
+                        "mtime_ns": stat.st_mtime_ns,
                         "local_path": str(fpath),
                         "turn": turn,
+                        "action_id": action_id,
                     }
                 },
                 turn=turn,
@@ -500,6 +567,7 @@ def run_session_sync(
                     owner=driver_agent.name,
                     turn=0,
                 )
+                brief_goal = accepted.deliverable
                 pin = render_brief_pin(accepted)
                 history.append({"role": "system", "content": pin})
                 if memory_manager is not None:
@@ -572,7 +640,9 @@ def run_session_sync(
 
             # Ambient work-item state (WS-2): recomputed from the store each
             # turn and appended after context assembly, same as runner.py.
-            state_block = render_work_item_state(work_items, current_agent.name)
+            state_block = render_work_item_state(
+                work_items, current_agent.name, brief_goal=brief_goal
+            )
             if state_block:
                 cleaned_context.append({"role": "system", "content": state_block})
 
@@ -897,14 +967,13 @@ def run_session_sync(
                             agent_name=current_agent.name,
                             history_slice=agent_slice,
                         )
-                        if agent_report:
-                            report_memory.add_report(current_agent.name, agent_report)
-                            if logger:
-                                logger.info(
-                                    "Agent report generated for %s | length: %s chars",
-                                    current_agent.name,
-                                    len(agent_report),
-                                )
+                        report_memory.add_report(current_agent.name, agent_report)
+                        if logger:
+                            logger.info(
+                                "Agent report generated for %s | length: %s chars",
+                                current_agent.name,
+                                len(agent_report),
+                            )
                         report_memory.update_agent_prompt(_agent_prompt(new_agent))
                         current_agent_history_start = len(history)
                     switch_history_start = len(history)
@@ -954,10 +1023,11 @@ def run_session_sync(
                             code.count("\n") + 1,
                         )
 
+                    action_id = make_action_id(session_id, turn, idx)
                     _emit(
                         "code_submitted",
                         {
-                            "action_id": f"{session_id}:{turn}:{idx}",
+                            "action_id": action_id,
                             "agent_name": current_agent.name,
                             "source": code,
                             "block_index": idx,
@@ -967,7 +1037,7 @@ def run_session_sync(
                     )
 
                     ledger_entry = {
-                        "action_id": f"{session_id}:{turn}:{idx}",
+                        "action_id": action_id,
                         "turn": turn,
                         "agent_name": current_agent.name,
                         "source": code,
@@ -1035,7 +1105,7 @@ def run_session_sync(
                         "duration_ms": duration_ms,
                     }
 
-                    _scan_new_artifacts(turn)
+                    _scan_new_artifacts(turn, action_id)
 
                     feedback = format_execute_response(exec_result, output_dir)
                     action_space.add_action(
@@ -1205,6 +1275,8 @@ async def run_session_async(
     phase: str = "execution",
     brief_policy: Optional["BriefPolicy"] = None,
     brief_decision_queue: Optional[queue.Queue] = None,
+    brief: Optional[Dict[str, Any]] = None,
+    known_artifacts: Optional[Dict[str, int]] = None,
 ) -> None:
     """
     Runs run_session_sync in a thread so it doesn't block the event loop.
@@ -1244,4 +1316,6 @@ async def run_session_async(
         phase=phase,
         brief_policy=brief_policy,
         brief_decision_queue=brief_decision_queue,
+        brief=brief,
+        known_artifacts=known_artifacts,
     )
