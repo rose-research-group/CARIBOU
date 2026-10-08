@@ -881,6 +881,12 @@ def test_llm_attempt_callback_normalizes_only_whitelisted_success_metadata(
             cache_miss_tokens=90,
         ),
         completion_tokens_details=SimpleNamespace(reasoning_tokens=7),
+        # OpenRouter-style cost accounting (whitelisted since 7479cff).
+        cost=0.00125,
+        cost_details=SimpleNamespace(
+            upstream_inference_cost=1,
+            api_key=request_secret,
+        ),
     )
     response = _sdk_response(
         "end_session",
@@ -896,6 +902,8 @@ def test_llm_attempt_callback_normalizes_only_whitelisted_success_metadata(
     response.body = {"content": response_secret, "api_key": request_secret}
     response.headers = {"authorization": f"Bearer {request_secret}"}
     response.url = private_url
+    # OpenRouter reports the upstream provider; it is normalized (stripped).
+    response.provider = "  upstream-provider  "
     llm = AttemptSequenceLlm([response])
     observations: list[dict[str, object]] = []
 
@@ -939,6 +947,9 @@ def test_llm_attempt_callback_normalizes_only_whitelisted_success_metadata(
         "cached_tokens",
         "cache_miss_tokens",
         "reasoning_tokens",
+        "upstream_provider",
+        "cost_usd",
+        "upstream_cost_usd",
         "failure_type",
         "http_status_code",
     }
@@ -967,9 +978,13 @@ def test_llm_attempt_callback_normalizes_only_whitelisted_success_metadata(
         "cached_tokens": 11,
         "cache_miss_tokens": 90,
         "reasoning_tokens": 7,
+        "upstream_provider": "upstream-provider",
+        "cost_usd": 0.00125,
+        "upstream_cost_usd": 1.0,
         "failure_type": None,
         "http_status_code": None,
     }
+    assert type(observation["upstream_cost_usd"]) is float
     assert isinstance(observation["started_at"], str)
     assert str(observation["started_at"]).endswith("Z")
     assert isinstance(observation["ended_at"], str)

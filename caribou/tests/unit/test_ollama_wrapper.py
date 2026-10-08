@@ -8,7 +8,11 @@ import json
 from types import SimpleNamespace
 from unittest.mock import Mock, patch, MagicMock
 
-from caribou.core.ollama_wrapper import OllamaClient
+from caribou.core.ollama_wrapper import (
+    OllamaClient,
+    _CHAT_TIMEOUT_SECONDS,
+    _STREAM_CONNECT_TIMEOUT_SECONDS,
+)
 
 
 class TestOllamaClientInitialization:
@@ -242,7 +246,13 @@ class TestOllamaClientStreaming:
         assert call_args[1]["json"]["model"] == "llama3"
         assert call_args[1]["json"]["stream"] is True
         assert call_args[1]["stream"] is True
-        assert call_args[1]["timeout"] == 300
+        # Streaming uses a (connect, read) tuple: fail fast on an unreachable
+        # host while still allowing slow token generation between chunks.
+        assert call_args[1]["timeout"] == (
+            _STREAM_CONNECT_TIMEOUT_SECONDS,
+            _CHAT_TIMEOUT_SECONDS,
+        )
+        assert call_args[1]["timeout"] == (30, 300)
 
     @patch("caribou.core.ollama_wrapper.requests.post")
     def test_stream_chat_uses_requested_model_and_temperature(self, mock_post):
