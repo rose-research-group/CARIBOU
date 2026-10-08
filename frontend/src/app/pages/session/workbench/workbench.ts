@@ -4,7 +4,7 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router } from '@angular/router';
 import { SessionStore } from '../../../core/state/session-store.service';
 import { Block } from '../../../core/models/block.model';
-import { Artifact, WorkItemAnchor, WorkItemDetail } from '../../../core/models/session.model';
+import { Artifact, Session, WorkItemAnchor, WorkItemDetail } from '../../../core/models/session.model';
 import { BlueprintContent } from '../../../core/models/blueprint.model';
 import { SessionService } from '../../../core/services/session.service';
 import { ConfigService } from '../../../core/services/config.service';
@@ -21,6 +21,10 @@ import {
   BlockReference, anchorLabel, canHumanReview, formatBlockMessage, httpErrorMessage,
   referenceKey, sentBackText,
 } from './block-actions';
+import { shortId } from './branching';
+import { BranchFormComponent } from './branch-form/branch-form';
+import { PathsRowComponent } from './paths-row/paths-row';
+import { BranchPaths } from './paths-row/branch-paths';
 
 type Section = 'workitem' | 'code' | 'artifacts';
 type ReviewAction = 'approve' | 'reject' | 'evaluator';
@@ -52,7 +56,12 @@ export interface BlockMessage {
 @Component({
   selector: 'app-workbench',
   standalone: true,
-  imports: [CodeCardComponent, ArtifactCardComponent, IconComponent, NgTemplateOutlet],
+  imports: [
+    CodeCardComponent, ArtifactCardComponent, IconComponent, NgTemplateOutlet,
+    BranchFormComponent, PathsRowComponent,
+  ],
+  // The branch lanes; the grid widens to the longest one.
+  providers: [BranchPaths],
   templateUrl: './workbench.html',
   styleUrl: './workbench.scss',
 })
@@ -64,6 +73,7 @@ export class WorkbenchComponent {
   private configSvc = inject(ConfigService);
   private toasts = inject(ToastService);
   private injector = inject(Injector);
+  readonly paths = inject(BranchPaths);
 
   /** A code card's Copy button; the page owns the clipboard and its toast. */
   readonly copySource = output<string>();
@@ -109,7 +119,8 @@ export class WorkbenchComponent {
     return new Map(this.blocks().map(b => [b.block_id, firstPlot(b, artifacts)]));
   });
   readonly plotCount = computed(() => [...this.plots().values()].filter(p => p !== null).length);
-  readonly gridColumns = computed(() => `max-content repeat(${this.blocks().length}, 184px)`);
+  readonly gridColumns = computed(() =>
+    `max-content repeat(${Math.max(this.blocks().length, this.paths.maxColumn())}, 184px)`);
 
   readonly actions = computed(() => {
     const b = this.selected();
@@ -143,6 +154,25 @@ export class WorkbenchComponent {
   });
 
   readonly session = this.sessionSvc.currentSession;
+
+  /** A branch's parent session (for "inherited from <name>"); null when not a branch or not loaded. */
+  readonly parent = signal<Session | null>(null);
+  readonly parentError = signal<string | null>(null);
+  private parentRequested: string | null = null;
+  private branchesRequested: string | null = null;
+
+  /** "inherited from <parent name>", or the source session id if it is not the parent. */
+  inheritedLabel(block: Block): string {
+    const origin = block.inherited_from;
+    if (origin == null) throw new Error(`Block ${block.block_id} is not inherited.`);
+    const parent = this.parent();
+    const name = parent && parent.id === origin.session_id ? parent.name : `session ${shortId(origin.session_id)}`;
+    return `inherited from ${name} (${origin.block_id})`;
+  }
+
+  isInherited(block: Block): boolean {
+    return block.inherited_from != null;
+  }
 
   /** Why the composer is disabled, worded for the session's actual status. */
   unavailableReason(): string {
@@ -188,6 +218,25 @@ export class WorkbenchComponent {
   readonly ticketError = signal<string | null>(null);
 
   constructor() {
+    // The branch count for the Paths row, once per session.
+    effect(() => {
+      const id = this.session()?.id;
+      if (id && id !== this.branchesRequested) {
+        this.branchesRequested = id;
+        untracked(() => this.paths.refresh());
+      }
+    });
+    // A branch's parent, for the inherited blocks' label.
+    effect(() => {
+      const parentId = this.session()?.parent_session_id ?? null;
+      if (parentId && parentId !== this.parentRequested) {
+        this.parentRequested = parentId;
+        untracked(() => this.sessionSvc.fetchSession(parentId).subscribe({
+          next: p => this.parent.set(p),
+          error: err => this.parentError.set(`Could not load the parent session: ${httpErrorMessage(err)}`),
+        }));
+      }
+    });
     // Load the session's blueprint once its name is known.
     effect(() => {
       const name = this.session()?.agent_system;
@@ -250,6 +299,11 @@ export class WorkbenchComponent {
       if (!row) throw new Error(`Code row for action ${actionId} is not rendered`);
       row.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, { injector: this.injector });
+  }
+
+  /** A branch was created from the selected block: refresh the Paths row. */
+  onBranchCreated(): void {
+    this.paths.refresh();
   }
 
   plotFor(block: Block): Artifact | null {

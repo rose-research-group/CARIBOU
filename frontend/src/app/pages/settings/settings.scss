@@ -238,3 +238,5 @@
   input:checked + .toggle-track .toggle-thumb { transform: translateX(16px); }
   input:focus-visible + .toggle-track { outline: 2px solid var(--primary); outline-offset: 2px; }
 }
+
+.limit-missing { color: var(--error); }

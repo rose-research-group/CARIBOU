@@ -55,6 +55,10 @@ export interface Session {
   can_evaluate: boolean;
   parent_session_id: string | null;
   forked_from_checkpoint_id: string | null;
+  /** Set on a branch: the parent block it was branched from. */
+  forked_from_block_id?: string | null;
+  branch_restore_mode?: BranchRestoreMode | null;
+  branch_instruction?: string | null;
   attempt_number: number;
   recovery_mode: RecoveryMode | null;
   recovery_status: RecoveryStatus;
@@ -89,6 +93,31 @@ export interface SessionBriefFields {
 }
 
 export type RecoveryMode = 'smart' | 'literal_replay';
+
+/** How a branch rebuilds the state at its block's entry checkpoint. */
+export type BranchRestoreMode = 'replay' | 'checkpoint' | 'llm_regen';
+
+/** `POST /api/sessions/{id}/blocks/{block_id}/branch` (extra fields are rejected). */
+export interface BranchRequest {
+  /** 1..4000 characters; the branch's first user turn. */
+  instruction: string;
+  restore_mode: BranchRestoreMode;
+  name?: string;
+  /** Required (true) for replay when the entry checkpoint has no fingerprint. */
+  acknowledge_unverified?: boolean;
+}
+
+/** One direct child branch, from `GET /api/sessions/{id}/branches` (sorted by created_at). */
+export interface BranchSummary {
+  session_id: string;
+  name: string;
+  status: SessionStatus;
+  recovery_status: RecoveryStatus;
+  forked_from_block_id: string;
+  branch_restore_mode: BranchRestoreMode;
+  branch_instruction: string;
+  created_at: string;
+}
 export type RecoveryStatus =
   | 'none'
   | 'awaiting_checkpoint'

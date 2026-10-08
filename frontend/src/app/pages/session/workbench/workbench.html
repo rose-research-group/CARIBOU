@@ -61,7 +61,7 @@
               }
             }
             <button type="button" class="blk s-{{ b.status }}"
-              [class.implicit]="b.implicit" [class.sel]="selectedId() === b.block_id"
+              [class.implicit]="b.implicit" [class.inherited]="isInherited(b)" [class.sel]="selectedId() === b.block_id"
               [class.last]="i === blocks().length - 1"
               [style.grid-column]="i + 2" style="grid-row: 2"
               [attr.aria-pressed]="selectedId() === b.block_id"
@@ -70,7 +70,7 @@
                 <span class="glyph" aria-hidden="true">{{ STATUS_GLYPH[b.status] }}</span>
                 <span class="title">{{ b.title }}</span>
               </span>
-              <span class="tag">{{ STATUS_LABEL[b.status] }}</span>
+              <span class="tag">{{ STATUS_LABEL[b.status] }}@if (isInherited(b)) {<span class="inh"> · inherited</span>}</span>
               <span class="wi">{{ workItemLabel(b) }}</span>
               <span class="m">{{ b.agents.join(', ') }}</span>
               <span class="m">{{ turnSpan(b) }}</span>
@@ -79,8 +79,9 @@
               </span>
             </button>
           }
+          <app-paths-row [firstRow]="3" />
         </div>
-        <p class="hint">Select a step for its work item, code and artifacts. Fold the plots row from its label.</p>
+        <p class="hint">Select a step for its work item, code and artifacts. Fold the plots and paths rows from their labels.</p>
       }
     </section>
   </div>
@@ -101,6 +102,12 @@
         </button>
       </div>
       <div class="ibody">
+        @if (isInherited(b)) {
+          <p class="inherited-note" role="note">
+            <strong>Inherited.</strong> This step is {{ inheritedLabel(b) }}. It is read-only in this branch.
+          </p>
+          @if (parentError(); as err) { <p class="act-err" role="alert">{{ err }}</p> }
+        }
         <dl class="kv">
           <dt>Work item</dt><dd [class.dim]="b.implicit">{{ workItemLabel(b) }}</dd>
           <dt>Agents</dt><dd>{{ b.agents.join(', ') || '—' }}</dd>
@@ -122,6 +129,7 @@
           <div class="thumb"><app-artifact-card [artifact]="plot" /></div>
         }
 
+        @if (!isInherited(b)) {
         <section class="act" aria-label="Message the agent about this block">
           <div class="act-head">
             <div class="lbl">Message the agent about this block</div>
@@ -165,6 +173,11 @@
           </div>
         </section>
 
+        @if (session(); as s) {
+          <app-branch-form [block]="b" [sessionId]="s.id" [sourceStatus]="s.status" (created)="onBranchCreated()" />
+        }
+        }
+
         @if (b.work_item_id !== null) {
           <div class="disc" [class.on]="openSections().has('workitem')">
             <button type="button" class="dh" [attr.aria-expanded]="openSections().has('workitem')"
@@ -184,6 +197,7 @@
                     <p class="anchor dim">{{ anchorLabel(anchor) }}</p>
                   }
 
+                  @if (!isInherited(b)) {
                   <div class="wi-actions">
                     @if (canHumanReview(w)) {
                       <button type="button" class="btn btn-ghost btn-xs" [class.on]="reviewForm() === 'approve'"
@@ -239,6 +253,7 @@
                         </button>
                       </div>
                     </div>
+                  }
                   }
                   @if (blueprintError(); as err) {
                     <p class="act-err" role="alert">{{ err }}. QC mode unknown.</p>
@@ -303,7 +318,9 @@
                         <span class="dim">no code record in this view</span>
                       }
                     </div>
-                    <ng-container *ngTemplateOutlet="rowTools; context: { ref: { kind: 'code', actionId: a.actionId }, block: b }" />
+                    @if (!isInherited(b)) {
+                      <ng-container *ngTemplateOutlet="rowTools; context: { ref: { kind: 'code', actionId: a.actionId }, block: b }" />
+                    }
                   </div>
                   @if (ticketForm()?.origin === 'code:' + a.actionId) {
                     <ng-container *ngTemplateOutlet="ticketTpl" />
@@ -352,7 +369,9 @@
                         </button>
                       }
                     }
-                    <ng-container *ngTemplateOutlet="rowTools; context: { ref: { kind: 'artifact', path: e.path }, block: b }" />
+                    @if (!isInherited(b)) {
+                      <ng-container *ngTemplateOutlet="rowTools; context: { ref: { kind: 'artifact', path: e.path }, block: b }" />
+                    }
                   </div>
                   @if (ticketForm()?.origin === 'artifact:' + e.path) {
                     <ng-container *ngTemplateOutlet="ticketTpl" />

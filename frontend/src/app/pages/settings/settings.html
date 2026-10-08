@@ -85,6 +85,37 @@
         </div>
       </section>
 
+      <!-- Sessions -->
+      <section class="card">
+        <h2>Sessions</h2>
+        <p class="section-desc">
+          Each running session, fork and branch has its own sandbox container. This caps how many can
+          be live at once; creating, resuming, forking or branching past it is refused until one stops.
+        </p>
+        <div class="field">
+          <label for="max-active-sessions">Max active sessions <span class="editable-tag">editable</span></label>
+          <div class="path-edit">
+            <input
+              id="max-active-sessions"
+              type="text"
+              inputmode="numeric"
+              autocomplete="off"
+              [value]="maxActiveSessions()"
+              (input)="maxActiveSessions.set($any($event.target).value)"
+              placeholder="No limit"
+            />
+          </div>
+          @if (s.max_active_sessions === undefined) {
+            <span class="path-note limit-missing" role="alert">{{ MISSING_LIMIT }}</span>
+          } @else {
+            <span class="path-note">
+              Currently <strong>{{ s.max_active_sessions === null ? 'no limit' : s.max_active_sessions }}</strong>.
+              Leave blank for no limit.
+            </span>
+          }
+        </div>
+      </section>
+
       <!-- API keys -->
       <section class="card">
         <h2>API Keys</h2>

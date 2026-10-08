@@ -95,19 +95,29 @@ export function anchorLabel(anchor: WorkItemAnchor): string {
  * HTTPException, a list of field errors for a 422), else the HTTP message.
  */
 export function httpErrorMessage(err: unknown): string {
+  const detail = httpErrorDetail(err);
+  return err instanceof HttpErrorResponse && detail.fromServer ? `${err.status}: ${detail.text}` : detail.text;
+}
+
+/**
+ * The server's `detail` exactly as sent (a 422's field errors joined), with
+ * no status prefix; `fromServer` is false when there was no detail and the
+ * text is the HTTP or JS error message instead.
+ */
+export function httpErrorDetail(err: unknown): { text: string; fromServer: boolean } {
   if (err instanceof HttpErrorResponse) {
     const detail = (err.error as { detail?: unknown } | null)?.detail;
-    if (typeof detail === 'string' && detail) return `${err.status}: ${detail}`;
+    if (typeof detail === 'string' && detail) return { text: detail, fromServer: true };
     if (Array.isArray(detail) && detail.length > 0) {
       const msgs = detail.map(d => {
         const e = d as { loc?: unknown[]; msg?: string };
         const field = Array.isArray(e.loc) ? e.loc.filter(l => l !== 'body').join('.') : '';
         return field ? `${field}: ${e.msg}` : String(e.msg ?? JSON.stringify(d));
       });
-      return `${err.status}: ${msgs.join('; ')}`;
+      return { text: msgs.join('; '), fromServer: true };
     }
-    return err.message;
+    return { text: err.message, fromServer: false };
   }
-  if (err instanceof Error) return err.message;
-  return String(err);
+  if (err instanceof Error) return { text: err.message, fromServer: false };
+  return { text: String(err), fromServer: false };
 }

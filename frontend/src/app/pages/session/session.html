@@ -108,6 +108,10 @@
   }
 
   @if (session(); as s) {
+    <!-- A branch (forked from a block): shown in both views. -->
+    @if (s.forked_from_block_id) {
+      <app-branch-banner [session]="s" />
+    }
     @if (s.recovery_status === 'awaiting_checkpoint' || s.recovery_status === 'recovering') {
       <section class="recovery-progress-banner" role="status" aria-live="polite">
         <div class="recovery-progress-heading">

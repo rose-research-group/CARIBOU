@@ -31,6 +31,7 @@ import { navigateTabToSession, reserveNewTab } from '../../core/utils/app-naviga
 import { BlockMessage, WorkbenchComponent } from './workbench/workbench';
 import { SessionView, ViewToggleComponent } from './workbench/view-toggle';
 import { anchorLabel } from './workbench/block-actions';
+import { BranchBannerComponent } from './branch-banner/branch-banner';
 
 const COMPACT_AFTER_ITEMS = 40;
 const VISIBLE_RECENT_ITEMS = 20;
@@ -46,7 +47,7 @@ type ArtifactFilter = 'all' | 'plot' | 'data' | 'other';
   imports: [
     CommonModule, FormsModule,
     MessageBubbleComponent, CodeCardComponent, ArtifactCardComponent, StatusIndicatorComponent,
-    IconComponent, TooltipDirective, WorkbenchComponent, ViewToggleComponent,
+    IconComponent, TooltipDirective, WorkbenchComponent, ViewToggleComponent, BranchBannerComponent,
   ],
   // One store per session page: a fresh page starts from empty state.
   providers: [SessionStore],

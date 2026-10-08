@@ -6,7 +6,7 @@ import {
   SessionForkRequest, SessionResumeRequest,
   EvaluatorModelState, EvaluatorModelUpdateRequest,
   WorkItemDetail, WorkItemReviewResult, WorkItemSummary, SessionBriefFields,
-  WorkItemCreateRequest, HumanReviewRequest,
+  WorkItemCreateRequest, HumanReviewRequest, BranchRequest, BranchSummary,
 } from '../models/session.model';
 import { BlocksResponse } from '../models/block.model';
 
@@ -120,6 +120,29 @@ export class SessionService {
 
   getBlocks(id: string): Observable<BlocksResponse> {
     return this.http.get<BlocksResponse>(`api/sessions/${id}/blocks`);
+  }
+
+  /**
+   * Another session's record, without touching `currentSession` (the parent
+   * of a branch, for its name). `getSession` is for the page's own session.
+   */
+  fetchSession(id: string): Observable<Session> {
+    return this.http.get<Session>(`api/sessions/${id}`);
+  }
+
+  /** Branch a new session from a block's entry checkpoint. 201 with the child. */
+  branchFromBlock(id: string, blockId: string, request: BranchRequest): Observable<Session> {
+    return this.http.post<Session>(
+      `api/sessions/${id}/blocks/${encodeURIComponent(blockId)}/branch`,
+      request,
+    ).pipe(
+      tap(s => this.sessions.update(all => [s, ...all]))
+    );
+  }
+
+  /** The session's direct child branches, sorted by created_at. */
+  getBranches(id: string): Observable<BranchSummary[]> {
+    return this.http.get<BranchSummary[]>(`api/sessions/${id}/branches`);
   }
 
   submitBriefDecision(

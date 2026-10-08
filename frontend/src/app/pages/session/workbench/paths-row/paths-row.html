@@ -1,0 +1,72 @@
+<button type="button" class="rail" [class.on]="paths.open()" [style.grid-row]="firstRow()" style="grid-column: 1"
+  [attr.aria-expanded]="paths.open()" (click)="paths.toggle()"
+  [title]="paths.open() ? 'Fold the branch paths' : 'Unfold the branch paths'">
+  <span class="ch" aria-hidden="true">▶</span>Paths
+  @if (paths.branches(); as list) { ({{ list.length }}) }
+</button>
+
+@if (paths.open()) {
+  @if (paths.branchesError(); as err) {
+    <p class="state error" role="alert" [style.grid-row]="firstRow()" style="grid-column: 2 / -1">
+      Could not load branches: {{ err }}
+    </p>
+  } @else if (paths.branches() === null) {
+    <p class="state" role="status" [style.grid-row]="firstRow()" style="grid-column: 2 / -1">Loading branches…</p>
+  } @else if (paths.branches()!.length === 0) {
+    <p class="state" [style.grid-row]="firstRow()" style="grid-column: 2 / -1">
+      No branches yet. Select a step and use “Branch” to start one.
+    </p>
+  }
+
+  @for (br of paths.branches() ?? []; track br.session_id; let li = $index) {
+    <button type="button" class="lane-label" [style.grid-row]="firstRow() + 1 + li" style="grid-column: 1"
+      [title]="'Open the workbench of ' + br.name + '\n' + br.branch_instruction" (click)="openBranch(br)">
+      <span class="name">{{ br.name }}</span>
+      <span class="meta">
+        <span class="st st-{{ br.status }}">{{ br.status }}</span>
+        <span class="rs rs-{{ br.recovery_status }}">{{ RECOVERY_STATUS_LABEL[br.recovery_status] }}</span>
+      </span>
+      <span class="meta dim">{{ RESTORE_MODE_LABEL[br.branch_restore_mode] }} · from {{ br.forked_from_block_id }}</span>
+      <span class="instr">“{{ br.branch_instruction }}”</span>
+    </button>
+
+    @switch (paths.laneBlocks().get(br.session_id)?.kind) {
+      @case ('loaded') {
+        @if (paths.layouts().get(br.session_id); as layout) {
+          @if (layout.ok) {
+            @for (c of layout.cells; track c.block.block_id) {
+              <button type="button" class="cell s-{{ c.block.status }}" [class.inherited]="c.inherited"
+                [style.grid-row]="firstRow() + 1 + li" [style.grid-column]="c.column + 1"
+                [title]="(c.inherited ? 'Inherited: ' : '') + c.block.title + ' (' + c.block.block_id + ')'"
+                (click)="openBranch(br, c.block.block_id)">
+                <span class="t">
+                  <span aria-hidden="true">{{ STATUS_GLYPH[c.block.status] }}</span>
+                  {{ c.block.title }}
+                </span>
+                <span class="m">{{ c.block.block_id }} · {{ c.inherited ? 'inherited' : STATUS_LABEL[c.block.status] }}</span>
+              </button>
+            } @empty {
+              <span class="state lane-msg" [style.grid-row]="firstRow() + 1 + li" style="grid-column: 2 / -1">
+                No blocks yet (the branch is {{ br.status }}).
+              </span>
+            }
+          } @else {
+            <span class="state error lane-msg" role="alert" [style.grid-row]="firstRow() + 1 + li" style="grid-column: 2 / -1">
+              Cannot align this branch: {{ layout.error }}
+            </span>
+          }
+        }
+      }
+      @case ('error') {
+        <span class="state error lane-msg" role="alert" [style.grid-row]="firstRow() + 1 + li" style="grid-column: 2 / -1">
+          Could not load this branch's blocks: {{ laneError(br.session_id) }}
+        </span>
+      }
+      @default {
+        <span class="state lane-msg" role="status" [style.grid-row]="firstRow() + 1 + li" style="grid-column: 2 / -1">
+          Loading blocks…
+        </span>
+      }
+    }
+  }
+}

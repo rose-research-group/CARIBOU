@@ -16,6 +16,26 @@ interface ServerSettings {
   api_keys: Record<string, string>;
   ollama_host: string;
   ollama_model: string;
+  /** Live sandbox containers allowed at once; null is no limit. */
+  max_active_sessions: number | null;
+}
+
+const MISSING_LIMIT =
+  'The server did not report max_active_sessions, so settings cannot be saved. Update the CARIBOU server.';
+
+/** The field's text for the server's limit ('' = no limit; also '' when omitted, which save refuses). */
+function limitText(s: ServerSettings): string {
+  return s.max_active_sessions == null ? '' : String(s.max_active_sessions);
+}
+
+/** The field's text → the limit (null = no limit), or an error to show. */
+function parseMaxActiveSessions(text: string): { ok: true; value: number | null } | { ok: false; error: string } {
+  const trimmed = text.trim();
+  if (trimmed === '') return { ok: true, value: null };
+  if (!/^\d+$/.test(trimmed) || Number(trimmed) < 1) {
+    return { ok: false, error: 'Max active sessions must be a whole number of at least 1, or blank for no limit.' };
+  }
+  return { ok: true, value: Number(trimmed) };
 }
 
 @Component({
@@ -46,6 +66,9 @@ export class SettingsComponent implements OnInit {
   openrouterKey = signal('');
   ollamaHost = signal('');
   ollamaModel = signal('');
+  /** Text of the "Max active sessions" field; blank means no limit. */
+  maxActiveSessions = signal('');
+  readonly MISSING_LIMIT = MISSING_LIMIT;
 
   showKeys: Record<string, boolean> = {
     openai: false,
@@ -61,6 +84,7 @@ export class SettingsComponent implements OnInit {
         this.sessionsDir.set(s.sessions_dir);
         this.ollamaHost.set(s.ollama_host);
         this.ollamaModel.set(s.ollama_model);
+        this.maxActiveSessions.set(limitText(s));
         this.loading.set(false);
         this.refreshOllamaModels();
       },
@@ -71,7 +95,7 @@ export class SettingsComponent implements OnInit {
   save(): void {
     this.saving.set(true);
     this.saveResult.set(null);
-    const body: Record<string, string> = {};
+    const body: Record<string, string | number | null> = {};
     if (this.sessionsDir() !== this.settings()?.sessions_dir) {
       body['sessions_dir'] = this.sessionsDir();
     }
@@ -84,6 +108,23 @@ export class SettingsComponent implements OnInit {
     }
     if (this.ollamaModel() !== this.settings()?.ollama_model) {
       body['ollama_model'] = this.ollamaModel();
+    }
+
+    const current = this.settings()?.max_active_sessions;
+    if (current === undefined) {
+      this.saving.set(false);
+      this.saveResult.set({ ok: false, message: MISSING_LIMIT });
+      return;
+    }
+    const limit = parseMaxActiveSessions(this.maxActiveSessions());
+    if (!limit.ok) {
+      this.saving.set(false);
+      this.saveResult.set({ ok: false, message: limit.error });
+      return;
+    }
+    if (limit.value !== current) {
+      // null removes the limit on the server.
+      body['max_active_sessions'] = limit.value;
     }
 
     if (Object.keys(body).length === 0) {
@@ -105,6 +146,7 @@ export class SettingsComponent implements OnInit {
           this.settings.set(s);
           this.ollamaHost.set(s.ollama_host);
           this.ollamaModel.set(s.ollama_model);
+          this.maxActiveSessions.set(limitText(s));
           this.refreshOllamaModels();
         });
       },

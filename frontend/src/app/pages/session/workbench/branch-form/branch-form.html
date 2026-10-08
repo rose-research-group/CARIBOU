@@ -1,0 +1,70 @@
+<section class="branch" aria-label="Branch from this block">
+  <div class="head">
+    <div class="lbl">Branch from this block</div>
+    <button type="button" class="btn btn-ghost btn-xs" [class.on]="open()" [attr.aria-expanded]="open()"
+      (click)="toggle()">
+      <app-icon name="git-fork" [size]="12" /> Branch
+    </button>
+  </div>
+  @if (!open()) {
+    <p class="hint">Start a new session from the state just before this block, with a different instruction.</p>
+  } @else {
+    <form (submit)="$event.preventDefault(); submit()" aria-label="Branch from this block">
+      <fieldset [disabled]="unavailable() !== null || pending()">
+        @if (unavailable(); as why) {
+          <p class="notice" role="note">{{ why }}</p>
+        }
+        <label class="field">
+          <span class="dim">Instruction (required)</span>
+          <textarea rows="3" [value]="instruction()" (input)="instruction.set($any($event.target).value)"
+            [attr.maxlength]="INSTRUCTION_MAX"
+            placeholder="What should the branch do differently from here?" aria-label="Branch instruction"></textarea>
+        </label>
+
+        <div class="modes" role="radiogroup" aria-label="Restore mode">
+          <span class="dim">Restore mode</span>
+          @for (o of options(); track o.mode) {
+            <label class="mode" [class.off]="!o.enabled" [class.sel]="mode() === o.mode">
+              <input type="radio" name="branch-mode" [value]="o.mode" [checked]="mode() === o.mode"
+                [disabled]="!o.enabled" (change)="chooseMode(o.mode)" />
+              <span>
+                <strong>{{ o.label }}</strong>
+                <small>{{ o.explanation }}</small>
+                @if (o.reason) { <small class="reason">Unavailable: {{ o.reason }}</small> }
+              </span>
+            </label>
+          }
+        </div>
+
+        @if (selectedOption()?.needsAcknowledgement) {
+          <label class="ack">
+            <input type="checkbox" [checked]="acknowledge()" (change)="acknowledge.set($any($event.target).checked)" />
+            <span>
+              I accept an unverified replay.
+              <small class="dim">This checkpoint has no dataset fingerprint, so the replayed data cannot be checked against it.</small>
+            </span>
+          </label>
+        }
+
+        <label class="field">
+          <span class="dim">Name (optional)</span>
+          <input type="text" [value]="name()" (input)="name.set($any($event.target).value)" maxlength="120"
+            [placeholder]="'branch from ' + block().block_id" aria-label="Branch name" />
+        </label>
+      </fieldset>
+
+      @if (error(); as err) {
+        <p class="err" role="alert">{{ err }}</p>
+      }
+      <div class="foot">
+        @if (formError(); as why) {
+          @if (unavailable() === null) { <span class="dim">{{ why }}</span> }
+        }
+        <button type="button" class="btn btn-ghost btn-xs" (click)="toggle()" [disabled]="pending()">Cancel</button>
+        <button type="submit" class="btn btn-primary btn-xs" [disabled]="formError() !== null || pending()">
+          {{ pending() ? 'Branching…' : 'Create branch' }}
+        </button>
+      </div>
+    </form>
+  }
+</section>

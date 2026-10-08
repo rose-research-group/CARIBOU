@@ -1,0 +1,37 @@
+@let s = session();
+<section class="branch-banner" [class.failed]="restoreFailed()" aria-label="Branch">
+  <div class="line">
+    <app-icon name="git-fork" [size]="14" aria-hidden="true" />
+    <span class="what">
+      Branch of
+      @if (s.parent_session_id; as parentId) {
+        <a [routerLink]="['/session', parentId]" queryParamsHandling="preserve"
+          [title]="'Open the parent session ' + parentId">{{ parentLabel() }}</a>
+      } @else {
+        <span class="dim">an unknown parent</span>
+      }
+      from <span class="mono">{{ s.forked_from_block_id }}</span>
+      @if (s.branch_restore_mode; as mode) { · {{ RESTORE_MODE_LABEL[mode] }} }
+      @if (s.branch_instruction) { · <q>{{ s.branch_instruction }}</q> }
+    </span>
+    <span class="rs rs-{{ s.recovery_status }}">{{ RECOVERY_STATUS_LABEL[s.recovery_status] }}</span>
+  </div>
+  @if (parentError(); as err) {
+    <p class="err" role="alert">Could not load the parent session: {{ err }}</p>
+  }
+  @if (restoring()) {
+    <div class="progress" role="status" aria-live="polite">
+      <span>{{ restoreProgressText(s) }}</span>
+      <div class="track" role="progressbar" aria-valuemin="0" [attr.aria-valuemax]="s.recovery_total_steps"
+        [attr.aria-valuenow]="s.recovery_step" aria-label="Restore progress">
+        <span [style.width.%]="restorePercent(s)"></span>
+      </div>
+    </div>
+  } @else if (restoreFailed()) {
+    <p class="err" role="alert">
+      Restore {{ s.recovery_status }}: {{ s.recovery_detail || 'no detail was recorded' }}
+    </p>
+  } @else if (s.recovery_status === 'recovered' && s.recovery_detail) {
+    <p class="detail dim">{{ s.recovery_detail }}</p>
+  }
+</section>
