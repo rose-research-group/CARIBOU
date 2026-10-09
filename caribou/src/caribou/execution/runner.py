@@ -101,22 +101,25 @@ AUTO_CONTINUE_LIMIT = 4
 AUTO_CONTINUE_MESSAGE = "Please continue with the next step."
 
 
-def auto_continue_message(triggers: List[str], step: int) -> str:
-    """Guidance text for one automatic continuation, e.g.
-    'Continuing automatically after delegating to QC_metrics_agent (2 of 4).'
+def auto_continue_message(triggers: List[str], step: Optional[int] = None) -> str:
+    """Guidance text for one automatic continuation.
+
+    `step` is the handoff count against AUTO_CONTINUE_LIMIT when the message
+    delegated, e.g. 'Continuing automatically after delegating to
+    QC_metrics_agent (2 of 4).'. A work-item open/close alone does not
+    consume the budget, so its message has no counter: 'Continuing
+    automatically after opening a work item.'
     """
     if not triggers:
         raise ValueError("an automatic continuation needs at least one trigger")
-    return (
-        f"Continuing automatically after {' and '.join(triggers)} "
-        f"({step} of {AUTO_CONTINUE_LIMIT})."
-    )
+    counter = "" if step is None else f" ({step} of {AUTO_CONTINUE_LIMIT})"
+    return f"Continuing automatically after {' and '.join(triggers)}{counter}."
 
 
 def auto_continue_exhausted_message() -> str:
-    """Guidance text when the automatic-continuation budget is used up."""
+    """Guidance text when a delegation finds the handoff budget used up."""
     return (
-        f"Automatic continuation paused after {AUTO_CONTINUE_LIMIT} steps. "
+        f"Automatic continuation paused after {AUTO_CONTINUE_LIMIT} handoffs. "
         "Waiting for your next message."
     )
 
@@ -1821,23 +1824,27 @@ def run_agent_session(
             continue
 
         # Interactive mode (D1): after a work-item open/close or a delegation,
-        # keep going instead of waiting for the user, at most
-        # AUTO_CONTINUE_LIMIT times in a row (reset by a real user message).
+        # keep going instead of waiting for the user. Only delegations consume
+        # the budget of AUTO_CONTINUE_LIMIT handoffs in a row (reset by a real
+        # user message): an open/close continues without counting, and a
+        # delegation that finds no budget left pauses for the user.
         if not is_auto and _auto_triggers:
-            if auto_continue_budget > 0:
-                auto_continue_budget -= 1
+            if _delegated and auto_continue_budget <= 0:
+                console.print(f"[yellow]{auto_continue_exhausted_message()}[/yellow]")
+            else:
+                step: Optional[int] = None
+                if _delegated:
+                    auto_continue_budget -= 1
+                    step = AUTO_CONTINUE_LIMIT - auto_continue_budget
                 history.append({"role": "user", "content": AUTO_CONTINUE_MESSAGE})
                 if memory_manager:
                     memory_manager.add_message("user", AUTO_CONTINUE_MESSAGE)
                 console.print(
                     "[yellow]"
-                    + auto_continue_message(
-                        _auto_triggers, AUTO_CONTINUE_LIMIT - auto_continue_budget
-                    )
+                    + auto_continue_message(_auto_triggers, step)
                     + "[/yellow]"
                 )
                 continue
-            console.print(f"[yellow]{auto_continue_exhausted_message()}[/yellow]")
 
         # Interactive mode: prompt user for next action
         while True:

@@ -74,19 +74,44 @@ def test_apply_command_corrects_a_malformed_last_line_command(tmp_path) -> None:
 def test_apply_command_corrects_a_command_that_is_not_the_last_line(
     tmp_path,
 ) -> None:
-    # Observed in practice: `close_work_item ...` followed by
-    # `delegate_to_X`. The command is not applied, but the agent is told why
-    # instead of it vanishing.
+    # The command is not applied, but the agent is told why instead of it
+    # vanishing; the feedback names the one exception (a final bare
+    # delegation line).
     store = _store(tmp_path)
     for message in (
         'open_work_item "Load" "Body"\nNow running the loader.',
-        'close_work_item 0 "Done"\ndelegate_to_QC_metrics',
+        'close_work_item 0 "Done"\ndelegate_to_QC_metrics\nThanks.',
+        'close_work_item 0 "Done"\ndelegate_to_QC_metrics now',
         "open_work_item Load\nNow running the loader.",
     ):
         result = apply_command(store, message, owner="coder", turn=1)
         assert result is not None and result.success is False
         assert "LAST line" in result.feedback
+        assert "delegate_to_<agent>" in result.feedback
     assert store.list() == []
+
+
+def test_apply_command_accepts_a_command_in_either_order_with_a_delegation(
+    tmp_path,
+) -> None:
+    # Observed in practice (session ef4aea40): `open_work_item ...` followed
+    # by `delegate_to_X` on the last line was refused. Both orders apply.
+    store = _store(tmp_path)
+    opened = apply_command(
+        store,
+        'open_work_item "Load" "Body"\ndelegate_to_QC_metrics',
+        owner="coder",
+        turn=1,
+    )
+    assert opened is not None and opened.success is True
+    closed = apply_command(
+        store,
+        'Done loading.\ndelegate_to_QC_metrics\nclose_work_item 0 "Loaded"',
+        owner="coder",
+        turn=2,
+    )
+    assert closed is not None and closed.success is True
+    assert store.read(0)["status"] == "Done"
 
 
 def test_apply_command_ignores_command_names_inside_code(tmp_path) -> None:

@@ -191,7 +191,7 @@ def run_session_sync(
         detect_rag,
         extract_labeled_block,
     )
-    from caribou.execution.blocks import BlockTracker, blocks_path_for
+    from caribou.execution.blocks import BlockError, BlockTracker, blocks_path_for
     from caribou.execution.event_ids import make_action_id
     from caribou.execution.rag_client import get_rag_client
     from caribou.execution.user_input import require_user_turn
@@ -368,9 +368,14 @@ def run_session_sync(
     current_agent_history_start = int(
         (resume_state or {}).get("current_agent_history_start", len(history))
     )
-    # Automatic "continue"s after a work-item open/close or a delegation (D1),
-    # at most AUTO_CONTINUE_LIMIT in a row; reset by every real user message.
+    # Automatic "continue"s after a work-item open/close or a delegation (D1).
+    # Only delegations consume the budget, at most AUTO_CONTINUE_LIMIT
+    # handoffs in a row; reset by every real user message.
     auto_continue_budget = AUTO_CONTINUE_LIMIT
+    # The block a focused user turn named, until the loop has checked whether
+    # that block's work item belongs to another agent (B.1 owner routing):
+    # set by `_wait_for_user`, consumed at the top of the next turn.
+    pending_return_block_id: Optional[str] = None
 
     def _runner_state() -> Dict[str, Any]:
         return {
@@ -391,6 +396,152 @@ def run_session_sync(
         if checkpoint_callback is None:
             return
         checkpoint_callback([dict(item) for item in history], _runner_state())
+
+    def _switch_to_agent(
+        new_agent: Any,
+        *,
+        turn: int,
+        command: str,
+        reason: Optional[str],
+        note: Dict[str, str],
+        handoff_report: bool,
+    ) -> None:
+        """Make `new_agent` the current agent.
+
+        Emits the `agent_switch` event, appends `note` (a history message,
+        e.g. the routing line) to the history and memory, generates the
+        departing agent's handoff report when `handoff_report` (a delegation;
+        a work item returned to its owner has none, and keeps the owner's
+        working history), then applies the prompt switch: the refreshed
+        prompt is emitted as an `Agent prompt` system message and every
+        system message the switch appends as `Agent switch`.
+        """
+        nonlocal current_agent, current_agent_history_start
+        if logger:
+            logger.info(
+                "Agent switch: %s -> %s | command: %s | turn: %s",
+                current_agent.name,
+                new_agent.name,
+                command,
+                turn,
+            )
+        _emit(
+            "agent_switch",
+            {
+                "from_agent": current_agent.name,
+                "to_agent": new_agent.name,
+                "command": command,
+                "reason": reason,
+            },
+            turn=turn,
+        )
+        history.append({"role": note["role"], "content": note["content"]})
+        if memory_manager is not None:
+            memory_manager.add_message(note["role"], note["content"])
+        if report_memory is not None:
+            if handoff_report:
+                from caribou.execution.report_generation import (
+                    _generate_agent_report,
+                )
+
+                agent_slice = history[current_agent_history_start:]
+                agent_report = _generate_agent_report(
+                    console,
+                    llm_client=llm_client,
+                    model_name=model_name,
+                    agent_name=current_agent.name,
+                    history_slice=agent_slice,
+                )
+                report_memory.add_report(current_agent.name, agent_report)
+                if logger:
+                    logger.info(
+                        "Agent report generated for %s | length: %s chars",
+                        current_agent.name,
+                        len(agent_report),
+                    )
+                current_agent_history_start = len(history)
+            report_memory.update_agent_prompt(_agent_prompt(new_agent))
+        switch_history_start = len(history)
+        refreshed_agent_prompt = _agent_prompt(new_agent) + "\n\n" + analysis_context
+        _emit(
+            "system_message",
+            {"content": refreshed_agent_prompt, "category": "Agent prompt"},
+            turn=turn,
+        )
+        _apply_agent_switch(
+            new_agent_prompt=_agent_prompt(new_agent),
+            analysis_context=analysis_context,
+            history=history,
+            memory_manager=memory_manager,
+            action_space=action_space,
+            new_agent=new_agent,
+        )
+        for system_item in history[switch_history_start:]:
+            if system_item.get("role") == "system":
+                _emit(
+                    "system_message",
+                    {
+                        "content": system_item.get("content", ""),
+                        "category": "Agent switch",
+                    },
+                    turn=turn,
+                )
+        current_agent = new_agent
+
+    def _owner_return(block_id: str) -> Optional[tuple[Any, int]]:
+        """`(owner agent, item id)` when the focused block `block_id` belongs
+        to a work item owned by an agent other than the current one, so the
+        turn must go to that owner (B.1); None for an implicit block or an
+        item the current agent owns. Raises when the owner is not an agent
+        of this system."""
+        block = next(
+            (value for value in block_tracker.blocks() if value["block_id"] == block_id),
+            None,
+        )
+        if block is None:
+            raise BlockError(f"focused block {block_id!r} is unknown")
+        if block["work_item_id"] is None:
+            return None
+        item = work_items.read(int(block["work_item_id"]))
+        owner = str(item["owner"])
+        if owner == current_agent.name:
+            return None
+        owner_agent = agent_system.get_agent(owner)
+        if owner_agent is None:
+            raise RuntimeError(
+                f"work item #{item['id']} (focused block {block_id}) is owned by "
+                f"{owner!r}, which is not an agent in this system"
+            )
+        return owner_agent, int(item["id"])
+
+    def _return_focused_block_to_owner(turn: int) -> None:
+        """Perform the owner switch a focused user turn calls for, if any:
+        same mechanics as a delegation switch, no work-item transfer and no
+        handoff report. The focus stays set, so the owner's code lands in
+        the focused item's current attempt."""
+        nonlocal pending_return_block_id
+        if pending_return_block_id is None:
+            return
+        block_id = pending_return_block_id
+        pending_return_block_id = None
+        owner_return = _owner_return(block_id)
+        if owner_return is None:
+            return
+        owner_agent, item_id = owner_return
+        guidance = f"Returned to {owner_agent.name} for work item #{item_id}."
+        _switch_to_agent(
+            owner_agent,
+            turn=turn,
+            command="returned_for_changes",
+            reason=f"work item #{item_id} sent back",
+            note={"role": "system", "content": guidance},
+            handoff_report=False,
+        )
+        _emit(
+            "system_message",
+            {"content": guidance, "category": "Runner guidance"},
+            turn=turn,
+        )
 
     def _block_entry(turn: int, history_cut: int, block_id: str) -> Dict[str, Any]:
         """The `entry` of a block the tracker is creating (contract §1, A2).
@@ -445,7 +596,7 @@ def run_session_sync(
         with a `block_id` focuses that block until the next handoff (D4); a
         briefing reply must not carry one, since no blocks exist yet.
         """
-        nonlocal auto_continue_budget
+        nonlocal auto_continue_budget, pending_return_block_id
         _emit("status_change", {"status": "idle", "reason": reason}, turn=turn)
         if logger:
             logger.info("Waiting for user input | turn: %s", turn)
@@ -502,6 +653,9 @@ def run_session_sync(
                 block_tracker.sync()
                 if user_turn.block_id is not None:
                     block_tracker.set_focus(user_turn.block_id)
+                    # Whether the block's work item belongs to another agent
+                    # is decided at the top of the next turn (B.1).
+                    pending_return_block_id = user_turn.block_id
                 return True
             except queue.Empty:
                 continue
@@ -692,6 +846,9 @@ def run_session_sync(
                 return
 
             turn = turns_completed + 1
+            # A focused user turn on another agent's work item goes to that
+            # item's owner (B.1), before anything is asked of the LLM.
+            _return_focused_block_to_owner(turn)
             _emit(
                 "status_change",
                 {
@@ -1175,86 +1332,17 @@ def run_session_sync(
                     block_tracker.clear_focus()
                     block_tracker.note_delegation(current_agent.name, target_name, cmd)
                     _auto_triggers.append(f"delegating to {target_name}")
-                    if logger:
-                        logger.info(
-                            "Agent switch: %s -> %s | command: %s | turn: %s",
-                            current_agent.name,
-                            target_name,
-                            cmd,
-                            turn,
-                        )
-                    _emit(
-                        "agent_switch",
-                        {
-                            "from_agent": current_agent.name,
-                            "to_agent": target_name,
-                            "command": cmd,
-                            "reason": None,
-                        },
+                    _switch_to_agent(
+                        new_agent,
                         turn=turn,
-                    )
-                    history.append(
-                        {
+                        command=cmd,
+                        reason=None,
+                        note={
                             "role": "assistant",
                             "content": f"Routing to **{target_name}** (command `{cmd}`)",
-                        }
+                        },
+                        handoff_report=True,
                     )
-                    if memory_manager is not None:
-                        memory_manager.add_message(
-                            "assistant",
-                            f"Routing to **{target_name}** (command `{cmd}`)",
-                        )
-                    # Generate handoff report for the departing agent
-                    if report_memory is not None:
-                        from caribou.execution.report_generation import (
-                            _generate_agent_report,
-                        )
-
-                        agent_slice = history[current_agent_history_start:]
-                        agent_report = _generate_agent_report(
-                            console,
-                            llm_client=llm_client,
-                            model_name=model_name,
-                            agent_name=current_agent.name,
-                            history_slice=agent_slice,
-                        )
-                        report_memory.add_report(current_agent.name, agent_report)
-                        if logger:
-                            logger.info(
-                                "Agent report generated for %s | length: %s chars",
-                                current_agent.name,
-                                len(agent_report),
-                            )
-                        report_memory.update_agent_prompt(_agent_prompt(new_agent))
-                        current_agent_history_start = len(history)
-                    switch_history_start = len(history)
-                    refreshed_agent_prompt = (
-                        _agent_prompt(new_agent) + "\n\n" + analysis_context
-                    )
-                    _emit(
-                        "system_message",
-                        {"content": refreshed_agent_prompt, "category": "Agent prompt"},
-                        turn=turn,
-                    )
-                    _apply_agent_switch(
-                        new_agent_prompt=_agent_prompt(new_agent),
-                        analysis_context=analysis_context,
-                        history=history,
-                        memory_manager=memory_manager,
-                        action_space=action_space,
-                        new_agent=new_agent,
-                    )
-                    for system_item in history[switch_history_start:]:
-                        if system_item.get("role") == "system":
-                            _emit(
-                                "system_message",
-                                {
-                                    "content": system_item.get("content", ""),
-                                    "category": "Agent switch",
-                                },
-                                turn=turn,
-                            )
-                    current_agent = new_agent
                     _delegated = True
 
             if cancel_response_flag.is_set() and not is_auto:
@@ -1328,14 +1416,20 @@ def run_session_sync(
                 continue
 
             # Interactive mode (D1): after a work-item open/close or a
-            # delegation, keep going instead of waiting for the user, at most
-            # AUTO_CONTINUE_LIMIT times in a row (reset by a real user
-            # message). `not is_auto` is explicit here (rather than relying
-            # on the `if is_auto: ... continue` above always firing first in
-            # auto mode) because that ordering is incidental, not a contract.
+            # delegation, keep going instead of waiting for the user. Only
+            # delegations consume the budget of AUTO_CONTINUE_LIMIT handoffs
+            # in a row (reset by a real user message): an open/close
+            # continues without counting, and a delegation that finds no
+            # budget left pauses for the user. `not is_auto` is explicit here
+            # (rather than relying on the `if is_auto: ... continue` above
+            # always firing first in auto mode) because that ordering is
+            # incidental, not a contract.
             if not is_auto and _auto_triggers:
-                if auto_continue_budget > 0:
-                    auto_continue_budget -= 1
+                if not (_delegated and auto_continue_budget <= 0):
+                    auto_continue_step: Optional[int] = None
+                    if _delegated:
+                        auto_continue_budget -= 1
+                        auto_continue_step = AUTO_CONTINUE_LIMIT - auto_continue_budget
                     history.append(
                         {"role": "user", "content": "Please continue with the next step."}
                     )
@@ -1350,8 +1444,7 @@ def run_session_sync(
                         "system_message",
                         {
                             "content": auto_continue_message(
-                                _auto_triggers,
-                                AUTO_CONTINUE_LIMIT - auto_continue_budget,
+                                _auto_triggers, auto_continue_step
                             ),
                             "category": "Runner guidance",
                         },

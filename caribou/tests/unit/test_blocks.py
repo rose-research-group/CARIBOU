@@ -507,7 +507,11 @@ def test_reclosing_a_reopened_block_warns_when_an_earlier_action_failed(tmp_path
     assert tracker.blocks()[0]["status"] == "warn"
 
 
-def test_reclosing_a_reopened_rejected_attempt_uses_its_code_alone(tmp_path):
+def test_focus_on_a_rejected_attempt_continues_in_the_next_attempt(tmp_path):
+    """A rejected attempt is closed history: focusing its block (the
+    workbench's "Request changes" names the rejected block) sends the code
+    to the item's next attempt, a new block, and not back into the rejected
+    one."""
     store = _store(tmp_path, qc_mode="required")
     tracker, _ = _tracker(store)
     item = store.open("QC", "b", "coder", 1)
@@ -522,14 +526,73 @@ def test_reclosing_a_reopened_rejected_attempt_uses_its_code_alone(tmp_path):
     assert tracker.blocks()[0]["status"] == "ok"
 
     tracker.set_focus("blk-0001")
-    assert tracker.begin_action("coder", 4, "a2") == "blk-0001"
+    assert tracker.begin_action("coder", 4, "a2") == "blk-0002"
     tracker.finish_action("a2", True)
-    # A sync during focus does not close the focused block.
+    first, second = tracker.blocks()
+    assert (first["status"], first["action_ids"]) == ("ok", ["a1"])
+    assert (second["work_item_id"], second["attempt"], second["status"]) == (
+        item["id"], 2, "running",
+    )
+    assert second["title"] == "QC"
+    # The focus now follows the new attempt: a sync does not close it and
+    # the next action joins it.
     tracker.sync()
-    assert tracker.blocks()[0]["status"] == "running"
+    assert tracker.blocks()[1]["status"] == "running"
+    assert tracker.begin_action("coder", 5, "a3") == "blk-0002"
+    tracker.finish_action("a3", False)
+    tracker.clear_focus()
+    # Not reopened by the focus, so the clear leaves the open attempt alone.
+    assert [b["status"] for b in tracker.blocks()] == ["ok", "running"]
+    # Required QC: the close goes to In review, so attempt 2 stays open
+    # until its review; the approve then closes it by its code alone.
+    tracker.on_work_item_changed(store.close(item["id"], "s2", "coder", 6))
+    assert [b["status"] for b in tracker.blocks()] == ["ok", "running"]
+    tracker.on_work_item_changed(
+        store.record_review(
+            item["id"], evaluator="qc", turn=7, verdict="approve", assessment="ok"
+        )
+    )
+    assert [b["status"] for b in tracker.blocks()] == ["ok", "error"]
+
+
+def test_focus_on_a_rejected_attempt_joins_an_existing_next_attempt_block(tmp_path):
+    store = _store(tmp_path)
+    tracker, _ = _tracker(store)
+    item = store.open("QC", "b", "coder", 1)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.on_work_item_changed(store.close(item["id"], "s", "coder", 2))
+    store.record_review(item["id"], turn=3, verdict="reject", assessment="redo")
+    # Attempt 2 already has a block from an unfocused run.
+    assert tracker.begin_action("coder", 4, "a2") == "blk-0002"
+    tracker.close_all()
+    assert [b["status"] for b in tracker.blocks()] == ["ok", "ok"]
+
+    tracker.set_focus("blk-0001")
+    assert tracker.begin_action("coder", 5, "a3") == "blk-0002"
+    # The redirected focus reopened attempt 2, so the clear recloses it.
+    assert tracker.blocks()[1]["status"] == "running"
+    tracker.clear_focus()
+    assert [b["status"] for b in tracker.blocks()] == ["ok", "ok"]
+    assert tracker.blocks()[1]["action_ids"] == ["a2", "a3"]
+
+
+def test_focus_on_a_finished_but_not_rejected_attempt_still_reopens_it(tmp_path):
+    store = _store(tmp_path, qc_mode="required")
+    tracker, _ = _tracker(store)
+    item = store.open("QC", "b", "coder", 1)
+    tracker.begin_action("coder", 1, "a1")
+    store.close(item["id"], "s", "coder", 2)
+    tracker.on_work_item_changed(
+        store.record_review(
+            item["id"], evaluator="qc", turn=3, verdict="approve", assessment="ok"
+        )
+    )
+    assert tracker.blocks()[0]["status"] == "ok"
+    tracker.set_focus("blk-0001")
+    assert tracker.begin_action("coder", 4, "a2") == "blk-0001"
+    assert len(tracker.blocks()) == 1
     tracker.clear_focus()
     assert tracker.blocks()[0]["status"] == "ok"
-    assert len(tracker.blocks()) == 1
 
 
 def test_focus_overrides_work_item_attribution(tmp_path):
@@ -713,6 +776,46 @@ def test_on_new_block_is_not_called_for_a_reopened_or_focused_block(tmp_path):
 
     assert tracker.begin_action("coder", 2, "a2", on_new_block=hook) == "blk-0001"
     assert tracker.blocks()[0]["entry"] is None
+
+
+def test_on_new_block_runs_for_the_next_attempt_a_rejected_focus_opens(tmp_path):
+    store = _store(tmp_path)
+    tracker, _ = _tracker(store)
+    item = store.open("QC", "b", "coder", 1)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.on_work_item_changed(store.close(item["id"], "s", "coder", 2))
+    store.record_review(item["id"], turn=3, verdict="reject", assessment="redo")
+    tracker.set_focus("blk-0001")
+
+    seen: list = []
+
+    def hook(block_id):
+        seen.append(block_id)
+        return _entry(turn=4)
+
+    assert tracker.begin_action("coder", 4, "a2", on_new_block=hook) == "blk-0002"
+    assert seen == ["blk-0002"]
+    assert tracker.blocks()[1]["entry"] == _entry(turn=4)
+
+
+def test_a_failing_on_new_block_under_a_rejected_focus_discards_and_unfocuses(tmp_path):
+    store = _store(tmp_path)
+    tracker, _ = _tracker(store)
+    item = store.open("QC", "b", "coder", 1)
+    tracker.begin_action("coder", 1, "a1")
+    tracker.on_work_item_changed(store.close(item["id"], "s", "coder", 2))
+    store.record_review(item["id"], turn=3, verdict="reject", assessment="redo")
+    tracker.set_focus("blk-0001")
+
+    def hook(_block_id):
+        raise RuntimeError("checkpoint failed")
+
+    with pytest.raises(RuntimeError, match="checkpoint failed"):
+        tracker.begin_action("coder", 4, "a2", on_new_block=hook)
+    assert len(tracker.blocks()) == 1
+    # The discarded block is not left as the focus: the next action
+    # attributes normally and opens attempt 2 afresh.
+    assert tracker.begin_action("coder", 5, "a3") == "blk-0002"
 
 
 def test_a_failing_on_new_block_discards_the_block_and_propagates(tmp_path):

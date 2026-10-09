@@ -426,6 +426,29 @@ class BlockTracker:
         for item_id in item_ids:
             self._apply_item(self.work_items.read(item_id))
 
+    def _attempt_block(
+        self, item: Dict[str, Any], owner: str, turn: int
+    ) -> Dict[str, Any]:
+        """This session's block for `item`'s current attempt (1 + its
+        rejections), created by `owner` at `turn` if there is none yet."""
+        attempt = 1 + _rejections(item)
+        for block in self._blocks:
+            if (
+                block["work_item_id"] == item["id"]
+                and block["attempt"] == attempt
+                and not _is_inherited(block)
+            ):
+                return block
+        # An inherited block for this attempt is immutable: the branch
+        # continues the same attempt number in a new block of its own.
+        return self._new_block(
+            owner=owner,
+            turn=turn,
+            work_item_id=int(item["id"]),
+            attempt=attempt,
+            title=str(item["title"]),
+        )
+
     def _attribute(self, owner: str, turn: int) -> Dict[str, Any]:
         candidates = [
             self.work_items.read(int(summary["id"]))
@@ -439,23 +462,7 @@ class BlockTracker:
                     int(value["id"]),
                 ),
             )
-            attempt = 1 + _rejections(item)
-            for block in self._blocks:
-                if (
-                    block["work_item_id"] == item["id"]
-                    and block["attempt"] == attempt
-                    and not _is_inherited(block)
-                ):
-                    return block
-            # An inherited block for this attempt is immutable: the branch
-            # continues the same attempt number in a new block of its own.
-            return self._new_block(
-                owner=owner,
-                turn=turn,
-                work_item_id=int(item["id"]),
-                attempt=attempt,
-                title=str(item["title"]),
-            )
+            return self._attempt_block(item, owner, turn)
         last = self._last_block
         if (
             last is not None
@@ -481,8 +488,12 @@ class BlockTracker:
         """Attribute every action to `block_id` until `clear_focus`.
 
         Overrides work-item and implicit attribution entirely. A closed block
-        reopens on the first focused action, not here. Focusing another block
-        clears the current focus first; refocusing the same block is a no-op.
+        reopens on the first focused action, not here, with one exception: a
+        work-item block whose attempt has since been rejected is closed
+        history, so the focus moves to the item's current attempt (a new
+        block when there is none yet) on that first action (`_focus_target`).
+        Focusing another block clears the current focus first; refocusing the
+        same block is a no-op.
         """
         block = next(
             (value for value in self._blocks if value["block_id"] == block_id), None
@@ -520,6 +531,23 @@ class BlockTracker:
         else:
             self._apply_item(item)
 
+    def _focus_target(self, owner: str, turn: int) -> Dict[str, Any]:
+        """The block a focused action goes to, re-pointing the focus when
+        the focused attempt was rejected since (see `set_focus`)."""
+        block = self._focus
+        if block is None:
+            raise BlockError("no focus is set")
+        if not block["implicit"]:
+            item = self.work_items.read(int(block["work_item_id"]))
+            if _rejections(item) >= block["attempt"]:
+                block = self._attempt_block(item, owner, turn)
+                if block is not self._focus:
+                    self._focus = block
+                    self._focus_reopened = False
+        if block["status"] != _OPEN:
+            self._focus_reopened = True
+        return block
+
     def note_delegation(self, from_agent: str, to_agent: str, command: str) -> None:
         """Title the next implicit block created for `to_agent` after the
         handoff, e.g. "QC metrics (from input_agent)" for
@@ -545,37 +573,43 @@ class BlockTracker:
         """Attribute a code action that is about to execute; returns its block_id.
 
         When the action creates a new block (not when it reopens or focuses
-        an existing one), `on_new_block(block_id)` is called before this
-        returns and before the block is first persisted; the dict it returns
-        becomes the block's `entry`. With no hook, `entry` stays null. If the
-        hook raises, the new block is discarded and the error propagates.
+        an existing one; a focus on a rejected attempt that opens the next
+        attempt's block does create one), `on_new_block(block_id)` is called
+        before this returns and before the block is first persisted; the
+        dict it returns becomes the block's `entry`. With no hook, `entry`
+        stays null. If the hook raises, the new block is discarded and the
+        error propagates.
         """
         if action_id in self._by_action:
             raise BlockError(f"action {action_id!r} was already attributed")
         self.sync()
+        known = len(self._blocks)
         if self._focus is not None:
-            block = self._focus
-            if block["status"] != _OPEN:
-                self._focus_reopened = True
+            block = self._focus_target(owner, turn)
         else:
-            known = len(self._blocks)
             block = self._attribute(owner, turn)
-            if len(self._blocks) > known:
-                if on_new_block is not None:
-                    try:
-                        entry = on_new_block(block["block_id"])
-                    except BaseException:
-                        self._blocks.pop()
-                        raise
-                    if not isinstance(entry, dict):
-                        self._blocks.pop()
-                        raise BlockError(
-                            f"on_new_block returned {type(entry).__name__}, "
-                            f"expected a dict for {block['block_id']}"
-                        )
-                    block["entry"] = copy.deepcopy(entry)
-                if block["implicit"]:
-                    self._pending_titles.pop(owner, None)
+        if len(self._blocks) > known:
+            if on_new_block is not None:
+                try:
+                    entry = on_new_block(block["block_id"])
+                except BaseException:
+                    self._blocks.pop()
+                    if self._focus is block:
+                        self._focus = None
+                        self._focus_reopened = False
+                    raise
+                if not isinstance(entry, dict):
+                    self._blocks.pop()
+                    if self._focus is block:
+                        self._focus = None
+                        self._focus_reopened = False
+                    raise BlockError(
+                        f"on_new_block returned {type(entry).__name__}, "
+                        f"expected a dict for {block['block_id']}"
+                    )
+                block["entry"] = copy.deepcopy(entry)
+            if block["implicit"]:
+                self._pending_titles.pop(owner, None)
         last = self._last_block
         if last is not None and last is not block and last["implicit"]:
             self._close(last)

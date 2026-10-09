@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import threading
 from types import SimpleNamespace
@@ -82,23 +83,59 @@ def test_command_not_on_the_last_line_or_malformed_is_rejected(message) -> None:
     assert parse_work_item_command(message) is None
 
 
-def test_delegation_line_before_a_last_line_command_leaves_it_parseable() -> None:
-    command = parse_work_item_command(
+def test_a_command_and_a_final_delegation_line_parse_in_either_order() -> None:
+    before = parse_work_item_command(
         'QC is done.\ndelegate_to_clustering\nclose_work_item 1 "Filtered cells"'
     )
-    assert command is not None
-    assert (command.name, command.item_id) == ("close_work_item", 1)
-    # A delegation after the command makes the command not the last line.
-    assert (
-        parse_work_item_command('close_work_item 1 "Filtered cells"\ndelegate_to_clustering')
-        is None
+    after = parse_work_item_command(
+        'QC is done.\nclose_work_item 1 "Filtered cells"\ndelegate_to_clustering'
     )
+    assert before is not None
+    assert (before.name, before.item_id) == ("close_work_item", 1)
+    assert after == before
+    # The same with code before the command, and trailing blank lines.
+    assert (
+        parse_work_item_command(
+            "```python\nx = 1\n```\nclose_work_item 1 \"Filtered cells\"\n"
+            "delegate_to_clustering\n\n"
+        )
+        == before
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # Only a BARE delegation line may follow the command.
+        'close_work_item 1 "Filtered cells"\ndelegate_to_clustering now',
+        'close_work_item 1 "Filtered cells"\nPlease delegate_to_clustering',
+        # Prose after the delegation makes the command not the last line.
+        'close_work_item 1 "Filtered cells"\ndelegate_to_clustering\nThanks.',
+        # Two lines between the command and the end.
+        'close_work_item 1 "Filtered cells"\nSee you.\ndelegate_to_clustering',
+        # A delegation alone is not a work-item command.
+        "delegate_to_clustering",
+        "Handing over.\ndelegate_to_clustering",
+        # The line before the delegation is code, not a command.
+        "```python\nlist_work_items\n```\ndelegate_to_clustering",
+        "```python\nlist_work_items\ndelegate_to_clustering",
+    ],
+)
+def test_a_final_delegation_line_does_not_widen_the_grammar(message) -> None:
+    assert parse_work_item_command(message) is None
 
 
 def test_prompt_states_the_last_line_rule_and_per_task_work_items() -> None:
     prompt = render_work_item_prompt(WorkItemPolicy())
     assert "LAST line" in prompt
     assert "When you receive a delegation" in prompt
+    # Either order is fine now; the old one-way rule is gone.
+    assert "put the delegation before the command" not in prompt
+    assert "directly before or after the command" in prompt
+    assert (
+        "If you are redoing a stage you already completed, reuse the same "
+        "title so the rerun is linked to the original." in prompt
+    )
 
 
 def test_optional_qc_store_commits_each_transition_and_restarts(tmp_path) -> None:
@@ -445,3 +482,97 @@ def test_copy_at_a_brief_only_commit_gives_an_empty_store(tmp_path) -> None:
     assert child.list() == []
     assert (tmp_path / "child" / "brief.json").is_file()
     assert child.open("first", "b", "coder", 2)["id"] == 0
+
+
+# -- reruns link -------------------------------------------------------------
+
+
+def _done_item(store: WorkItemStore, title: str, owner: str, turn: int) -> dict:
+    item = store.open(title, "body", owner, turn)
+    return store.close(item["id"], "done", owner, turn + 1)
+
+
+def test_open_links_a_rerun_to_the_owners_done_item_with_the_same_title(tmp_path) -> None:
+    store = WorkItemStore(
+        tmp_path / "wi", session_id="run", policy=WorkItemPolicy(qc_mode="optional")
+    )
+    first = _done_item(store, "QC filtering", "coder", 1)
+    assert first["status"] == "Done"
+    assert first["reruns"] is None
+
+    rerun = store.open("qc - Filtering!", "redo with stricter thresholds", "coder", 3)
+    assert rerun["reruns"] == first["id"]
+    assert store.read(rerun["id"])["reruns"] == first["id"]
+    assert [s["reruns"] for s in store.list()] == [None, first["id"]]
+
+
+def test_normalized_title_drops_case_punctuation_and_whitespace() -> None:
+    assert WorkItemStore.normalized_title("QC - Filtering!  ") == "qcfiltering"
+    assert WorkItemStore.normalized_title("qc_filtering") == "qcfiltering"
+    assert WorkItemStore.normalized_title("QC filtering v2") != "qcfiltering"
+
+
+def test_rerun_link_needs_the_same_owner_and_a_finished_item(tmp_path) -> None:
+    store = WorkItemStore(
+        tmp_path / "wi", session_id="run", policy=WorkItemPolicy(qc_mode="optional")
+    )
+    _done_item(store, "QC filtering", "coder", 1)
+    # Another owner's item with the same title is not linked.
+    assert store.open("QC filtering", "b", "other", 3)["reruns"] is None
+    # An item still In progress is not a rerun source.
+    store.open("Clustering", "b", "coder", 4)
+    assert store.open("Clustering", "b", "coder", 5)["reruns"] is None
+    # A different title is not linked.
+    assert store.open("QC filtering v2", "b", "coder", 6)["reruns"] is None
+
+
+def test_rerun_link_points_at_the_latest_finished_item_in_a_chain(tmp_path) -> None:
+    store = WorkItemStore(
+        tmp_path / "wi", session_id="run", policy=WorkItemPolicy(qc_mode="optional")
+    )
+    first = _done_item(store, "QC filtering", "coder", 1)
+    second = _done_item(store, "QC filtering", "coder", 3)
+    assert second["reruns"] == first["id"]
+    third = store.open("QC filtering", "b", "coder", 5)
+    assert third["reruns"] == second["id"]
+
+
+def test_rerun_link_accepts_an_in_review_source_under_required_qc(tmp_path) -> None:
+    store = WorkItemStore(
+        tmp_path / "wi", session_id="run", policy=WorkItemPolicy(qc_mode="required")
+    )
+    first = store.open("QC filtering", "b", "coder", 1)
+    assert store.close(first["id"], "done", "coder", 2)["status"] == "In review"
+    assert store.open("QC filtering", "again", "coder", 3)["reruns"] == first["id"]
+
+
+def test_legacy_items_without_the_reruns_key_read_as_none(tmp_path) -> None:
+    store = WorkItemStore(
+        tmp_path / "wi", session_id="run", policy=WorkItemPolicy(qc_mode="optional")
+    )
+    item = store.open("QC filtering", "b", "coder", 1)
+    assert item["schema_version"] == "caribou.work_item.v3"
+
+    # Rewrite the committed item and index summary as a store without the
+    # reruns link wrote them (schema still v3).
+    item_path = store.items_dir / "0.json"
+    raw = json.loads(item_path.read_text(encoding="utf-8"))
+    del raw["reruns"]
+    item_path.write_text(json.dumps(raw), encoding="utf-8")
+    index_path = store.root / "index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    for summary in index["items"]:
+        del summary["reruns"]
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+    store._git("add", "items/0.json", "index.json")
+    store._git("commit", "--quiet", "-m", "legacy item without reruns")
+    store._index_cache = None
+
+    assert "reruns" not in json.loads(
+        store._git("show", "HEAD:items/0.json").stdout
+    )
+    assert store.read(item["id"])["reruns"] is None
+    assert store.list()[0]["reruns"] is None
+    # A new rerun of the legacy item still links to it.
+    store.close(item["id"], "done", "coder", 2)
+    assert store.open("QC filtering", "redo", "coder", 3)["reruns"] == item["id"]

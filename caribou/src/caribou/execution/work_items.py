@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -20,6 +21,9 @@ from typing import Any, Dict, List, Literal, Optional
 
 # v3 adds "anchor" (null for agent-opened items). A v2 item has no "anchor"
 # key; `read` reports it as null, since a v2 item was never anchored.
+# "reruns" (the id of the Done / In review item of the same owner and title
+# that a new item redoes, else null) was added within v3: an item written
+# before it has no "reruns" key and reads as null.
 WORK_ITEM_SCHEMA = "caribou.work_item.v3"
 WORK_ITEM_INDEX_SCHEMA = "caribou.work_item_index.v2"
 WORK_ITEM_STATUSES = ("Backlog", "Ready", "In progress", "In review", "Done")
@@ -27,6 +31,11 @@ QcMode = Literal["optional", "required"]
 # The evaluator (and transition actor) name for every review a person makes.
 HUMAN_REVIEWER = "user"
 _ANCHOR_KEYS = ("block_id", "action_id", "artifact_path")
+# A whole line that is nothing but a delegation command.
+_DELEGATION_LINE_RE = re.compile(r"^delegate_to_[A-Za-z0-9_]+$")
+# Characters dropped when two titles are compared for the reruns link.
+_TITLE_NOISE_RE = re.compile(r"[\W_]+")
+_RERUN_SOURCE_STATUSES = ("Done", "In review")
 
 
 def utc_now() -> str:
@@ -109,36 +118,49 @@ class WorkItemCommandResult:
     changed_item: Optional[Dict[str, Any]] = None
 
 
+def is_delegation_line(line: str) -> bool:
+    """True if `line` is a bare `delegate_to_<agent>` command and nothing else."""
+    return _DELEGATION_LINE_RE.match(line.strip()) is not None
+
+
 def command_line(message: str) -> Optional[str]:
     """The line of `message` that may hold a work-item command: the whole
-    message when it is a single line, otherwise its last non-empty line.
+    message when it is a single line, otherwise its last non-empty line, or
+    the one before it when the last non-empty line is a bare delegation
+    (`delegate_to_<agent>` alone), so a command and a delegation may come in
+    either order at the end of a message.
 
-    Returns None when there is no such line, or when the last non-empty line
-    sits inside an unterminated ``` fence (the message ends inside a code
-    block, so that line is code, not a command).
+    Returns None when there is no such line, or when the candidate line sits
+    inside an unterminated ``` fence (the message ends inside a code block,
+    so that line is code, not a command).
     """
     if not message:
         return None
-    lines = [line for line in message.splitlines() if line.strip()]
+    lines = [line.strip() for line in message.splitlines() if line.strip()]
     if not lines:
         return None
+    position = len(lines) - 1
+    if position > 0 and is_delegation_line(lines[position]):
+        position -= 1
     fence_open = False
-    for line in lines[:-1]:
-        if line.strip().startswith("```"):
+    for line in lines[:position]:
+        if line.startswith("```"):
             fence_open = not fence_open
     if fence_open:
         return None
-    return lines[-1].strip()
+    return lines[position]
 
 
 def parse_work_item_command(message: str) -> Optional[WorkItemCommand]:
     """Parse a work-item command from an assistant message.
 
-    The command is either the entire message or its last non-empty line,
-    with everything before it treated as prose or code. A command line
-    anywhere else is ignored, so a quoted or discussed command never fires
-    accidentally. Commands are single-line. Quoting follows shell-like rules
-    solely for tokenization; nothing is ever passed through a shell.
+    The command is either the entire message or its last non-empty line
+    (or the line before a final bare `delegate_to_<agent>` line, see
+    `command_line`), with everything before it treated as prose or code. A
+    command line anywhere else is ignored, so a quoted or discussed command
+    never fires accidentally. Commands are single-line. Quoting follows
+    shell-like rules solely for tokenization; nothing is ever passed through
+    a shell.
     """
     line = command_line(message)
     if line is None:
@@ -362,19 +384,26 @@ class WorkItemStore:
                 "created_at",
                 "completed_turn",
                 "completed_at",
+                "reruns",
             )
         }
 
     def list(self) -> List[Dict[str, Any]]:
         with self._lock:
             index = self._index()
-            return [dict(value) for value in index.get("items", [])]
+            summaries = [dict(value) for value in index.get("items", [])]
+            for summary in summaries:
+                # Summaries written before the reruns link have no key.
+                summary.setdefault("reruns", None)
+            return summaries
 
     def read(self, item_id: int) -> Dict[str, Any]:
         with self._lock:
             item = dict(self._item(item_id))
             # v2 items predate anchors; they were never anchored.
             item.setdefault("anchor", None)
+            # Items written before the reruns link were never linked.
+            item.setdefault("reruns", None)
             log = self._git(
                 "log", "--format=%H", "--", f"items/{item_id}.json", check=False
             )
@@ -414,6 +443,29 @@ class WorkItemStore:
             raise WorkItemConflict("work-item anchor needs at least one non-null value")
         return anchor
 
+    @staticmethod
+    def normalized_title(title: str) -> str:
+        """`title` casefolded with punctuation and whitespace removed, the
+        key two titles are compared on for the reruns link."""
+        return _TITLE_NOISE_RE.sub("", title).casefold()
+
+    @classmethod
+    def _rerun_source(
+        cls, summaries: List[Dict[str, Any]], *, owner: str, title: str
+    ) -> Optional[int]:
+        """The id of the latest Done or In review item `owner` already has
+        under the same normalized title, or None: the item a new one with
+        that title redoes."""
+        key = cls.normalized_title(title)
+        matches = [
+            int(summary["id"])
+            for summary in summaries
+            if summary.get("owner") == owner
+            and summary.get("status") in _RERUN_SOURCE_STATUSES
+            and cls.normalized_title(str(summary.get("title", ""))) == key
+        ]
+        return max(matches) if matches else None
+
     def open(
         self,
         title: str,
@@ -428,7 +480,10 @@ class WorkItemStore:
 
         `opened_by` is the "opened" transition's actor (default: the owner);
         a person opening a ticket passes `HUMAN_REVIEWER`. `anchor` optionally
-        ties the item to a block, code action and/or artifact.
+        ties the item to a block, code action and/or artifact. `reruns` is
+        the id of the Done or In review item `owner` already has under the
+        same normalized title (`normalized_title`), the one this item redoes,
+        or null.
         """
         if not title.strip() or not body.strip():
             raise WorkItemConflict("work-item title and body must be non-empty")
@@ -437,6 +492,9 @@ class WorkItemStore:
         with self._lock:
             index = self._fresh_index()
             item_id = int(index.get("next_id", 0))
+            reruns = self._rerun_source(
+                index.get("items", []), owner=owner, title=title
+            )
             timestamp = utc_now()
             item = {
                 "schema_version": WORK_ITEM_SCHEMA,
@@ -469,6 +527,7 @@ class WorkItemStore:
                 "reviews": [],
                 "notes": [],
                 "anchor": anchor,
+                "reruns": reruns,
             }
             index["next_id"] = item_id + 1
             self._update_index(index, item)
@@ -878,9 +937,9 @@ def render_work_item_prompt(policy: WorkItemPolicy) -> str:
     return (
         "\n\nWork items are enforced in this run. Put at most one command in "
         "a message, on a single line, as its LAST line; prose or code may come "
-        "before it, nothing after it. Commands anywhere else are ignored. If "
-        "you also delegate, put the delegation before the command. Do not wrap "
-        "the command in backticks:\n"
+        "before it, nothing after it except a bare `delegate_to_<agent>` line, "
+        "which may come directly before or after the command. Commands "
+        "anywhere else are ignored. Do not wrap the command in backticks:\n"
         '- `open_work_item "<title>" "<body>"`\n'
         '- `close_work_item <id> "<completion summary>"`\n'
         "- `list_work_items`\n"
@@ -889,7 +948,9 @@ def render_work_item_prompt(policy: WorkItemPolicy) -> str:
         "work items to that agent; you do not need to mention an item id. "
         "When you receive a delegation and own no open work item for that "
         "task, open one for your task first, with a short stage-style title "
-        '(e.g. "QC filtering"); close it when the task is done. '
+        '(e.g. "QC filtering"); close it when the task is done. If you are '
+        "redoing a stage you already completed, reuse the same title so the "
+        "rerun is linked to the original. "
         f"Closing moves the item to {close_result}. You cannot use `end_session` "
         "while you own a work item that is not Done."
     )

@@ -35,10 +35,11 @@ _COMMAND_NAMES = (
 def _looks_like_attempted_command(message: str) -> bool:
     """True if any line outside code fences starts with a work-item command
     name although `parse_work_item_command` rejected the message — bad
-    quoting, a missing argument, or a command that is not the last line
-    (e.g. `close_work_item ...` followed by `delegate_to_X`). Used only to
-    decide whether the `None` case below deserves an explicit correction
-    instead of the command being ignored without a word.
+    quoting, a missing argument, or a command that is neither the last line
+    nor the line before a final bare `delegate_to_X` (e.g. `open_work_item
+    ...` followed by prose). Used only to decide whether the `None` case
+    below deserves an explicit correction instead of the command being
+    ignored without a word.
     """
     in_fence = False
     for raw in message.splitlines():
@@ -61,13 +62,13 @@ def apply_command(
     it *was* a command but was refused.
 
     A message with a line that merely *looks like* an attempted command
-    (starts with a command name) but that fails the grammar or is not the
-    last line is not silently
-    dropped as `None`: without feedback the agent has no signal that its
-    message didn't register, and it will repeat the identical mistake
-    forever (observed in practice — see the implementation brief's follow-up
-    notes). It gets a `WorkItemCommandResult(success=False, ...)` explaining
-    exactly what to fix instead.
+    (starts with a command name) but that fails the grammar or is not on
+    the last line (or the line before a final bare delegation) is not
+    silently dropped as `None`: without feedback the agent has no signal
+    that its message didn't register, and it will repeat the identical
+    mistake forever (observed in practice — see the implementation brief's
+    follow-up notes). It gets a `WorkItemCommandResult(success=False, ...)`
+    explaining exactly what to fix instead.
     """
     command = parse_work_item_command(message)
     if command is None:
@@ -77,7 +78,9 @@ def apply_command(
                     "Work-item command not recognized. Put exactly one "
                     "command, on a single line, as the LAST line of the "
                     "message (prose or code may come before it, nothing "
-                    "after it), with every argument quoted, e.g.: "
+                    "after it except a bare delegate_to_<agent> line, which "
+                    "may come directly before or after the command), with "
+                    "every argument quoted, e.g.: "
                     'open_work_item "<title>" "<body>" or '
                     'close_work_item <id> "<completion summary>"'
                 ),

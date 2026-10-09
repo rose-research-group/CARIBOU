@@ -288,7 +288,7 @@ def test_interactive_work_item_transfers_and_blocks_end_session(
     assert not thread.is_alive()
 
 
-def test_open_work_item_auto_continues_until_the_budget_is_spent(
+def test_open_work_item_auto_continues_without_consuming_the_budget(
     tmp_path: Path, monkeypatch
 ):
     rag_stub = ModuleType("caribou.execution.rag_client")
@@ -300,6 +300,7 @@ def test_open_work_item_auto_continues_until_the_budget_is_spent(
     planner = FakeAgent("planner")
     llm = FakeLLM(
         [f'open_work_item "Step {n}" "Do step {n}"' for n in range(5)]
+        + ["All five opened; waiting."]
     )
     stop_flag = threading.Event()
     events = []
@@ -332,9 +333,9 @@ def test_open_work_item_auto_continues_until_the_budget_is_spent(
     thread.start()
 
     assert idle_seen.wait(timeout=5)
-    # Each of the first four opens auto-continued; the fifth found the budget
-    # of four spent, said so, and waited for the user.
-    assert llm.calls == 5
+    # Every open auto-continued: only delegations consume the handoff budget
+    # of four, so five opens in a row never pause. The plain report waits.
+    assert llm.calls == 6
     opened_items = [
         event["data"]["item"]
         for event in events
@@ -347,18 +348,17 @@ def test_open_work_item_auto_continues_until_the_budget_is_spent(
         if event["type"] == "system_message"
         and event["data"].get("category") == "Runner guidance"
     ]
-    assert guidance == [
-        f"Continuing automatically after opening a work item ({n} of 4)."
-        for n in range(1, 5)
-    ] + ["Automatic continuation paused after 4 steps. Waiting for your next message."]
-    exhausted = next(
+    assert guidance == ["Continuing automatically after opening a work item."] * 5
+    last_guidance = max(
         i
         for i, event in enumerate(events)
         if event["type"] == "system_message"
-        and event["data"]["content"].startswith("Automatic continuation paused")
+        and event["data"].get("category") == "Runner guidance"
     )
-    assert events[exhausted + 1]["type"] == "status_change"
-    assert events[exhausted + 1]["data"]["status"] == "idle"
+    assert events[last_guidance + 1]["type"] == "status_change"
+    assert events[last_guidance + 1]["data"]["status"] == "running"
+    # The plain report after the fifth open is what waits for the user.
+    assert events[-1]["data"]["status"] == "idle"
 
     stop_flag.set()
     thread.join(timeout=2)

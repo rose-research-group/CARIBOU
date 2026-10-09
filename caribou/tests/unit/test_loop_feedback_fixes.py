@@ -1,8 +1,9 @@
 """Session-feedback fixes in both agent loops (web `run_session_sync` and CLI
 `run_agent_session`):
 
-- D1: auto-continue after a work-item open/close or a delegation, with a
-  budget of 4 that a real user message resets;
+- D1: auto-continue after a work-item open/close or a delegation; only
+  delegations consume the budget of 4 handoffs, which a real user message
+  resets;
 - D2: inside one message, code runs first, then the work-item command (which
   may be the last line after prose), then the delegation;
 - D3: code runs and is recorded as the agent that WROTE it; only then does the
@@ -84,7 +85,10 @@ class ScriptedQueue(queue.Queue):
 
 
 def _web_agents():
-    qc = FakeAgent("QC_metrics_agent")
+    qc = FakeAgent(
+        "QC_metrics_agent",
+        {"delegate_to_input": SimpleNamespace(target_agent="input_agent")},
+    )
     input_agent = FakeAgent(
         "input_agent",
         {
@@ -219,8 +223,8 @@ def test_web_prose_then_last_line_close_closes_and_auto_continues(
     assert items[-1]["id"] == 0
     assert items[-1]["status"] == "Done"
     assert _guidance(events) == [
-        "Continuing automatically after opening a work item (1 of 4).",
-        "Continuing automatically after closing a work item (2 of 4).",
+        "Continuing automatically after opening a work item.",
+        "Continuing automatically after closing a work item.",
     ]
     # The close is applied after the message's code ran (D2), and the code is
     # attributed to the item it closes.
@@ -236,24 +240,72 @@ def test_web_prose_then_last_line_close_closes_and_auto_continues(
     assert block["status"] == "ok"
 
 
-def test_web_budget_resets_on_a_real_user_message(tmp_path, monkeypatch):
+def test_web_opens_and_closes_do_not_consume_the_handoff_budget(tmp_path, monkeypatch):
     _stub_rag(monkeypatch)
     opens = [f'open_work_item "Step {n}" "Do step {n}"' for n in range(6)]
+    events, llm = _run_web(tmp_path, opens + ["waiting"])
+    _no_runner_error(events)
+
+    # Six opens in a row (more than the budget of four) all auto-continue.
+    assert llm.calls == 7
+    assert _guidance(events) == [
+        "Continuing automatically after opening a work item."
+    ] * 6
+
+
+def test_web_delegations_consume_the_budget_and_a_user_message_resets_it(
+    tmp_path, monkeypatch
+):
+    _stub_rag(monkeypatch)
     events, llm = _run_web(
         tmp_path,
-        opens[:5] + [opens[5], "waiting"],
+        [
+            # input_agent: a command directly before the delegation line.
+            'open_work_item "Load" "load the data"\ndelegate_to_QC_metrics',
+            "delegate_to_input",  # QC_metrics_agent
+            "delegate_to_QC_metrics",  # input_agent
+            "delegate_to_input",  # QC_metrics_agent
+            "delegate_to_QC_metrics",  # input_agent: 5th handoff, budget spent
+            "delegate_to_input",  # QC_metrics_agent, after the user's message
+            "waiting",  # input_agent
+        ],
         user_turns=[UserTurn("keep going")],
     )
     _no_runner_error(events)
 
     assert llm.calls == 7
     assert _guidance(events) == [
-        f"Continuing automatically after opening a work item ({n} of 4)."
-        for n in range(1, 5)
-    ] + [
-        "Automatic continuation paused after 4 steps. Waiting for your next message.",
-        "Continuing automatically after opening a work item (1 of 4).",
+        "Continuing automatically after opening a work item and delegating to "
+        "QC_metrics_agent (1 of 4).",
+        "Continuing automatically after delegating to input_agent (2 of 4).",
+        "Continuing automatically after delegating to QC_metrics_agent (3 of 4).",
+        "Continuing automatically after delegating to input_agent (4 of 4).",
+        "Automatic continuation paused after 4 handoffs. Waiting for your next message.",
+        "Continuing automatically after delegating to input_agent (1 of 4).",
     ]
+    # The fifth delegation still switched agents; only the auto-continue
+    # paused, so the user's message went to QC_metrics_agent.
+    switches = [e["data"]["to_agent"] for e in events if e["type"] == "agent_switch"]
+    assert switches == [
+        "QC_metrics_agent",
+        "input_agent",
+        "QC_metrics_agent",
+        "input_agent",
+        "QC_metrics_agent",
+        "input_agent",
+    ]
+    paused = _index(
+        events,
+        lambda e: e["type"] == "system_message"
+        and e["data"]["content"].startswith("Automatic continuation paused"),
+    )
+    assert events[paused + 1]["type"] == "status_change"
+    assert events[paused + 1]["data"]["status"] == "idle"
+    # The open before the delegation line was applied (and transferred).
+    opened = [e["data"]["item"] for e in events if e["type"] == "work_item_changed"]
+    assert opened[0]["title"] == "Load"
+    assert opened[0]["owner"] == "input_agent"
+    assert opened[1]["owner"] == "QC_metrics_agent"
 
 
 def test_web_focus_reopens_a_closed_block_until_the_handoff(tmp_path, monkeypatch):
@@ -390,7 +442,12 @@ def _cli_agents():
         code_samples={},
     )
     qc = Agent(
-        name="QC_metrics_agent", prompt="Compute QC.", commands={}, code_samples={}
+        name="QC_metrics_agent",
+        prompt="Compute QC.",
+        commands={
+            "delegate_to_input": Command("delegate_to_input", "input_agent", "Back")
+        },
+        code_samples={},
     )
     return (
         AgentSystem(
@@ -472,17 +529,23 @@ def test_cli_code_runs_as_its_author_before_the_delegation(tmp_path, monkeypatch
     assert qc_block["agents"] == ["QC_metrics_agent"]
 
 
-def test_cli_last_line_close_and_budget_exhaustion(tmp_path, monkeypatch):
+def test_cli_last_line_close_and_opens_do_not_consume_the_budget(
+    tmp_path, monkeypatch
+):
     opens = [f'open_work_item "Step {n}" "Do step {n}"' for n in range(4)]
     close_after_prose = (
         "Step 0 is finished.\n```python\nprint('done')\n```\n"
         'close_work_item 0 "finished"'
     )
     result, events, llm, output = _run_cli(
-        tmp_path, monkeypatch, opens + [close_after_prose], ["exit"]
+        tmp_path,
+        monkeypatch,
+        opens + [close_after_prose, "Nothing more to do."],
+        ["exit"],
     )
 
-    assert llm.calls == 5
+    # Four opens and a close: five auto-continues, none counted, no pause.
+    assert llm.calls == 6
     items = [
         e["payload"]["item"] for e in events if e["event_type"] == "work_item_changed"
     ]
@@ -497,14 +560,52 @@ def test_cli_last_line_close_and_budget_exhaustion(tmp_path, monkeypatch):
         and e["payload"]["item"]["status"] == "Done"
     )
     assert code_result < done
-    for n in range(1, 5):
+    assert output.count("Continuing automatically after opening a work item.") == 4
+    assert "Continuing automatically after closing a work item." in output
+    assert "of 4)" not in output
+    assert "Automatic continuation paused" not in output
+    assert result.end_reason == "user_exit"
+
+
+def test_cli_delegations_consume_the_budget_and_a_user_message_resets_it(
+    tmp_path, monkeypatch
+):
+    result, events, llm, output = _run_cli(
+        tmp_path,
+        monkeypatch,
+        [
+            "delegate_to_QC_metrics",  # input_agent
+            "delegate_to_input",  # QC_metrics_agent
+            "delegate_to_QC_metrics",  # input_agent
+            "delegate_to_input",  # QC_metrics_agent
+            "delegate_to_QC_metrics",  # input_agent: 5th handoff, budget spent
+            "delegate_to_input",  # QC_metrics_agent, after the user's message
+            "Done for now.",  # input_agent
+        ],
+        ["keep going", "exit"],
+    )
+
+    assert llm.calls == 7
+    for n, target in enumerate(
+        ["QC_metrics_agent", "input_agent", "QC_metrics_agent", "input_agent"], start=1
+    ):
         assert (
-            f"Continuing automatically after opening a work item ({n} of 4)."
+            f"Continuing automatically after delegating to {target} ({n} of 4)."
             in output
         )
-    assert "closing a work item" not in output
     assert (
-        "Automatic continuation paused after 4 steps. Waiting for your next message."
+        "Automatic continuation paused after 4 handoffs. Waiting for your next message."
         in output
     )
+    assert output.count("Automatic continuation paused") == 1
+    assert "Continuing automatically after delegating to input_agent (1 of 4)." in output
+    assert [e["payload"]["to_agent"] for e in events if e["event_type"] == "agent_switch"] == [
+        "QC_metrics_agent",
+        "input_agent",
+        "QC_metrics_agent",
+        "input_agent",
+        "QC_metrics_agent",
+        "input_agent",
+    ]
+    assert result.current_agent_name == "input_agent"
     assert result.end_reason == "user_exit"
