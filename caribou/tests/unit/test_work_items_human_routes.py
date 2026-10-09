@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from caribou.execution.work_items import HUMAN_REVIEWER, WorkItemPolicy
+from caribou.server.models import CodeEventRecord
 from caribou.server.routes import sessions as session_routes
 
 from .test_session_resume_fork_lifecycle import _manager, _stopped_session
@@ -243,3 +244,62 @@ def test_detail_models_validate_a_real_store_item(manager, session) -> None:
     WorkItemReviewResult.model_validate(
         {"item": item, "verdict": "approve", "assessment": "ok"}
     )
+
+
+# --- POST /work-items/{n}/review: the evaluator sees the item's blocks ----------
+
+
+def test_evaluator_review_route_returns_the_evidence_it_sent(
+    client, manager, session, monkeypatch
+) -> None:
+    from types import SimpleNamespace as NS
+
+    from .test_blocks_route import _block, _write_blocks
+
+    item_id = _done_item(manager, session)
+    session.evaluator_llm_client = object()
+    session.evaluator_model_name = "judge"
+    _write_blocks(
+        session.output_dir.parent / "blocks.json",
+        [_block(1, work_item_id=item_id, action_ids=["a1"], artifact_paths=["figures/qc.png"])],
+    )
+    session.code_events.append(
+        CodeEventRecord(
+            session_id=session.id, turn=2, agent_name="analyst", source="print('qc')",
+            stdout="qc", success=True, action_id="a1", block_id="blk-0001",
+        )
+    )
+    monkeypatch.setattr(
+        "caribou.server.session_manager.resolve_evaluator_agent",
+        lambda _system: (NS(name="evaluator", get_full_prompt=lambda _p: "review"), "test"),
+    )
+    sent: dict = {}
+
+    def fake_run_evaluation(**kwargs):
+        sent.update(kwargs["payload"])
+        return '{"verdict": "approve", "assessment": "The code ran and produced the plot"}'
+
+    monkeypatch.setattr("caribou.execution.evaluation.run_evaluation", fake_run_evaluation)
+
+    response = client.post(f"{BASE}/{item_id}/review")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["verdict"] == "approve"
+    # The response model fills the optional flags the builder leaves out.
+    assert [b["block_id"] for b in body["evidence"]["blocks"]] == [
+        b["block_id"] for b in sent["evidence"]["blocks"]
+    ]
+    assert sent["evidence"]["blocks"][0]["actions"][0]["source"] == "print('qc')"
+    [block] = body["evidence"]["blocks"]
+    assert block["block_id"] == "blk-0001"
+    assert block["artifact_paths"] == ["figures/qc.png"]
+    assert block["actions"] == [
+        {
+            "action_id": "a1", "agent": "analyst", "success": True,
+            "source": "print('qc')", "stdout": "qc", "stderr": "",
+            "missing_record": False,
+        }
+    ]
+    assert body["evidence"]["truncated"] is False
+    assert body["evidence"]["note"] is None

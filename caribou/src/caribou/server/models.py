@@ -233,6 +233,12 @@ class CodeEventRecord(BaseModel):
     stderr: str = ""
     success: bool = True
     duration_ms: int = 0
+    # The code action this record is the result of (execution.event_ids) and
+    # the block it was attributed to, from the code_result event. Records
+    # written before these were recorded stay None and cannot be joined to
+    # a block's action_ids (they show as missing in review evidence).
+    action_id: Optional[str] = None
+    block_id: Optional[str] = None
 
 
 class EvaluationResult(BaseModel):
@@ -258,6 +264,8 @@ class WorkItemSummary(BaseModel):
     created_at: str
     completed_turn: Optional[int] = None
     completed_at: Optional[str] = None
+    # The earlier item this one redoes (same owner, same stage title), if any.
+    reruns: Optional[int] = None
 
 
 class WorkItemAnchor(BaseModel):
@@ -395,11 +403,49 @@ class WorkItemHumanReviewRequest(BaseModel):
     assessment: str
 
 
+class ReviewEvidenceAction(BaseModel):
+    """One executed code action as shown to the evaluator
+    (`execution.review_evidence`). Source and outputs are capped; all three
+    are null when the record is missing or the attempt's outputs were
+    dropped to fit the token budget."""
+
+    action_id: str
+    agent: Optional[str] = None
+    success: bool
+    source: Optional[str] = None
+    stdout: Optional[str] = None
+    stderr: Optional[str] = None
+    missing_record: bool = False
+
+
+class ReviewEvidenceBlock(BaseModel):
+    block_id: str
+    attempt: int
+    status: str
+    agents: List[str]
+    turn_start: int
+    turn_end: int
+    actions: List[ReviewEvidenceAction]
+    artifact_paths: List[str]
+    outputs_dropped: bool = False
+
+
+class ReviewEvidence(BaseModel):
+    """What the evaluator saw for a work-item review: every block of the
+    item with its code, outputs and artifacts."""
+
+    blocks: List[ReviewEvidenceBlock]
+    truncated: bool
+    note: Optional[str] = None
+
+
 class WorkItemReviewResult(BaseModel):
     item: WorkItemDetail
     verdict: str
     assessment: str
     provider_receipt: Dict[str, Any] = Field(default_factory=dict)
+    # Null only for reviews run without evidence (older callers).
+    evidence: Optional[ReviewEvidence] = None
 
 
 class BriefDecisionRequest(BaseModel):

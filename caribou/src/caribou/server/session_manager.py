@@ -53,6 +53,10 @@ from caribou.execution.blocks import (
     init_blocks,
     load_blocks,
 )
+from caribou.execution.review_evidence import (
+    build_block_evidence,
+    code_lookup_from_records,
+)
 from caribou.execution.user_input import UserTurn
 from caribou.execution.work_item_runtime import copy_work_items
 from caribou.execution.work_items import (
@@ -772,6 +776,8 @@ class SessionManager:
                 stderr=item.stderr,
                 success=item.success,
                 duration_ms=item.duration_ms,
+                action_id=item.action_id,
+                block_id=item.block_id,
             )
             for item in source.code_events
             if item.turn < entry_turn
@@ -1421,6 +1427,8 @@ class SessionManager:
                     stderr=item.stderr,
                     success=item.success,
                     duration_ms=item.duration_ms,
+                    action_id=item.action_id,
+                    block_id=item.block_id,
                 )
                 for item in source.code_events
                 if item.turn <= checkpoint["turn"]
@@ -2125,6 +2133,7 @@ class SessionManager:
             evaluator_client = session.evaluator_llm_client
             evaluator_model_name = session.evaluator_model_name
         store = self._work_item_store(session)
+        evidence = self._review_evidence(session, item_id)
         try:
             result = await asyncio.to_thread(
                 evaluate_work_item,
@@ -2135,6 +2144,7 @@ class SessionManager:
                 evaluator_agent=evaluator_agent,
                 llm_client=evaluator_client,
                 model_name=evaluator_model_name,
+                evidence=evidence,
             )
             changed_item = result["item"]
         except Exception:
@@ -2145,6 +2155,28 @@ class SessionManager:
             raise
         self._emit_work_item_change(session, changed_item)
         return result
+
+    def _review_evidence(self, session: _Session, item_id: int) -> Dict[str, Any]:
+        """What ran for `item_id`: its blocks from blocks.json joined to the
+        session's code events by action id (`review_evidence`). A session
+        that never recorded blocks yields no blocks and says so in `note`."""
+        index = load_blocks(session.output_dir.parent / BLOCKS_FILENAME)
+        if index is None:
+            return {"blocks": [], "truncated": False, "note": "no blocks index"}
+        code_lookup = code_lookup_from_records(
+            [
+                {
+                    "action_id": record.action_id,
+                    "agent": record.agent_name,
+                    "success": record.success,
+                    "source": record.source,
+                    "stdout": record.stdout,
+                    "stderr": record.stderr,
+                }
+                for record in session.code_events
+            ]
+        )
+        return build_block_evidence(index, item_id, code_lookup)
 
     def _running_work_item_session(self, session_id: str) -> _Session:
         # Human work-item writes need the blueprint: its agents are the valid
@@ -3016,6 +3048,8 @@ class SessionManager:
                     stderr=data.get("stderr", ""),
                     success=data.get("success", True),
                     duration_ms=data.get("duration_ms", 0),
+                    action_id=action_id,
+                    block_id=data.get("block_id"),
                 )
             )
 

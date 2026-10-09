@@ -32,6 +32,9 @@ from caribou.core.python_environments import (
     validate_python_environment_path,
 )
 from caribou.execution.blocks import BLOCKS_FILENAME
+from caribou.execution.review_evidence import (
+    CLI_EVENT_LOG_FILENAME as _CLI_EVENT_LOG_FILENAME,
+)
 
 if TYPE_CHECKING:
     from caribou.agents.AgentSystem import AgentSystem
@@ -163,7 +166,9 @@ def _prompt_for_benchmark_metric(console: Console) -> Optional[str]:
 # --------------------------------------------------------------------------------------
 # Runner event log
 # --------------------------------------------------------------------------------------
-CLI_EVENT_LOG_FILENAME = "events.jsonl"
+# Defined beside the review-evidence reader so `/review-work-item` and this
+# writer agree on the file name.
+CLI_EVENT_LOG_FILENAME = _CLI_EVENT_LOG_FILENAME
 
 
 def _cli_event_log_callback(

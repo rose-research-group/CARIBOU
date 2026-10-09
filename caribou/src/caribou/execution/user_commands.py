@@ -40,6 +40,11 @@ from caribou.execution.evaluation import (
 from caribou.execution.MemoryManager import MemoryManager
 from caribou.execution.path_utils import get_default_runs_dir
 from caribou.execution.report_generation import AgentReportMemory
+from caribou.execution.review_evidence import (
+    CLI_EVENT_LOG_FILENAME,
+    build_block_evidence,
+    code_lookup_from_cli_event_log,
+)
 from caribou.execution.token_utils import estimate_messages_tokens
 from caribou.execution.work_items import WorkItemError, WorkItemStore
 
@@ -339,27 +344,69 @@ def _cmd_work_item(arg: str, ctx: UserCommandContext) -> None:
     )
 
 
+def cli_event_log_path(work_items: WorkItemStore) -> Path:
+    """The CLI's `events.jsonl` sits in the session artifacts directory,
+    next to `work-items/` and `blocks.json`."""
+    return Path(work_items.root).parent / CLI_EVENT_LOG_FILENAME
+
+
+def _cli_review_evidence(
+    ctx: UserCommandContext, item_id: int
+) -> Tuple[Dict[str, object], Optional[str]]:
+    """Review evidence for `/review-work-item` from blocks.json and the CLI
+    event log. Returns `(evidence, warning)`; `warning` is a line for the
+    console when the evidence is empty because a file is missing."""
+    events_path = cli_event_log_path(ctx.work_items)
+    if not events_path.exists():
+        return (
+            {"blocks": [], "truncated": False, "note": "no event log"},
+            f"No event log at {events_path}: the evaluator will see no code "
+            "or outputs.",
+        )
+    index = load_blocks(blocks_path_for(ctx.work_items))
+    if index is None:
+        return (
+            {"blocks": [], "truncated": False, "note": "no blocks index"},
+            f"No blocks.json beside {ctx.work_items.root}: the evaluator will "
+            "see no code or outputs.",
+        )
+    return (
+        build_block_evidence(index, item_id, code_lookup_from_cli_event_log(events_path)),
+        None,
+    )
+
+
 def _cmd_review_work_item(arg: str, ctx: UserCommandContext) -> None:
     if not arg.strip().isdigit():
         ctx.console.print("[yellow]Usage: /review-work-item <id>[/yellow]")
         return
+    item_id = int(arg.strip())
     try:
         evaluator_agent, source = resolve_evaluator_agent(ctx.agent_system)
         ctx.console.print(f"[dim]Using {source}.[/dim]")
+        evidence, warning = _cli_review_evidence(ctx, item_id)
+        if warning is not None:
+            ctx.console.print(f"[yellow]{warning}[/yellow]")
         result = evaluate_work_item(
             store=ctx.work_items,
-            item_id=int(arg.strip()),
+            item_id=item_id,
             run_id=ctx.run_id,
             turn=ctx.turn,
             evaluator_agent=evaluator_agent,
             llm_client=ctx.evaluator_runtime.llm_client,
             model_name=ctx.evaluator_runtime.model_name,
+            evidence=evidence,
         )
     except (
         Exception
     ) as exc:  # provider errors are durably recorded by evaluate_work_item
         ctx.console.print(f"[red]Work-item review failed: {exc}[/red]")
         return
+    blocks = evidence["blocks"]
+    ctx.console.print(
+        f"[dim]Evidence sent: {_plural(len(blocks), 'block')}, "
+        f"{_plural(sum(len(block['actions']) for block in blocks), 'action')}.[/dim]"
+    )
     ctx.console.print(
         Panel(
             str(result["assessment"]),

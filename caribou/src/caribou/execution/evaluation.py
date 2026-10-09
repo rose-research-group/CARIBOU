@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from caribou.agents.AgentSystem import Agent, AgentSystem
 from caribou.config import DEFAULT_AGENT_DIR
 from caribou.execution.token_utils import estimate_messages_tokens, estimate_tokens
+from caribou.execution.review_evidence import drop_oldest_outputs
 from caribou.execution.work_items import WorkItemConflict, WorkItemStore
 
 PACKAGE_AGENTS_DIR = Path(__file__).resolve().parent.parent / "agents"
@@ -160,12 +161,19 @@ def build_work_item_review_payload(
     item: Dict[str, Any],
     diff: str,
     done_when: Optional[List[str]] = None,
+    evidence: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, object]:
     """Build a bounded artifact review request without transcript history.
 
     `done_when` is the session brief's declared completion criteria (WS-3 of
     the implementation brief), when a brief exists — `None` when it doesn't,
     or when the caller hasn't wired brief lookup through yet.
+
+    `evidence` is what actually ran for the item
+    (`review_evidence.build_block_evidence`): its blocks, the executed code
+    with stdout/stderr, and the artifact paths. Without it the evaluator
+    sees only the item and the git diff of its metadata, and has to judge
+    the completion summary on its word alone.
     """
     instructions = (
         "Review whether the completion summary satisfies the title and body. "
@@ -176,6 +184,18 @@ def build_work_item_review_payload(
         instructions += (
             " Score against the session's declared done-when criteria, not "
             "just the item's own title and body."
+        )
+    if evidence is not None:
+        instructions += (
+            " The evidence field holds what was actually executed for this "
+            "work item: every block (attempt) with the code that ran, each "
+            "action's stdout and stderr, whether it succeeded, and the files "
+            "it produced (artifact_paths). Judge the work on that evidence. "
+            "Long code and outputs are capped (head and tail kept, with a "
+            "marker) when evidence.truncated is true; an action with "
+            "missing_record has no stored code or output. The git_diff only "
+            "covers the work-item metadata (title, body, status, summary), "
+            "not the analysis code or its outputs."
         )
     payload: Dict[str, object] = {
         "kind": "work_item_review",
@@ -190,7 +210,42 @@ def build_work_item_review_payload(
     }
     if done_when:
         payload["done_when"] = done_when
+    if evidence is not None:
+        payload["evidence"] = evidence
     return payload
+
+
+def fit_review_payload_to_budget(
+    payload: Dict[str, object],
+    system_prompt: str,
+    max_context_tokens: int = EVALUATE_MAX_CONTEXT_TOKENS,
+) -> List[str]:
+    """Drop the oldest attempts' outputs from `payload["evidence"]` until the
+    payload fits the evaluator's token budget.
+
+    Mutates the evidence in place and returns the ids of the blocks whose
+    outputs were dropped (empty when nothing had to go). The drops are also
+    stated in `evidence["note"]` so the evaluator knows what it cannot see.
+    If the payload still does not fit once every block's outputs are gone,
+    nothing more is done here: `run_evaluation` raises
+    EvaluationContextTooLarge rather than sending a truncated review.
+    """
+    evidence = payload.get("evidence")
+    if evidence is None:
+        return []
+    dropped: List[str] = []
+    while estimate_payload_tokens(system_prompt, payload) > max_context_tokens:
+        block_id = drop_oldest_outputs(evidence)
+        if block_id is None:
+            break
+        dropped.append(block_id)
+    if dropped:
+        evidence["note"] = (
+            "Code and outputs of the oldest attempt(s) were dropped to fit "
+            f"the review token budget: {', '.join(dropped)}. Their action "
+            "outcomes and artifact paths are kept."
+        )
+    return dropped
 
 
 def parse_work_item_review(response_text: str) -> Tuple[str, str]:
@@ -255,8 +310,16 @@ def evaluate_work_item(
     llm_client: object,
     model_name: str,
     done_when: Optional[List[str]] = None,
+    evidence: Optional[Dict[str, Any]] = None,
+    max_context_tokens: int = EVALUATE_MAX_CONTEXT_TOKENS,
 ) -> Dict[str, object]:
-    """Run and durably record one bounded work-item review."""
+    """Run and durably record one bounded work-item review.
+
+    `evidence` (see `build_work_item_review_payload`) is sent with the item;
+    when the payload exceeds `max_context_tokens`, the oldest attempts'
+    outputs are dropped first (`fit_review_payload_to_budget`). The evidence
+    the evaluator saw is returned under "evidence".
+    """
     item = store.read(item_id)
     expected_status = "In review" if store.policy.qc_mode == "required" else "Done"
     if item.get("status") != expected_status:
@@ -264,7 +327,14 @@ def evaluate_work_item(
             f"work item {item_id} must be {expected_status} before review"
         )
     payload = build_work_item_review_payload(
-        run_id=run_id, item=item, diff=store.review_diff(item_id), done_when=done_when
+        run_id=run_id,
+        item=item,
+        diff=store.review_diff(item_id),
+        done_when=done_when,
+        evidence=evidence,
+    )
+    fit_review_payload_to_budget(
+        payload, evaluator_agent.get_full_prompt(None), max_context_tokens
     )
     provider_receipt: Dict[str, object] = {}
     raw_response = ""
@@ -274,6 +344,7 @@ def evaluate_work_item(
             llm_client=llm_client,
             model_name=model_name,
             payload=payload,
+            max_context_tokens=max_context_tokens,
             response_callback=lambda response: provider_receipt.update(
                 evaluation_response_metadata(response)
             ),
@@ -303,4 +374,5 @@ def evaluate_work_item(
         "verdict": verdict,
         "assessment": assessment,
         "provider_receipt": provider_receipt,
+        "evidence": evidence,
     }
