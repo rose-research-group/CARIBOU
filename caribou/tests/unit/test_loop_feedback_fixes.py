@@ -123,6 +123,9 @@ def _run_web(tmp_path: Path, responses, user_turns=()):
         emit=events.append,
         stop_flag=stop,
         user_input_queue=ScriptedQueue(user_turns, stop),
+        # These tests exercise run-mode continuation (D1); step mode, the
+        # session default, is covered by test_step_mode.py.
+        continue_mode="run",
     )
     return events, llm
 
@@ -316,8 +319,10 @@ def test_web_focus_reopens_a_closed_block_until_the_handoff(tmp_path, monkeypatc
             "```python\nprint('first')\n```",  # blk-0001, implicit
             'open_work_item "Next" "next step"',
             "```python\nprint('next')\n```",  # blk-0002; closes blk-0001
-            # Feedback about blk-0001: fix it, then hand off.
-            "Fixing it.\n```python\nprint('fix')\n```\ndelegate_to_QC_metrics",
+            # Feedback about blk-0001: fix it, close the item the agent ran
+            # code under (a delegation is refused while it is open), hand off.
+            "Fixing it.\n```python\nprint('fix')\n```\n"
+            'close_work_item 0 "next step done"\ndelegate_to_QC_metrics',
             "QC has nothing to run yet.",
         ],
         user_turns=[
@@ -482,6 +487,8 @@ def _run_cli(tmp_path, monkeypatch, responses, answers):
         output_dir=tmp_path,
         durable_run_id="run_cli",
         event_callback=events.append,
+        # Run-mode continuation (D1); step mode is covered by test_step_mode.py.
+        continue_mode="run",
     )
     assert script == []
     return result, events, llm, buffer.getvalue()

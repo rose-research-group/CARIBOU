@@ -15,7 +15,10 @@ from caribou.execution.work_items import (
     copy_work_items_at,
     WorkItemPolicy,
     WorkItemStore,
+    command_block,
+    parse_command_block,
     parse_work_item_command,
+    parse_work_item_commands,
     render_work_item_prompt,
 )
 
@@ -125,13 +128,73 @@ def test_a_final_delegation_line_does_not_widen_the_grammar(message) -> None:
     assert parse_work_item_command(message) is None
 
 
-def test_prompt_states_the_last_line_rule_and_per_task_work_items() -> None:
+def test_command_block_is_the_trailing_run_of_command_and_delegation_lines() -> None:
+    message = (
+        "Loaded the data.\n"
+        "```python\nx = 1\n```\n"
+        'close_work_item 0 "loaded"\n'
+        "delegate_to_QC_metrics\n"
+        'open_work_item "QC filtering" "filter cells"\n\n'
+    )
+    assert command_block(message) == [
+        'close_work_item 0 "loaded"',
+        "delegate_to_QC_metrics",
+        'open_work_item "QC filtering" "filter cells"',
+    ]
+    # Prose after a command line ends the block before it.
+    assert command_block('close_work_item 0 "x"\nThanks.') == []
+    # A block inside an unterminated fence is code.
+    assert command_block("```python\nlist_work_items\nread_work_item 1") == []
+    assert command_block("") == [] and command_block("  \n") == []
+
+
+def test_parse_work_item_commands_returns_the_block_in_order() -> None:
+    commands = parse_work_item_commands(
+        'QC is done.\nclose_work_item 1 "Filtered cells"\n'
+        "delegate_to_clustering\n"
+        'open_work_item "Clustering" "Leiden on the filtered cells"\n'
+        "list_work_items"
+    )
+    assert [c.name for c in commands] == [
+        "close_work_item",
+        "open_work_item",
+        "list_work_items",
+    ]
+    assert commands[0].item_id == 1
+    assert commands[1].title == "Clustering"
+    # A delegation alone is not a work-item command.
+    assert parse_work_item_commands("Handing over.\ndelegate_to_clustering") == []
+    assert parse_work_item_commands("no commands here") == []
+
+
+def test_a_malformed_line_refuses_the_whole_block() -> None:
+    message = 'close_work_item 1 "Filtered cells"\nopen_work_item title-only'
+    assert parse_work_item_commands(message) == []
+    block = parse_command_block(message)
+    assert block.malformed == "open_work_item title-only"
+    assert [c.name for c in block.commands] == ["close_work_item"]
+    assert len(block.lines) == 2
+    assert parse_command_block("prose only").malformed is None
+
+
+def test_parse_work_item_command_refuses_a_block_of_several_commands() -> None:
+    single = parse_work_item_command('close_work_item 1 "x"\ndelegate_to_qc')
+    assert single is not None and single.name == "close_work_item"
+    with pytest.raises(ValueError, match="parse_work_item_commands"):
+        parse_work_item_command('close_work_item 1 "x"\nopen_work_item "a" "b"')
+
+
+def test_prompt_states_the_command_block_rule_and_close_before_delegate() -> None:
     prompt = render_work_item_prompt(WorkItemPolicy())
-    assert "LAST line" in prompt
+    assert "COMMAND BLOCK at the END of the message" in prompt
+    assert "one command per line" in prompt
+    assert "several allowed, applied in the order written" in prompt
+    assert "Close before you delegate" in prompt
+    assert "you cannot delegate to yourself" in prompt
     assert "When you receive a delegation" in prompt
-    # Either order is fine now; the old one-way rule is gone.
-    assert "put the delegation before the command" not in prompt
-    assert "directly before or after the command" in prompt
+    # The old single-command rule is gone.
+    assert "at most one command" not in prompt
+    assert "LAST line" not in prompt
     assert (
         "If you are redoing a stage you already completed, reuse the same "
         "title so the rerun is linked to the original." in prompt

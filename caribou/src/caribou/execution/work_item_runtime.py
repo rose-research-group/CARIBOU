@@ -16,83 +16,191 @@ from caribou.execution.work_items import (
     WorkItemCommandResult,
     WorkItemPolicy,
     WorkItemStore,
-    command_line,
+    command_block,
     execute_work_item_command,
-    parse_work_item_command,
+    is_command_line,
+    parse_command_block,
 )
 
 MAX_STATE_CHARS = 1200
 MAX_STATE_ITEMS = 8
 
-_COMMAND_NAMES = (
-    "open_work_item",
-    "close_work_item",
-    "list_work_items",
-    "read_work_item",
+NOT_APPLIED_AFTER_REFUSAL = (
+    "not applied: an earlier command in this message was refused"
+)
+
+_BLOCK_RULE = (
+    "Put work-item commands in a block at the END of the message, one per "
+    "line (several allowed, applied in order), with every argument quoted, "
+    'e.g.: open_work_item "<title>" "<body>" or '
+    'close_work_item <id> "<completion summary>". A bare delegate_to_<agent> '
+    "line may stand in the block; prose or code may come before the block, "
+    "nothing after it."
 )
 
 
-def _looks_like_attempted_command(message: str) -> bool:
-    """True if any line outside code fences starts with a work-item command
-    name although `parse_work_item_command` rejected the message — bad
-    quoting, a missing argument, or a command that is neither the last line
-    nor the line before a final bare `delegate_to_X` (e.g. `open_work_item
-    ...` followed by prose). Used only to decide whether the `None` case
-    below deserves an explicit correction instead of the command being
-    ignored without a word.
+def stray_command_lines(message: str) -> List[str]:
+    """Lines of `message` that start with a work-item command name but are
+    neither inside a code fence nor part of the trailing command block
+    (`command_block`): a command followed by prose, for instance. Such a
+    line is not applied; without feedback the agent has no signal that it
+    didn't register and repeats the identical mistake forever (observed in
+    practice — see the implementation brief's follow-up notes), so the
+    caller reports them.
     """
+    block = command_block(message)
+    block_start = len(block)
+    stray: List[str] = []
     in_fence = False
-    for raw in message.splitlines():
-        line = raw.strip()
+    lines = [line.strip() for line in message.splitlines() if line.strip()]
+    body = lines[: len(lines) - block_start] if block_start else lines
+    for line in body:
         if line.startswith("```"):
             in_fence = not in_fence
             continue
-        if not in_fence and any(line.startswith(name) for name in _COMMAND_NAMES):
-            return True
-    return False
+        if not in_fence and is_command_line(line):
+            stray.append(line)
+    return stray
+
+
+def _looks_like_attempted_command(message: str) -> bool:
+    """True if `message` has a command-looking line that will not be applied:
+    a malformed line in the trailing command block, or a command line
+    outside the block (`stray_command_lines`). Used to decide whether the
+    "no command" case deserves an explicit correction instead of the
+    message being ignored without a word.
+    """
+    return parse_command_block(message).malformed is not None or bool(
+        stray_command_lines(message)
+    )
+
+
+def apply_commands(
+    store: WorkItemStore, message: str, *, owner: str, turn: int
+) -> List[WorkItemCommandResult]:
+    """Parse and apply the work-item commands of an assistant message's
+    trailing command block, in order.
+
+    Returns `[]` when the message holds no work-item command at all. The
+    commands are applied in the order written and stop at the first
+    refusal: every later command gets a `WorkItemCommandResult(success=
+    False, feedback=NOT_APPLIED_AFTER_REFUSAL)`, so the agent sees which
+    ones it must resend.
+
+    A block with a malformed line is not applied at all (a half-applied
+    block would hide the error): the result is one failed
+    `WorkItemCommandResult` naming the bad line. A command-looking line
+    outside the block (e.g. followed by prose) adds one failed result with
+    the same correction, after the block's results — it is never silently
+    dropped.
+    """
+    block = parse_command_block(message)
+    results: List[WorkItemCommandResult] = []
+    if block.malformed is not None:
+        results.append(
+            WorkItemCommandResult(
+                feedback=(
+                    "Work-item command not recognized: "
+                    f"{block.malformed!r} does not follow the grammar, so none of "
+                    f"this message's commands were applied. {_BLOCK_RULE}"
+                ),
+                success=False,
+            )
+        )
+    else:
+        refused = False
+        for command in block.commands:
+            if refused:
+                results.append(
+                    WorkItemCommandResult(
+                        feedback=NOT_APPLIED_AFTER_REFUSAL, success=False, command=command
+                    )
+                )
+                continue
+            result = execute_work_item_command(store, command, owner=owner, turn=turn)
+            results.append(result)
+            if not result.success:
+                refused = True
+    stray = stray_command_lines(message)
+    if stray:
+        quoted = ", ".join(repr(line) for line in stray)
+        results.append(
+            WorkItemCommandResult(
+                feedback=(
+                    f"Work-item command not applied: {quoted} "
+                    "(not in the command block at the end of the message). "
+                    + _BLOCK_RULE
+                ),
+                success=False,
+            )
+        )
+    return results
 
 
 def apply_command(
     store: WorkItemStore, message: str, *, owner: str, turn: int
 ) -> Optional[WorkItemCommandResult]:
-    """Parse and apply one work-item command from an assistant message.
-
-    Returns `None` if the message is not a work-item command at all,
-    distinct from a `WorkItemCommandResult(success=False, ...)`, which means
-    it *was* a command but was refused.
-
-    A message with a line that merely *looks like* an attempted command
-    (starts with a command name) but that fails the grammar or is not on
-    the last line (or the line before a final bare delegation) is not
-    silently dropped as `None`: without feedback the agent has no signal
-    that its message didn't register, and it will repeat the identical
-    mistake forever (observed in practice — see the implementation brief's
-    follow-up notes). It gets a `WorkItemCommandResult(success=False, ...)`
-    explaining exactly what to fix instead.
+    """One-command convenience over `apply_commands`: the single result, or
+    `None` when the message holds no command. Raises ValueError when the
+    message yields several results (a block of several commands, or a block
+    plus a stray command line), so a caller that handles one result never
+    drops the rest; such callers must migrate to `apply_commands`.
     """
-    command = parse_work_item_command(message)
-    if command is None:
-        if _looks_like_attempted_command(message):
-            return WorkItemCommandResult(
-                feedback=(
-                    "Work-item command not recognized. Put exactly one "
-                    "command, on a single line, as the LAST line of the "
-                    "message (prose or code may come before it, nothing "
-                    "after it except a bare delegate_to_<agent> line, which "
-                    "may come directly before or after the command), with "
-                    "every argument quoted, e.g.: "
-                    'open_work_item "<title>" "<body>" or '
-                    'close_work_item <id> "<completion summary>"'
-                ),
-                success=False,
-            )
+    results = apply_commands(store, message, owner=owner, turn=turn)
+    if not results:
         return None
-    return execute_work_item_command(store, command, owner=owner, turn=turn)
+    if len(results) > 1:
+        raise ValueError(
+            f"the message yields {len(results)} work-item command results; "
+            "use apply_commands"
+        )
+    return results[0]
 
 
 def end_session_block(store: WorkItemStore, owner: str) -> List[Dict[str, Any]]:
     """Items that block `owner` from ending the session (non-Done items they own)."""
     return store.blocking_for_owner(owner)
+
+
+def delegation_allowed(
+    store: WorkItemStore,
+    tracker_blocks: List[Dict[str, Any]],
+    owner: str,
+    target: str,
+) -> Optional[str]:
+    """Whether `owner` may delegate to `target` right now: a refusal reason,
+    or None when the delegation may proceed.
+
+    Refused when the target is the owner itself, and when the owner has an
+    In-progress item it did code work under — a block of that item
+    (`tracker_blocks`, the block tracker's current blocks) whose `agents`
+    include the owner and whose `action_ids` are non-empty. The one who did
+    the work writes the item's completion summary; a delegation must not
+    push that onto the next agent (observed in practice: every stage was
+    "closed" by the agent after it, see session ac59f7b8). Items the owner
+    has NOT worked on (a plan opened for the next agent) are not a reason to
+    refuse; `transfer_on_delegation` hands them over once this check passes.
+    """
+    if target == owner:
+        return "Delegation refused: you cannot delegate to yourself."
+    for summary in store.list():
+        if summary.get("owner") != owner or summary.get("status") != "In progress":
+            continue
+        item_id = int(summary["id"])
+        worked = any(
+            block["work_item_id"] == item_id
+            and owner in block["agents"]
+            and bool(block["action_ids"])
+            for block in tracker_blocks
+        )
+        if worked:
+            return (
+                f"Delegation refused: close work item #{item_id} first — you did "
+                "the work, so you write its completion summary "
+                f'(close_work_item {item_id} "<summary>"). Delegate in your '
+                "next message."
+            )
+    return None
 
 
 def transfer_on_delegation(
@@ -105,6 +213,10 @@ def transfer_on_delegation(
 ) -> List[Dict[str, Any]]:
     """Hand off every active item `from_owner` owns to `to_owner`, with one
     exception: the evaluator agent never receives ownership this way.
+
+    Runs only after `delegation_allowed` returned None, so every item it
+    moves is one the delegating agent did no code work under (a plan opened
+    for the receiving agent, for instance).
 
     Required-QC review refuses a self-approve (`evaluator == owner`). If a
     bare `delegate_to_<evaluator>` transferred active items unconditionally,

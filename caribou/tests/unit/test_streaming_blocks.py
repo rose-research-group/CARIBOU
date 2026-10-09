@@ -187,6 +187,9 @@ def test_user_message_from_the_queue_syncs_blocks_before_the_llm_call(
         user_input_queue=ScriptedQueue(
             [(None, "close it"), (human_reject, "redo it")]
         ),
+        # Run-mode continuation (the close auto-continues); step mode is
+        # covered by test_step_mode.py.
+        continue_mode="run",
     )
 
     user_redo = next(

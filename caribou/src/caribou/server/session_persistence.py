@@ -126,6 +126,7 @@ def save_session(
             "message_queue": [
                 item.model_dump(mode="json") for item in session.message_queue
             ],
+            "continue_mode": session.continue_mode,
         }
         if is_deleted(session.id):
             return
@@ -217,6 +218,15 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
             # to tokens that were never saved.
             events = data.get("events", [])
             event_seq = backfill_event_seq(events, data.get("event_seq_reserved"))
+            # Files written before Step | Run existed have no key: those
+            # sessions pause after each stage like any other, "step". A
+            # present value outside the vocabulary skips the session.
+            continue_mode = data.get("continue_mode", "step")
+            if continue_mode not in ("step", "run"):
+                raise ValueError(
+                    f"session file stores continue_mode {continue_mode!r}; "
+                    "expected 'step' or 'run'"
+                )
 
             session = _Session(
                 id=data["id"],
@@ -306,6 +316,7 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
                     QueuedMessage.model_validate(item)
                     for item in data.get("message_queue", [])
                 ],
+                continue_mode=continue_mode,
             )
             # If the session was interrupted, record that in the event log
             if raw_status != data.get("status"):

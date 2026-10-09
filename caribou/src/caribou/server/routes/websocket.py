@@ -7,6 +7,7 @@ Protocol:
     { "type": "user_message", "content": "<next turn>",
       "block_id"?: "<workbench block id>"                    }
     { "type": "unqueue_message", "id": "<queued message id>" }
+    { "type": "set_continue_mode", "continue_mode": "step"|"run" }
     { "type": "stop"                                         }
     { "type": "ping"                                         }
 
@@ -21,6 +22,11 @@ Protocol:
   A `user_message` is delivered at once when the runner is waiting, queued
   while the agent is busy (announced by a `message_queue_changed` log event
   carrying the full queue), or refused with a non-fatal `error` event.
+
+  `set_continue_mode` switches the session between Step and Run (same as
+  PATCH /api/sessions/{id}/continue-mode); a change is announced by a
+  `continue_mode_changed` log event `{"continue_mode": ...}`, an invalid
+  value by a non-fatal `error` event.
 
   The socket stays open after the session stops or errors, so queued
   messages remain removable (`unqueue_message`) and later events (e.g. a
@@ -153,6 +159,13 @@ async def _receive_messages(websocket: WebSocket, session) -> None:
             # The manager logs an unknown or missing id as a non-fatal
             # QUEUED_MESSAGE_GONE error event.
             await session_manager.unqueue_message(session.id, msg.get("id"))
+
+        elif msg_type == "set_continue_mode":
+            # The manager logs an invalid or missing value as a non-fatal
+            # INVALID_CONTINUE_MODE error event and leaves the mode alone.
+            await session_manager.set_continue_mode(
+                session.id, msg.get("continue_mode")
+            )
 
         elif msg_type == "stop":
             await session_manager.stop_session(session.id)

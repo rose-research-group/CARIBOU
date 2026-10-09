@@ -194,6 +194,9 @@ def test_user_input_syncs_blocks_before_the_next_llm_call(tmp_path, monkeypatch)
         output_dir=tmp_path,
         durable_run_id="run_cli",
         event_callback=events.append,
+        # The scripted prompts assume the close auto-continues; step mode
+        # (the default) would pause there instead. Step mode has its own tests.
+        continue_mode="run",
     )
 
     assert script == []

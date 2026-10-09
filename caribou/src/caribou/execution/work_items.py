@@ -116,6 +116,9 @@ class WorkItemCommandResult:
     feedback: str
     success: bool
     changed_item: Optional[Dict[str, Any]] = None
+    # The command this result answers; None for a correction that answers no
+    # single command (a malformed block, a stray command line).
+    command: Optional[WorkItemCommand] = None
 
 
 def is_delegation_line(line: str) -> bool:
@@ -123,48 +126,90 @@ def is_delegation_line(line: str) -> bool:
     return _DELEGATION_LINE_RE.match(line.strip()) is not None
 
 
-def command_line(message: str) -> Optional[str]:
-    """The line of `message` that may hold a work-item command: the whole
-    message when it is a single line, otherwise its last non-empty line, or
-    the one before it when the last non-empty line is a bare delegation
-    (`delegate_to_<agent>` alone), so a command and a delegation may come in
-    either order at the end of a message.
+_COMMAND_NAMES = (
+    "open_work_item",
+    "close_work_item",
+    "list_work_items",
+    "read_work_item",
+)
 
-    Returns None when there is no such line, or when the candidate line sits
-    inside an unterminated ``` fence (the message ends inside a code block,
-    so that line is code, not a command).
+
+def is_command_line(line: str) -> bool:
+    """True if `line` starts with a work-item command name (whether or not
+    the rest of the line follows the grammar)."""
+    first = line.strip().split(None, 1)[0] if line.strip() else ""
+    return first in _COMMAND_NAMES
+
+
+@dataclass(frozen=True)
+class CommandBlock:
+    """The trailing command block of an assistant message.
+
+    `lines`: the block's raw lines in message order (work-item command lines
+    and bare `delegate_to_<agent>` lines). `commands`: the parsed work-item
+    commands, in order, of every block line that is not a delegation.
+    `malformed`: the first block line that starts with a command name but
+    fails the grammar, else None; when set, `commands` holds only the lines
+    before it and the block must not be applied (a half-applied block would
+    hide the error).
+    """
+
+    lines: List[str]
+    commands: List[WorkItemCommand]
+    malformed: Optional[str]
+
+
+def command_block(message: str) -> List[str]:
+    """The lines of `message`'s trailing command block: the consecutive
+    non-empty lines at the END of the message that are each either a
+    work-item command line (start with a command name) or a bare
+    `delegate_to_<agent>` line, in message order. Everything before the
+    block is prose or code.
+
+    Empty when there is no such line, or when the block would sit inside an
+    unterminated ``` fence (the message ends inside a code block, so those
+    lines are code, not commands).
     """
     if not message:
-        return None
+        return []
     lines = [line.strip() for line in message.splitlines() if line.strip()]
-    if not lines:
-        return None
-    position = len(lines) - 1
-    if position > 0 and is_delegation_line(lines[position]):
-        position -= 1
+    start = len(lines)
+    while start > 0 and (
+        is_command_line(lines[start - 1]) or is_delegation_line(lines[start - 1])
+    ):
+        start -= 1
+    if start == len(lines):
+        return []
     fence_open = False
-    for line in lines[:position]:
+    for line in lines[:start]:
         if line.startswith("```"):
             fence_open = not fence_open
     if fence_open:
-        return None
-    return lines[position]
+        return []
+    return lines[start:]
 
 
-def parse_work_item_command(message: str) -> Optional[WorkItemCommand]:
-    """Parse a work-item command from an assistant message.
-
-    The command is either the entire message or its last non-empty line
-    (or the line before a final bare `delegate_to_<agent>` line, see
-    `command_line`), with everything before it treated as prose or code. A
-    command line anywhere else is ignored, so a quoted or discussed command
-    never fires accidentally. Commands are single-line. Quoting follows
-    shell-like rules solely for tokenization; nothing is ever passed through
-    a shell.
+def command_line(message: str) -> Optional[str]:
+    """The single work-item command line of `message`, if its trailing
+    command block (see `command_block`) holds exactly one. Kept for callers
+    that only ever send one command; raises ValueError when the block holds
+    several, since dropping all but one would apply the wrong thing.
     """
-    line = command_line(message)
-    if line is None:
+    block = [line for line in command_block(message) if not is_delegation_line(line)]
+    if not block:
         return None
+    if len(block) > 1:
+        raise ValueError(
+            "the message's command block holds several work-item commands; "
+            "use command_block/parse_work_item_commands"
+        )
+    return block[0]
+
+
+def _parse_command_line(line: str) -> Optional[WorkItemCommand]:
+    """One command line to a command, or None when it fails the grammar.
+    Quoting follows shell-like rules solely for tokenization; nothing is
+    ever passed through a shell."""
     try:
         tokens = shlex.split(line)
     except ValueError:
@@ -188,6 +233,56 @@ def parse_work_item_command(message: str) -> Optional[WorkItemCommand]:
                 completion_summary=tokens[2],
             )
     return None
+
+
+def parse_command_block(message: str) -> CommandBlock:
+    """Parse the trailing command block of an assistant message (see
+    `command_block`). Commands are single-line and come in the order they
+    appear; a bare `delegate_to_<agent>` line may stand anywhere in the
+    block and is not a work-item command.
+    """
+    lines = command_block(message)
+    commands: List[WorkItemCommand] = []
+    for line in lines:
+        if is_delegation_line(line):
+            continue
+        command = _parse_command_line(line)
+        if command is None:
+            return CommandBlock(lines=lines, commands=commands, malformed=line)
+        commands.append(command)
+    return CommandBlock(lines=lines, commands=commands, malformed=None)
+
+
+def parse_work_item_commands(message: str) -> List[WorkItemCommand]:
+    """The work-item commands of `message`'s trailing command block, in
+    order. Empty when the message has no command block, or when any line of
+    the block fails the grammar (the whole block is then refused, so a
+    caller never applies half of it; `parse_command_block` names the bad
+    line). A command line anywhere but the block is ignored here, so a
+    quoted or discussed command never fires accidentally.
+    """
+    block = parse_command_block(message)
+    if block.malformed is not None:
+        return []
+    return block.commands
+
+
+def parse_work_item_command(message: str) -> Optional[WorkItemCommand]:
+    """One-command convenience over `parse_work_item_commands`: the single
+    command of the message's command block, or None when there is none (or
+    the block is malformed). Raises ValueError when the block holds more
+    than one command, so a caller that can only handle one never silently
+    drops the rest; such callers must migrate to the list form.
+    """
+    commands = parse_work_item_commands(message)
+    if not commands:
+        return None
+    if len(commands) > 1:
+        raise ValueError(
+            f"the message's command block holds {len(commands)} work-item "
+            "commands; use parse_work_item_commands"
+        )
+    return commands[0]
 
 
 class WorkItemStore:
@@ -935,17 +1030,25 @@ def copy_work_items_at(
 def render_work_item_prompt(policy: WorkItemPolicy) -> str:
     close_result = "Done" if policy.qc_mode == "optional" else "In review"
     return (
-        "\n\nWork items are enforced in this run. Put at most one command in "
-        "a message, on a single line, as its LAST line; prose or code may come "
-        "before it, nothing after it except a bare `delegate_to_<agent>` line, "
-        "which may come directly before or after the command. Commands "
-        "anywhere else are ignored. Do not wrap the command in backticks:\n"
+        "\n\nWork items are enforced in this run. Put your work-item commands in "
+        "a COMMAND BLOCK at the END of the message: one command per line, "
+        "several allowed, applied in the order written. A bare "
+        "`delegate_to_<agent>` line belongs in the same block, in any "
+        "position. Prose or code may come before the block, nothing after it. "
+        "Commands anywhere else are not applied (you are told so). Do not wrap "
+        "commands in backticks:\n"
         '- `open_work_item "<title>" "<body>"`\n'
         '- `close_work_item <id> "<completion summary>"`\n'
         "- `list_work_items`\n"
         "- `read_work_item <id>`\n"
-        "Delegating to another agent automatically transfers your in-progress "
-        "work items to that agent; you do not need to mention an item id. "
+        "Close before you delegate: a work item you ran code under must be "
+        "closed by you (you did the work, so you write its completion summary) "
+        "before a delegation is accepted; `close_work_item` and "
+        "`delegate_to_<agent>` may stand in the same command block, the close "
+        "first. A delegation that finds such an item still open is refused, and "
+        "you cannot delegate to yourself. Items you opened but did no code work "
+        "in (e.g. a plan) transfer to the agent you delegate to; you do not need "
+        "to mention an item id. "
         "When you receive a delegation and own no open work item for that "
         "task, open one for your task first, with a short stage-style title "
         '(e.g. "QC filtering"); close it when the task is done. If you are '
@@ -970,22 +1073,27 @@ def execute_work_item_command(
             feedback = (
                 f"Opened work item {item['id']} ({item['status']}) for {item['owner']}."
             )
-            return WorkItemCommandResult(feedback, True, item)
+            return WorkItemCommandResult(feedback, True, item, command)
         if command.name == "close_work_item":
             if command.item_id is None:
                 raise WorkItemConflict("close_work_item needs an item id")
             item = store.close(command.item_id, command.completion_summary, owner, turn)
             feedback = f"Work item {item['id']} moved to {item['status']}."
-            return WorkItemCommandResult(feedback, True, item)
+            return WorkItemCommandResult(feedback, True, item, command)
         if command.name == "list_work_items":
             return WorkItemCommandResult(
-                "Work items: " + json.dumps(store.list(), sort_keys=True), True
+                "Work items: " + json.dumps(store.list(), sort_keys=True),
+                True,
+                command=command,
             )
         if command.item_id is None:
             raise WorkItemConflict("read_work_item needs an item id")
         return WorkItemCommandResult(
             "Work item: " + json.dumps(store.read(command.item_id), sort_keys=True),
             True,
+            command=command,
         )
     except WorkItemError as exc:
-        return WorkItemCommandResult(f"Work-item command refused: {exc}", False)
+        return WorkItemCommandResult(
+            f"Work-item command refused: {exc}", False, command=command
+        )

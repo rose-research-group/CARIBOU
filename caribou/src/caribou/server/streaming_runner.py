@@ -133,6 +133,8 @@ def run_session_sync(
     block_entry_checkpoint: Optional[
         Callable[[List[Dict], Dict[str, Any], str], Dict[str, Any]]
     ] = None,
+    continue_mode: str = "step",
+    continue_mode_getter: Optional[Callable[[], str]] = None,
 ) -> None:
     """
     Main agent session loop. Replaces Console output with emit() calls.
@@ -177,6 +179,15 @@ def run_session_sync(
     of every attempt so far. Whatever the hook raises propagates as a runner
     error. `None` (direct callers, tests) records the CLI-style entry: no
     checkpoint, the work-item commit only.
+
+    `continue_mode` / `continue_mode_getter` (interactive sessions only; auto
+    mode always runs): "run" auto-continues after a work-item open/close and
+    a delegation, pausing only when the handoff budget is spent; "step" also
+    pauses after every successful `close_work_item`, with a "Stage closed"
+    guidance message, so the user can review the closed stage's gate before
+    the next one starts. `continue_mode_getter`, when given, is read at every
+    continue decision so a toggle made while a turn runs takes effect at
+    the next decision; `continue_mode` is the value used without a getter.
     """
     from caribou.execution.ActionSpace import AgentActionSpace
     from caribou.execution.agent_management import (
@@ -197,18 +208,22 @@ def run_session_sync(
     from caribou.execution.user_input import require_user_turn
     from caribou.execution.runner import (
         AUTO_CONTINUE_LIMIT,
+        DELEGATION_REFUSED_TRIGGER,
         auto_continue_exhausted_message,
         auto_continue_message,
+        latest_block_id_for_item,
+        stage_closed_message,
+        validate_continue_mode,
     )
     from caribou.execution.work_items import (
         WorkItemError,
         WorkItemPolicy,
         WorkItemStore,
-        parse_work_item_command,
         render_work_item_prompt,
     )
     from caribou.execution.work_item_runtime import (
-        apply_command as apply_work_item_command,
+        apply_commands as apply_work_item_commands,
+        delegation_allowed,
         end_session_block,
         render_brief_pin,
         render_work_item_state,
@@ -372,6 +387,16 @@ def run_session_sync(
     # Only delegations consume the budget, at most AUTO_CONTINUE_LIMIT
     # handoffs in a row; reset by every real user message.
     auto_continue_budget = AUTO_CONTINUE_LIMIT
+    validate_continue_mode(continue_mode)
+
+    def _continue_mode() -> str:
+        """The session's continue mode at this decision: the live getter's
+        value when one was given (a toggle takes effect at the next
+        decision), else the `continue_mode` argument."""
+        if continue_mode_getter is None:
+            return continue_mode
+        return validate_continue_mode(continue_mode_getter())
+
     # The block a focused user turn named, until the loop has checked whether
     # that block's work item belongs to another agent (B.1 owner routing):
     # set by `_wait_for_user`, consumed at the top of the next turn.
@@ -1023,6 +1048,9 @@ def run_session_sync(
             # interactive mode (D1): a successful work-item open/close and/or
             # a delegation, each as a short phrase for the guidance message.
             _auto_triggers: List[str] = []
+            # Work items this message closed, in order: a step-mode session
+            # pauses after them.
+            _closed_item_ids: List[int] = []
 
             # Order inside one message (D2/D3): RAG, then the code blocks, run
             # and recorded as the agent that WROTE the message, then the
@@ -1203,22 +1231,25 @@ def run_session_sync(
                             memory_manager.add_pivotal_code(code)
 
             # --- Enforced work-item commands (after the code, D2) ---
-            work_command = parse_work_item_command(msg)
-            work_result = apply_work_item_command(
+            # The message's command block, applied in order; each result is
+            # reported on its own.
+            work_results = apply_work_item_commands(
                 work_items, msg, owner=current_agent.name, turn=turn
             )
-            if work_result is not None:
+            for work_result in work_results:
                 _action_fired = True
-                if (
-                    work_command is not None
-                    and work_command.name in ("open_work_item", "close_work_item")
-                    and work_result.success
-                ):
-                    _auto_triggers.append(
-                        "opening a work item"
-                        if work_command.name == "open_work_item"
-                        else "closing a work item"
-                    )
+                changed = work_result.changed_item
+                command = work_result.command
+                if work_result.success and command is not None:
+                    if command.name == "open_work_item":
+                        trigger = "opening a work item"
+                    elif command.name == "close_work_item":
+                        trigger = "closing a work item"
+                        _closed_item_ids.append(int(changed["id"]))
+                    else:
+                        trigger = None
+                    if trigger is not None and trigger not in _auto_triggers:
+                        _auto_triggers.append(trigger)
                 feedback = work_result.feedback
                 history.append({"role": "system", "content": feedback})
                 if memory_manager is not None:
@@ -1228,16 +1259,12 @@ def run_session_sync(
                     {"content": feedback, "category": "Work item"},
                     turn=turn,
                 )
-                if work_result.changed_item is not None:
-                    _emit(
-                        "work_item_changed",
-                        {"item": work_result.changed_item},
-                        turn=turn,
-                    )
-                    block_tracker.on_work_item_changed(work_result.changed_item)
-                if _auto_triggers:
-                    # An applied open/close ends a workbench block focus (D4).
-                    block_tracker.clear_focus()
+                if changed is not None:
+                    _emit("work_item_changed", {"item": changed}, turn=turn)
+                    block_tracker.on_work_item_changed(changed)
+            if _auto_triggers:
+                # An applied open/close ends a workbench block focus (D4).
+                block_tracker.clear_focus()
 
             # --- End session detection ---
             has_delegation = detect_delegation(msg) is not None
@@ -1289,11 +1316,35 @@ def run_session_sync(
                     )
                     return
 
-            # --- Delegation ---
+            # --- Delegation (after the command block, so "close then
+            # delegate" in one message works in one turn) ---
             cmd = detect_delegation(msg)
             if cmd and cmd in current_agent.commands:
                 target_name = current_agent.commands[cmd].target_agent
                 new_agent = agent_system.get_agent(target_name)
+                refusal = (
+                    None
+                    if new_agent is None
+                    else delegation_allowed(
+                        work_items, block_tracker.blocks(), current_agent.name, target_name
+                    )
+                )
+                if refusal is not None:
+                    # No switch: the agent is told why and the turn continues
+                    # automatically (no handoff consumed) so it can close its
+                    # item and delegate again.
+                    _action_fired = True
+                    new_agent = None
+                    history.append({"role": "system", "content": refusal})
+                    if memory_manager is not None:
+                        memory_manager.add_message("system", refusal)
+                    _emit(
+                        "system_message",
+                        {"content": refusal, "category": "Work item"},
+                        turn=turn,
+                    )
+                    if DELEGATION_REFUSED_TRIGGER not in _auto_triggers:
+                        _auto_triggers.append(DELEGATION_REFUSED_TRIGGER)
                 if new_agent is not None:
                     try:
                         transferred_items = transfer_on_delegation(
@@ -1425,7 +1476,25 @@ def run_session_sync(
             # always firing first in auto mode) because that ordering is
             # incidental, not a contract.
             if not is_auto and _auto_triggers:
-                if not (_delegated and auto_continue_budget <= 0):
+                step_pause = bool(_closed_item_ids) and _continue_mode() == "step"
+                if step_pause:
+                    # Step mode: a closed stage waits for the user's review
+                    # (no handoff consumed, like a spent budget).
+                    for closed_id in _closed_item_ids:
+                        _emit(
+                            "system_message",
+                            {
+                                "content": stage_closed_message(
+                                    closed_id,
+                                    latest_block_id_for_item(
+                                        block_tracker.blocks(), closed_id
+                                    ),
+                                ),
+                                "category": "Runner guidance",
+                            },
+                            turn=turn,
+                        )
+                elif not (_delegated and auto_continue_budget <= 0):
                     auto_continue_step: Optional[int] = None
                     if _delegated:
                         auto_continue_budget -= 1
@@ -1451,14 +1520,15 @@ def run_session_sync(
                         turn=turn,
                     )
                     continue
-                _emit(
-                    "system_message",
-                    {
-                        "content": auto_continue_exhausted_message(),
-                        "category": "Runner guidance",
-                    },
-                    turn=turn,
-                )
+                else:
+                    _emit(
+                        "system_message",
+                        {
+                            "content": auto_continue_exhausted_message(),
+                            "category": "Runner guidance",
+                        },
+                        turn=turn,
+                    )
 
             # --- Interactive: wait for next user message ---
             if not _wait_for_user(turn):
@@ -1521,6 +1591,8 @@ async def run_session_async(
     block_entry_checkpoint: Optional[
         Callable[[List[Dict], Dict[str, Any], str], Dict[str, Any]]
     ] = None,
+    continue_mode: str = "step",
+    continue_mode_getter: Optional[Callable[[], str]] = None,
 ) -> None:
     """
     Runs run_session_sync in a thread so it doesn't block the event loop.
@@ -1579,6 +1651,8 @@ async def run_session_async(
         brief=brief,
         known_artifacts=known_artifacts,
         block_entry_checkpoint=block_entry_checkpoint,
+        continue_mode=continue_mode,
+        continue_mode_getter=continue_mode_getter,
     )
     # Deliveries queued before the thread finished have run by now (the
     # loop runs call_soon_threadsafe callbacks in order); surface any failure

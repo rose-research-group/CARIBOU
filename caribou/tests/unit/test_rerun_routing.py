@@ -114,6 +114,9 @@ def _run(tmp_path: Path, responses, script, *, qc_mode="optional", extra_agents=
         stop_flag=stop,
         work_item_store=store,
         user_input_queue=ScriptedQueue(script, stop, store),
+        # Routing is tested under run-mode continuation; step mode (the
+        # session default) is covered by test_step_mode.py.
+        continue_mode="run",
     )
     return events, llm, store
 

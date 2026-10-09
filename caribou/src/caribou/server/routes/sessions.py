@@ -17,6 +17,7 @@ from caribou.server.models import (
     BranchSummary,
     BriefDecisionRequest,
     CodeEventRecord,
+    ContinueModeUpdateRequest,
     EvaluationResult,
     EvaluatorModelState,
     EvaluatorModelUpdateRequest,
@@ -384,6 +385,22 @@ async def evaluate_session(session_id: str) -> EvaluationResult:
         raise HTTPException(500, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+@router.patch("/{session_id}/continue-mode", response_model=SessionResponse)
+async def update_continue_mode(
+    session_id: str, body: ContinueModeUpdateRequest
+) -> SessionResponse:
+    """Switch the session between Step and Run, in any status.
+
+    Idempotent; a change is announced by a `continue_mode_changed` log
+    event. 404 for an unknown session, 422 for a body that is not
+    {"continue_mode": "step" | "run"}.
+    """
+    try:
+        return await session_manager.set_continue_mode(session_id, body.continue_mode)
+    except KeyError as exc:
+        raise HTTPException(404, "Session not found") from exc
 
 
 @router.get("/{session_id}/evaluator-model", response_model=EvaluatorModelState)

@@ -312,6 +312,7 @@ class SessionManager:
                 if requested_python_environment is not None
                 else {}
             ),
+            continue_mode=config.continue_mode,
             attempts=[
                 {
                     "attempt_number": 1,
@@ -470,6 +471,7 @@ class SessionManager:
             recovery_phase="awaiting_checkpoint",
             recovery_step=1,
             recovery_total_steps=RECOVERY_TOTAL_STEPS,
+            continue_mode=source.continue_mode,
             attempts=[
                 {
                     "attempt_number": 1,
@@ -634,6 +636,7 @@ class SessionManager:
             recovery_phase="copying_checkpoint",
             recovery_step=1,
             recovery_total_steps=RECOVERY_TOTAL_STEPS,
+            continue_mode=source.continue_mode,
             attempts=[
                 {
                     "attempt_number": 1,
@@ -2683,6 +2686,45 @@ class SessionManager:
         self._emit_message_queue_changed(session)
         return True
 
+    async def set_continue_mode(
+        self, session_id: str, continue_mode: Any
+    ) -> SessionResponse:
+        """Switch the session between Step and Run (allowed in any status).
+
+        The runner reads `session.continue_mode` live, so the change applies
+        at its next continue decision. Idempotent: setting the current mode
+        again changes nothing and logs nothing. A change is logged as a
+        `continue_mode_changed` event `{"continue_mode": ...}` and persisted.
+
+        KeyError for an unknown session. A value outside "step"/"run" (only
+        reachable over the WebSocket; the REST body is validated to 422) is
+        refused visibly, as a non-fatal INVALID_CONTINUE_MODE error event in
+        the session log, and the mode stays as it was.
+        """
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise KeyError("Session not found")
+        if continue_mode not in ("step", "run"):
+            self._reject_user_message(
+                session,
+                "INVALID_CONTINUE_MODE",
+                f"Continue mode not changed: {continue_mode!r} is not one of "
+                "'step' or 'run'.",
+            )
+        elif continue_mode != session.continue_mode:
+            session.continue_mode = continue_mode
+            self._on_event(
+                session,
+                {
+                    "type": "continue_mode_changed",
+                    "session_id": session.id,
+                    "turn": session.current_turn,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "data": {"continue_mode": continue_mode},
+                },
+            )
+        return session.to_response()
+
     async def start_run(self, session_id: str, initial_prompt: str) -> bool:
         """
         Called when the WebSocket client sends a 'run' message.
@@ -2880,6 +2922,9 @@ class SessionManager:
                     known_artifacts={
                         record.path: record.mtime_ns for record in session.artifacts
                     },
+                    # Read live at each continue decision, so a Step | Run
+                    # toggle (set_continue_mode) applies at the next one.
+                    continue_mode_getter=lambda: session.continue_mode,
                 )
             except asyncio.CancelledError:
                 # Propagate after cleanup so shutdown_all/delete_session can await it.

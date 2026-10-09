@@ -56,11 +56,11 @@ try:
         WorkItemError,
         WorkItemPolicy,
         WorkItemStore,
-        parse_work_item_command,
         render_work_item_prompt,
     )
     from caribou.execution.work_item_runtime import (
-        apply_command as apply_work_item_command,
+        apply_commands as apply_work_item_commands,
+        delegation_allowed,
         end_session_block,
         freeze_brief,
         render_brief_pin,
@@ -122,6 +122,50 @@ def auto_continue_exhausted_message() -> str:
         f"Automatic continuation paused after {AUTO_CONTINUE_LIMIT} handoffs. "
         "Waiting for your next message."
     )
+
+
+# Interactive continue modes (both loops). "run": auto-continue after a
+# work-item open/close and a delegation, pausing only when the handoff budget
+# is spent. "step": the same, except that a successful `close_work_item`
+# pauses for the user so the closed stage's gate can be reviewed.
+CONTINUE_MODES = ("step", "run")
+# The guidance trigger of a refused delegation (no agent switch): the turn
+# continues automatically so the agent can close its item and re-delegate.
+DELEGATION_REFUSED_TRIGGER = "a refused delegation"
+
+
+def validate_continue_mode(value: object) -> str:
+    """`value` as a continue mode, or ValueError when it is not one."""
+    if value not in CONTINUE_MODES:
+        raise ValueError(
+            f"continue_mode must be one of {', '.join(CONTINUE_MODES)}, got {value!r}"
+        )
+    return str(value)
+
+
+def stage_closed_message(item_id: int, block_id: Optional[str]) -> str:
+    """Guidance text for a step-mode pause after `close_work_item`.
+
+    `block_id` is the closed item's latest block, or None when the item was
+    closed without any code having run under it (a plan, for instance), in
+    which case there is no gate to point at.
+    """
+    where = f"block {block_id}" if block_id is not None else "no code block"
+    return (
+        f"Stage closed: work item #{item_id} ({where}). Review its gate, then "
+        "send a message or Continue."
+    )
+
+
+def latest_block_id_for_item(
+    blocks: List[Dict[str, Any]], item_id: int
+) -> Optional[str]:
+    """The id of the newest block of work item `item_id` among the block
+    tracker's current `blocks` (inherited blocks excluded), or None."""
+    for block in reversed(blocks):
+        if block["work_item_id"] == item_id and block.get("inherited_from") is None:
+            return str(block["block_id"])
+    return None
 
 
 class RunnerEvent(TypedDict):
@@ -692,9 +736,16 @@ def run_agent_session(
     evaluator_runtime: Optional[EvaluatorRuntime] = None,
     brief_policy: Optional["BriefPolicy"] = None,
     brief: Optional["SessionBrief"] = None,
+    continue_mode: str = "step",
 ) -> AgentSessionResult:
     """
     Main driver for agent execution sessions, passing output_dir for benchmark saving.
+
+    `continue_mode` (interactive runs only; auto runs always run): "run"
+    auto-continues after a work-item open/close and a delegation, pausing
+    only when the handoff budget is spent; "step" also pauses after every
+    successful `close_work_item` with a "Stage closed" guidance line, so the
+    user can review the closed stage before the next one starts.
 
     `brief_policy`/`brief` (WS-5): if `brief` is already supplied (a
     pre-authored, frozen brief — the auto-mode `--brief <path>` case), it is
@@ -712,6 +763,7 @@ def run_agent_session(
         raise ValueError("timeout_seconds must be greater than zero")
     if max_consecutive_no_action < 1 or max_consecutive_exec_failures < 1:
         raise ValueError("consecutive failure limits must be positive")
+    validate_continue_mode(continue_mode)
     if max_output_tokens is not None and (
         isinstance(max_output_tokens, bool)
         or not isinstance(max_output_tokens, int)
@@ -1120,6 +1172,9 @@ def run_agent_session(
         # interactive mode (D1): a successful work-item open/close and/or a
         # delegation, each as a short phrase for the guidance line.
         _auto_triggers: List[str] = []
+        # Work items this message closed, in order: a step-mode session
+        # pauses after them.
+        _closed_item_ids: List[int] = []
         # A signature-repair RAG hit during code execution skips the rest of
         # the turn's tail; it is acted on after the work-item command and the
         # delegation, so those still apply.
@@ -1541,22 +1596,25 @@ def run_agent_session(
                 break
 
         # --- Enforced work-item commands (after the code, D2) ---
-        work_command = parse_work_item_command(msg)
-        work_result = apply_work_item_command(
+        # The message's command block, applied in order; each result is
+        # reported on its own.
+        work_results = apply_work_item_commands(
             work_items, msg, owner=current_agent.name, turn=turn
         )
-        if work_result is not None:
+        for work_result in work_results:
             _action_fired = True
-            if (
-                work_command is not None
-                and work_command.name in ("open_work_item", "close_work_item")
-                and work_result.success
-            ):
-                _auto_triggers.append(
-                    "opening a work item"
-                    if work_command.name == "open_work_item"
-                    else "closing a work item"
-                )
+            work_command = work_result.command
+            if work_result.success and work_command is not None:
+                if work_command.name == "open_work_item":
+                    trigger: Optional[str] = "opening a work item"
+                elif work_command.name == "close_work_item":
+                    trigger = "closing a work item"
+                    assert work_result.changed_item is not None
+                    _closed_item_ids.append(int(work_result.changed_item["id"]))
+                else:
+                    trigger = None
+                if trigger is not None and trigger not in _auto_triggers:
+                    _auto_triggers.append(trigger)
             work_feedback = "[SYSTEM] " + work_result.feedback
             history.append({"role": "system", "content": work_feedback})
             if memory_manager:
@@ -1636,6 +1694,29 @@ def run_agent_session(
             target_agent_name = current_agent.commands[cmd].target_agent
             new_agent = agent_system.get_agent(target_agent_name)
             previous_agent_name = current_agent.name
+            refusal = (
+                None
+                if new_agent is None
+                else delegation_allowed(
+                    work_items, block_tracker.blocks(), previous_agent_name, target_agent_name
+                )
+            )
+            if refusal is not None:
+                # No switch: the agent is told why and the turn continues
+                # automatically (no handoff consumed) so it can close its
+                # item and delegate again.
+                _action_fired = True
+                new_agent = None
+                refusal_feedback = "[SYSTEM] " + refusal
+                console.print(f"[yellow]{refusal}[/yellow]")
+                history.append({"role": "system", "content": refusal_feedback})
+                if memory_manager:
+                    memory_manager.add_message("system", refusal_feedback)
+                action_space.add_action(
+                    "delegation_refused", refusal_feedback, status="error"
+                )
+                if DELEGATION_REFUSED_TRIGGER not in _auto_triggers:
+                    _auto_triggers.append(DELEGATION_REFUSED_TRIGGER)
             if new_agent is not None:
                 try:
                     transferred_items = transfer_on_delegation(
@@ -1829,7 +1910,19 @@ def run_agent_session(
         # user message): an open/close continues without counting, and a
         # delegation that finds no budget left pauses for the user.
         if not is_auto and _auto_triggers:
-            if _delegated and auto_continue_budget <= 0:
+            if _closed_item_ids and continue_mode == "step":
+                # Step mode: a closed stage waits for the user's review (no
+                # handoff consumed, like a spent budget).
+                for closed_id in _closed_item_ids:
+                    console.print(
+                        "[yellow]"
+                        + stage_closed_message(
+                            closed_id,
+                            latest_block_id_for_item(block_tracker.blocks(), closed_id),
+                        )
+                        + "[/yellow]"
+                    )
+            elif _delegated and auto_continue_budget <= 0:
                 console.print(f"[yellow]{auto_continue_exhausted_message()}[/yellow]")
             else:
                 step: Optional[int] = None

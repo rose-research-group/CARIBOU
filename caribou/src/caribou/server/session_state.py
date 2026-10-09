@@ -26,6 +26,7 @@ from caribou.server.models import (
     ArtifactRecord,
     BranchRestoreMode,
     CodeEventRecord,
+    ContinueMode,
     EvaluatorModelState,
     MemoryConfigResponse,
     MessageRecord,
@@ -273,6 +274,11 @@ class _Session:
     # change announced by a `message_queue_changed` event. Fork and branch
     # children start with an empty queue.
     message_queue: List[QueuedMessage] = field(default_factory=list)
+    # Step | Run: read live by the runner (through the getter handed to it in
+    # _launch_runner) at each continue decision, so a change takes effect at
+    # the next one. Persisted in session.json (files written before it
+    # existed load as "step"). Fork and branch children inherit it.
+    continue_mode: ContinueMode = "step"
 
     def to_response(self) -> SessionResponse:
         memory = None
@@ -353,4 +359,5 @@ class _Session:
             phase=self.phase,
             brief=self.brief,
             message_queue=[item.model_copy() for item in self.message_queue],
+            continue_mode=self.continue_mode,
         )

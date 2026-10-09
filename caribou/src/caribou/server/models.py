@@ -36,6 +36,13 @@ class SessionMode(str, Enum):
     auto = "auto"
 
 
+# How an interactive session proceeds between stages. "step": the runner
+# pauses for the user after every successful close_work_item; "run": it
+# continues on its own through open/close/delegation (4 handoffs per
+# check-in). Auto sessions ignore it and always run.
+ContinueMode = Literal["step", "run"]
+
+
 class RunMode(str, Enum):
     full_system = "full_system"
     single_agent = "single_agent"
@@ -162,6 +169,18 @@ class SessionCreateRequest(BaseModel):
     # never run a briefing conversation, so this is their only way to have
     # a brief at all.
     brief: Optional[Dict[str, Any]] = None
+    # The session's initial continue mode (see ContinueMode). The live value
+    # is `SessionResponse.continue_mode`, changeable at any time via
+    # PATCH /continue-mode or the `set_continue_mode` WebSocket message.
+    continue_mode: ContinueMode = "step"
+
+
+class ContinueModeUpdateRequest(BaseModel):
+    """Body of PATCH /api/sessions/{id}/continue-mode."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    continue_mode: ContinueMode
 
 
 class ResolvedModelInfo(BaseModel):
@@ -550,6 +569,9 @@ class SessionResponse(BaseModel):
     # Messages queued while the agent was busy, oldest first; the latest
     # `message_queue_changed` event supersedes this snapshot.
     message_queue: List[QueuedMessage] = Field(default_factory=list)
+    # The live Step | Run mode; the latest `continue_mode_changed` event
+    # supersedes this snapshot. Auto sessions carry it but ignore it.
+    continue_mode: ContinueMode = "step"
 
 
 class SessionResumeRequest(BaseModel):

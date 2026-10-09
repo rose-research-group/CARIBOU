@@ -176,6 +176,10 @@ def env(tmp_path: Path, monkeypatch):
         model_name="scripted/model",
         sandbox_type="offline",
         dataset_path=str(dataset),
+        # The scripts close work items and run on through them: run-mode
+        # continuation (step mode, the default, pauses after each close and
+        # is covered by test_step_mode.py). Branches copy the mode.
+        continue_mode="run",
     )
     yield SimpleNamespace(
         manager=manager,

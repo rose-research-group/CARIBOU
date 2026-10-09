@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from caribou.execution.session_brief import SessionBrief
 from caribou.execution.work_item_runtime import (
+    NOT_APPLIED_AFTER_REFUSAL,
     apply_command,
+    apply_commands,
+    delegation_allowed,
     end_session_block,
     freeze_brief,
     render_brief_pin,
@@ -67,16 +72,17 @@ def test_apply_command_corrects_a_malformed_last_line_command(tmp_path) -> None:
     result = apply_command(store, message, owner="coder", turn=1)
     assert result is not None
     assert result.success is False
-    assert "LAST line" in result.feedback
+    assert "not recognized" in result.feedback
+    assert "'open_work_item \"Load dataset\"'" in result.feedback
+    assert "block at the END of the message" in result.feedback
     assert store.list() == []
 
 
-def test_apply_command_corrects_a_command_that_is_not_the_last_line(
+def test_apply_command_corrects_a_command_that_is_not_in_the_block(
     tmp_path,
 ) -> None:
     # The command is not applied, but the agent is told why instead of it
-    # vanishing; the feedback names the one exception (a final bare
-    # delegation line).
+    # vanishing; the feedback states the block rule, delegation line included.
     store = _store(tmp_path)
     for message in (
         'open_work_item "Load" "Body"\nNow running the loader.',
@@ -86,9 +92,88 @@ def test_apply_command_corrects_a_command_that_is_not_the_last_line(
     ):
         result = apply_command(store, message, owner="coder", turn=1)
         assert result is not None and result.success is False
-        assert "LAST line" in result.feedback
+        assert "not applied" in result.feedback
+        assert "block at the END of the message" in result.feedback
         assert "delegate_to_<agent>" in result.feedback
     assert store.list() == []
+
+
+def test_apply_commands_applies_a_close_and_an_open_in_one_message(tmp_path) -> None:
+    # Session ac59f7b8: close + open in one message applied only the last
+    # line, so each agent saw "the close didn't register" and closed again.
+    store = _store(tmp_path)
+    store.open("Load", "Body", "coder", 1)
+    results = apply_commands(
+        store,
+        "Loaded.\n```python\nx = 1\n```\n"
+        'close_work_item 0 "loaded"\n'
+        'open_work_item "QC" "filter cells"\n',
+        owner="coder",
+        turn=2,
+    )
+    assert [(r.success, r.command.name) for r in results] == [
+        (True, "close_work_item"),
+        (True, "open_work_item"),
+    ]
+    assert store.read(0)["status"] == "Done"
+    assert store.read(1)["title"] == "QC" and store.read(1)["status"] == "In progress"
+    assert apply_commands(store, "just prose", owner="coder", turn=3) == []
+
+
+def test_apply_commands_stops_at_the_first_refusal(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.open("Theirs", "Body", "other", 1)
+    results = apply_commands(
+        store,
+        'close_work_item 0 "not mine"\nopen_work_item "Next" "Body"\nlist_work_items',
+        owner="coder",
+        turn=2,
+    )
+    assert [r.success for r in results] == [False, False, False]
+    assert results[0].feedback.startswith("Work-item command refused")
+    assert results[1].feedback == NOT_APPLIED_AFTER_REFUSAL
+    assert results[1].command is not None and results[1].command.name == "open_work_item"
+    assert results[2].feedback == NOT_APPLIED_AFTER_REFUSAL
+    assert [item["id"] for item in store.list()] == [0]
+
+
+def test_apply_commands_refuses_a_block_with_a_malformed_line_whole(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.open("Load", "Body", "coder", 1)
+    results = apply_commands(
+        store,
+        'close_work_item 0 "loaded"\nopen_work_item "QC"',
+        owner="coder",
+        turn=2,
+    )
+    assert len(results) == 1 and results[0].success is False
+    assert results[0].command is None
+    assert "none of this message's commands were applied" in results[0].feedback
+    assert store.read(0)["status"] == "In progress"
+
+
+def test_apply_commands_reports_a_stray_command_line_after_applying_the_block(
+    tmp_path,
+) -> None:
+    store = _store(tmp_path)
+    results = apply_commands(
+        store,
+        'open_work_item "Early" "typed too soon"\n'
+        "Now some prose about it.\n"
+        'open_work_item "Late" "the real one"',
+        owner="coder",
+        turn=1,
+    )
+    assert [r.success for r in results] == [True, False]
+    assert results[1].command is None
+    assert "'open_work_item \"Early\" \"typed too soon\"'" in results[1].feedback
+    assert "not in the command block" in results[1].feedback
+    assert [item["title"] for item in store.list()] == ["Late"]
+    # The one-result convenience refuses to drop any of them.
+    with pytest.raises(ValueError, match="apply_commands"):
+        apply_command(
+            store, 'list_work_items\nread_work_item 0', owner="coder", turn=2
+        )
 
 
 def test_apply_command_accepts_a_command_in_either_order_with_a_delegation(
@@ -134,6 +219,66 @@ def test_end_session_block_matches_blocking_for_owner(tmp_path) -> None:
     store.open("Item", "Body", "coder", 1)
     assert [item["id"] for item in end_session_block(store, "coder")] == [0]
     assert end_session_block(store, "other") == []
+
+
+def _block(item_id, agents, action_ids, block_id="blk-0001", inherited=None):
+    return {
+        "block_id": block_id,
+        "work_item_id": item_id,
+        "agents": list(agents),
+        "action_ids": list(action_ids),
+        "inherited_from": inherited,
+    }
+
+
+def test_delegation_allowed_refuses_self_delegation(tmp_path) -> None:
+    store = _store(tmp_path)
+    assert delegation_allowed(store, [], "coder", "coder") == (
+        "Delegation refused: you cannot delegate to yourself."
+    )
+    assert delegation_allowed(store, [], "coder", "qc") is None
+
+
+def test_delegation_allowed_refuses_while_a_worked_item_is_open(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.open("QC filtering", "Body", "coder", 1)
+    blocks = [_block(0, ["coder"], ["run_1_1"])]
+    reason = delegation_allowed(store, blocks, "coder", "qc")
+    assert reason == (
+        "Delegation refused: close work item #0 first — you did the work, so "
+        "you write its completion summary (close_work_item 0 \"<summary>\"). "
+        "Delegate in your next message."
+    )
+    # Closed, it no longer blocks.
+    store.close(0, "filtered", "coder", 2)
+    assert delegation_allowed(store, blocks, "coder", "qc") is None
+
+
+def test_delegation_allowed_ignores_items_the_owner_did_not_work_on(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.open("Plan", "Body", "master", 1)
+    # No block at all (a planning item): still hands over.
+    assert delegation_allowed(store, [], "master", "coder") is None
+    # A block of the item with no actions yet, or with another agent's
+    # actions only, is not the owner's work either.
+    assert (
+        delegation_allowed(store, [_block(0, ["master"], [])], "master", "coder")
+        is None
+    )
+    assert (
+        delegation_allowed(
+            store, [_block(0, ["coder"], ["run_1_1"])], "master", "coder"
+        )
+        is None
+    )
+    # Another agent's open item never blocks this owner.
+    store.open("Theirs", "Body", "other", 2)
+    assert (
+        delegation_allowed(
+            store, [_block(1, ["other"], ["run_2_1"], "blk-0002")], "master", "coder"
+        )
+        is None
+    )
 
 
 def test_transfer_on_delegation_refuses_to_hand_items_to_the_evaluator(tmp_path) -> None:
