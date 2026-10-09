@@ -1,5 +1,7 @@
 export type SessionStatus = 'initializing' | 'idle' | 'running' | 'stopped' | 'error' | 'recovering';
 export type SessionMode = 'interactive' | 'auto';
+/** Step: pause after each stage closes. Run: continue through handoffs (4 per check-in). */
+export type ContinueMode = 'step' | 'run';
 export type RunMode = 'full_system' | 'single_agent' | 'one_shot';
 export type SandboxType = 'singularity' | 'docker' | 'offline';
 export type ArtifactType = 'plot' | 'data' | 'code' | 'report';
@@ -77,6 +79,8 @@ export interface Session {
   brief: SessionBriefFields | null;
   /** Messages queued while the agent was busy, in delivery order. */
   message_queue: QueuedMessage[];
+  /** Interactive sessions: whether the runner pauses after each closed stage. Auto mode always runs. */
+  continue_mode: ContinueMode;
 }
 
 /** A user message waiting on the server for the agent to become ready. */
@@ -207,6 +211,8 @@ export interface SessionCreateRequest {
   // undefined/omitted = use the blueprint's own brief_policy default.
   // An explicit value overrides it for this session only.
   brief_mode?: 'off' | 'context' | 'seed_item';
+  /** Omitted = step. */
+  continue_mode?: ContinueMode;
 }
 
 export interface OpenRouterModel {

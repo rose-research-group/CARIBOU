@@ -1,4 +1,4 @@
-import { Artifact, Message, QueuedMessage, WorkItemDetail, SessionBriefFields } from './session.model';
+import { Artifact, ContinueMode, Message, QueuedMessage, WorkItemDetail, SessionBriefFields } from './session.model';
 import { Block } from './block.model';
 
 export interface AgentEventEnvelope<T = unknown> {
@@ -29,6 +29,7 @@ export type AgentEventType =
   | 'phase_change'
   | 'block_changed'
   | 'message_queue_changed'
+  | 'continue_mode_changed'
   | 'error'
   | 'pong';
 
@@ -140,6 +141,11 @@ export interface MessageQueueChangedData {
   queue: QueuedMessage[];
 }
 
+/** The session's continue mode after a `PATCH .../continue-mode` or a `set_continue_mode` message. */
+export interface ContinueModeChangedData {
+  continue_mode: ContinueMode;
+}
+
 export type AgentEvent =
   | AgentEventEnvelope<TokenEventData>
   | AgentEventEnvelope<MessageCompleteData>
@@ -157,5 +163,6 @@ export type AgentEvent =
   | AgentEventEnvelope<PhaseChangeData>
   | AgentEventEnvelope<BlockChangedData>
   | AgentEventEnvelope<MessageQueueChangedData>
+  | AgentEventEnvelope<ContinueModeChangedData>
   | AgentEventEnvelope<ErrorData>
   | AgentEventEnvelope<{}>;

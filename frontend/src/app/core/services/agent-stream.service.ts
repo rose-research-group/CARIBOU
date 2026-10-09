@@ -9,7 +9,7 @@ import {
   BriefDraftData, BriefAcceptedData, PhaseChangeData, BlockChangedData
 } from '../models/events.model';
 import { SessionService } from './session.service';
-import { SessionStatus } from '../models/session.model';
+import { ContinueMode, SessionStatus } from '../models/session.model';
 
 // Derive WebSocket base from document.baseURI so OOD path prefix is included.
 // e.g. https://isvood001.mskcc.org/node/iscb014/8000/ → wss://isvood001.mskcc.org/node/iscb014/8000
@@ -117,7 +117,7 @@ export class AgentStreamService implements OnDestroy {
     this.nextRetryAt.set(null);
   }
 
-  send(msg: { type: string; content?: string; block_id?: string; id?: string }): void {
+  send(msg: { type: string; content?: string; block_id?: string; id?: string; continue_mode?: string }): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
     }
@@ -136,6 +136,16 @@ export class AgentStreamService implements OnDestroy {
 
   stop(): void {
     this.send({ type: 'stop' });
+  }
+
+  /** `{"type":"set_continue_mode"}`; the server answers with a `continue_mode_changed` event. */
+  setContinueMode(mode: ContinueMode): void {
+    this.send({ type: 'set_continue_mode', continue_mode: mode });
+  }
+
+  /** The socket takes messages now (`send` drops them otherwise). */
+  isOpen(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
   }
 
   cancelResponse(): void {

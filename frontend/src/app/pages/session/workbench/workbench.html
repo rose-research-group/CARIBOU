@@ -128,7 +128,7 @@
                 @if (gate) {
                   <app-gate-node [block]="c.block" [gate]="gate" [selected]="selectedGateId() === c.block.block_id"
                     [continues]="continuesAfter(c)" [retryNext]="retryNext(c, gate)" [inherited]="isInherited(c.block)"
-                    (pick)="selectGate(c.block)" />
+                    [stagePaused]="stagePaused(c)" (pick)="selectGate(c.block)" />
                 }
               </div>
               @if (c.versions.length > 1) {

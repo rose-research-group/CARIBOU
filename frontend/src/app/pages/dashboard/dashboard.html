@@ -500,6 +500,21 @@
             <input type="number" [(ngModel)]="form.max_turns" min="1" max="100" />
           }
 
+          @if (form.mode === 'interactive') {
+            <label>Continue mode</label>
+            <select [(ngModel)]="form.continue_mode" aria-label="Continue mode">
+              <option value="step">Step — pause after each stage closes</option>
+              <option value="run">Run — continue through handoffs</option>
+            </select>
+            <span class="field-note">
+              @if (form.continue_mode === 'run') {
+                The agents hand off to each other without stopping; the run checks in with you every 4 handoffs.
+              } @else {
+                The run pauses when a work item closes so you can review its gate, then press Continue. You can switch in the session header.
+              }
+            </span>
+          }
+
           <label>Dataset</label>
           <div class="dataset-picker">
             <div class="source-tabs" role="tablist">
@@ -685,6 +700,10 @@
           <dd>
             {{ form.mode }}{{ form.mode === 'auto' ? ' · ' + form.max_turns + ' turns' : '' }}
           </dd>
+          @if (form.mode === 'interactive') {
+            <dt>Continue mode</dt>
+            <dd>{{ form.continue_mode === 'run' ? 'Run — continue through handoffs' : 'Step — pause after each stage closes' }}</dd>
+          }
           <dt>Dataset</dt>
           <dd class="mono">
             {{ form.dataset_path || '—' }}

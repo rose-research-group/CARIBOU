@@ -30,6 +30,7 @@ import {
 import { RESTORE_MODE_LABEL, shortId } from './branching';
 import { GATE_GLYPH, GATE_LABEL, Gate, blockGate, gateIdFromFragment } from './gates';
 import { activityLine } from './activity';
+import { stepPauseFrom } from './step-pause';
 import { BranchFlow, FlowCell, branchFlow, lastColumn, ownCellsWithoutParent, sessionCells } from './flow-layout';
 import { rerunLabel, rerunLinks, shownVersion, versionText } from './stages';
 import { GhostCardComponent } from './ghost-card/ghost-card';
@@ -201,6 +202,15 @@ export class WorkbenchComponent {
   readonly queuedCount = computed(() => this.store.messageQueue().length);
   /** The block a message sent from this page is about, while the agent works on it. */
   readonly inFlightBlockId = computed(() => this.working() ? this.store.inFlightBlockId() : null);
+  /**
+   * Step mode's pause: the session is idle after a stage closed (see
+   * step-pause.ts). The closed block's gate shows "Stage closed — review,
+   * then Continue"; the chat's Continue button is the way on.
+   */
+  readonly stepPauseBlockId = computed(() => {
+    if (this.working() || this.session()?.status !== 'idle') return null;
+    return stepPauseFrom(this.store.chatItems())?.blockId ?? null;
+  });
 
   // ── Branch view: the parent's flow above the branch's own blocks ──
   readonly isBranchView = computed(() => {
@@ -524,6 +534,12 @@ export class WorkbenchComponent {
 
   missingEvidenceRecords(block: ReviewEvidenceBlock): number {
     return block.actions.filter(a => a.missing_record === true).length;
+  }
+
+  /** This stage's gate carries the step-pause note (its block just closed). */
+  stagePaused(cell: FlowCell): boolean {
+    const id = this.stepPauseBlockId();
+    return id !== null && cell.versions.some(v => v.block_id === id);
   }
 
   /** The cell right after this one holds the next attempt (for the retry line). */

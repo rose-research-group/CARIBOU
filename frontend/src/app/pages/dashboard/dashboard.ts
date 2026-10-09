@@ -160,6 +160,7 @@ export class DashboardComponent implements OnInit {
     memory_summarization_threshold: 20,
     memory_chunk_size: 10,
     evaluator_model: { mode: 'inherit_worker' },
+    continue_mode: 'step',
   };
 
   // Separate from `form.brief_mode`: the wizard needs a fourth state
@@ -263,6 +264,7 @@ export class DashboardComponent implements OnInit {
     this.form.memory_chunk_size = 10;
     this.briefModeChoice = 'blueprint';
     this.form.brief_mode = undefined;
+    this.form.continue_mode = 'step';
     this.applyOllamaDefaultModel();
   }
 

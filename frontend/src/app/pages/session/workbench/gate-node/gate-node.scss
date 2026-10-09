@@ -72,3 +72,30 @@
   .spinner { animation: gate-spin 0.9s linear infinite; }
 }
 @keyframes gate-spin { to { transform: rotate(360deg); } }
+
+/* Step mode's pause: the gate of the stage that just closed. One pulse of
+   the ring, and a note anchored at the gate running right into the empty
+   column where the ghost card was (the agent is idle). */
+.gate.paused { border-color: var(--primary); }
+.pause-note {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 50%;
+  white-space: nowrap;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--primary-dark);
+  background: var(--primary-bg);
+  border: 1px solid var(--primary);
+  border-radius: 4px;
+  padding: 1px 6px;
+  z-index: 2;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .gate.paused { animation: gate-pulse 1.6s ease-out 1; }
+}
+@keyframes gate-pulse {
+  0% { box-shadow: 0 0 0 0 var(--primary); }
+  100% { box-shadow: 0 0 0 14px transparent; }
+}

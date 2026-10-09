@@ -10,7 +10,8 @@ import {
 import { Block } from '../models/block.model';
 import {
   AgentEvent, AgentEventEnvelope, AgentSwitchData, BlockChangedData, BriefDraftData,
-  CodeResultData, CodeSubmittedData, ErrorData, MessageCompleteData, MessageQueueChangedData,
+  CodeResultData, CodeSubmittedData, ContinueModeChangedData, ErrorData, MessageCompleteData,
+  MessageQueueChangedData,
   RecoveryCompletedData, StatusChangeData, SystemMessageData, WorkItemChangedData,
 } from '../models/events.model';
 import { ApplyOutcome, ChatItem, ErrorRecord, StatusEntry } from './session-state.model';
@@ -296,6 +297,12 @@ export class SessionStore {
       case 'message_queue_changed': {
         const d = event.data as MessageQueueChangedData;
         this.setMessageQueue(d.queue);
+        break;
+      }
+      case 'continue_mode_changed': {
+        // Step | Run lives on the Session record (the header toggle binds to it).
+        const d = event.data as ContinueModeChangedData;
+        this.sessionSvc.setContinueModeLocal(event.session_id, d.continue_mode);
         break;
       }
       // token / recovery_progress are reduced by AgentStreamService and the

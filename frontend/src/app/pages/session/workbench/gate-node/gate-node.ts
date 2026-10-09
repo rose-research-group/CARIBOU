@@ -2,6 +2,8 @@ import { Component, computed, input, output } from '@angular/core';
 import { Block } from '../../../../core/models/block.model';
 import { GATE_GLYPH, Gate, gateAriaLabel } from '../gates';
 
+export const STAGE_PAUSED_NOTE = 'Stage closed — review, then Continue';
+
 /**
  * The review gate after a block: a small circle whose shape and glyph (not
  * only its colour) give the state. The connector across the gap to the next
@@ -23,8 +25,14 @@ export class GateNodeComponent {
   /** The next column holds this attempt's retry: draw the thin retry line. */
   readonly retryNext = input(false);
   readonly inherited = input(false);
+  /** Step mode paused after this block's stage closed: pulse once and say so. */
+  readonly stagePaused = input(false);
   readonly pick = output<void>();
 
   readonly glyph = computed(() => GATE_GLYPH[this.gate().state]);
-  readonly label = computed(() => gateAriaLabel(this.block(), this.gate()));
+  readonly label = computed(() => {
+    const label = gateAriaLabel(this.block(), this.gate());
+    return this.stagePaused() ? `${label}. ${STAGE_PAUSED_NOTE}` : label;
+  });
+  readonly pausedNote = STAGE_PAUSED_NOTE;
 }

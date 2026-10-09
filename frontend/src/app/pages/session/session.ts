@@ -17,7 +17,7 @@ import { SessionStore } from '../../core/state/session-store.service';
 import { ChatItem, ErrorRecord } from '../../core/state/session-state.model';
 import { artifactsByAction } from '../../core/utils/artifacts';
 import {
-  Artifact, MemoryState, EvaluationResult, EvaluatorModelConfig,
+  Artifact, ContinueMode, MemoryState, EvaluationResult, EvaluatorModelConfig,
   RecoveryMode, SessionForkRequest, SessionResumeRequest,
   WorkItemSummary, SessionBriefFields,
 } from '../../core/models/session.model';
@@ -30,6 +30,7 @@ import { TooltipDirective } from '../../shared/directives/tooltip.directive';
 import { navigateTabToSession, reserveNewTab } from '../../core/utils/app-navigation';
 import { BlockMessage, WorkbenchComponent } from './workbench/workbench';
 import { SessionView, ViewToggleComponent } from './workbench/view-toggle';
+import { ContinueModeToggleComponent } from './workbench/continue-mode-toggle';
 import { anchorLabel } from './workbench/block-actions';
 import { QueueBarComponent } from './queue-bar/queue-bar';
 import { SplitPaneComponent } from './split-pane/split-pane';
@@ -52,7 +53,8 @@ type ArtifactFilter = 'all' | 'plot' | 'data' | 'other';
   imports: [
     CommonModule, FormsModule,
     MessageBubbleComponent, CodeCardComponent, ArtifactCardComponent, StatusIndicatorComponent,
-    IconComponent, TooltipDirective, WorkbenchComponent, ViewToggleComponent, BranchBannerComponent,
+    IconComponent, TooltipDirective, WorkbenchComponent, ViewToggleComponent, ContinueModeToggleComponent,
+    BranchBannerComponent,
     QueueBarComponent, SplitPaneComponent, DelegationCardComponent,
   ],
   // One store per session page: a fresh page starts from empty state.
@@ -159,6 +161,8 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
   });
   /** The sidebar as an overlay drawer in the split view. */
   splitDetailsOpen = signal(false);
+  /** A `PATCH .../continue-mode` is in flight (the WebSocket route needs no pending state). */
+  continueModePending = signal(false);
   private injector = inject(Injector);
   private fragment = toSignal(this.route.fragment, { initialValue: this.route.snapshot.fragment });
   /** The workbench's selected block (`#block:<id>`). */
@@ -1120,6 +1124,34 @@ export class SessionComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   toggleOlderConversation(): void {
     this.olderConversationExpanded.update(v => !v);
+  }
+
+  /**
+   * The header's Step | Run toggle. Sent on the WebSocket when it is open
+   * (the server's `continue_mode_changed` event updates the record), else
+   * through the REST route. Auto-mode sessions always run; the toggle is not
+   * shown for them.
+   */
+  setContinueMode(mode: ContinueMode): void {
+    const s = this.session();
+    if (!s || s.continue_mode === mode) return;
+    if (this.stream.isOpen()) {
+      this.stream.setContinueMode(mode);
+      return;
+    }
+    this.continueModePending.set(true);
+    this.sessionSvc.updateContinueMode(s.id, mode).subscribe({
+      next: () => this.continueModePending.set(false),
+      error: (err: HttpErrorResponse) => {
+        this.continueModePending.set(false);
+        this.toasts.show({
+          kind: 'error',
+          title: 'Could not change the continue mode',
+          detail: err.error?.detail ?? err.message,
+          ttlMs: 6000,
+        });
+      },
+    });
   }
 
   setView(view: SessionView): void {

@@ -3,6 +3,7 @@
   <span class="tail" [class.closed]="!gate().open" [class.retry]="retryNext()" aria-hidden="true"></span>
 }
 <button type="button" class="gate g-{{ gate().state }}" [class.sel]="selected()" [class.inherited]="inherited()"
+  [class.paused]="stagePaused()"
   [attr.aria-label]="label()" [attr.aria-pressed]="selected()" [title]="label()" (click)="pick.emit()">
   @if (gate().state === 'reviewing') {
     <span class="spinner" aria-hidden="true"></span>
@@ -10,3 +11,6 @@
     <span aria-hidden="true">{{ glyph() }}</span>
   }
 </button>
+@if (stagePaused()) {
+  <span class="pause-note" role="status">{{ pausedNote }}</span>
+}

@@ -29,6 +29,12 @@
     </div>
     <div class="header-right">
       <app-view-toggle [view]="view()" [splitAvailable]="splitAvailable()" (viewChange)="setView($event)" />
+      @if (session(); as s) {
+        @if (s.mode === 'interactive') {
+          <app-continue-mode-toggle [mode]="s.continue_mode" [disabled]="continueModePending()"
+            (modeChange)="setContinueMode($event)" />
+        }
+      }
       @if (view() === 'split') {
         <button type="button" class="btn btn-ghost btn-xs" [attr.aria-expanded]="splitDetailsOpen()"
           (click)="splitDetailsOpen.set(!splitDetailsOpen())"

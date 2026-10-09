@@ -2,7 +2,7 @@ import { Injectable, inject, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, tap } from 'rxjs';
 import {
-  Artifact, CodeEvent, EvaluationResult, Message, MemoryState, Session, SessionCreateRequest,
+  Artifact, CodeEvent, ContinueMode, EvaluationResult, Message, MemoryState, Session, SessionCreateRequest,
   SessionForkRequest, SessionResumeRequest,
   EvaluatorModelState, EvaluatorModelUpdateRequest,
   WorkItemDetail, WorkItemReviewResult, WorkItemSummary, SessionBriefFields,
@@ -196,6 +196,25 @@ export class SessionService {
         }
       })
     );
+  }
+
+  /**
+   * `PATCH /api/sessions/{id}/continue-mode`. The server's `continue_mode_changed`
+   * event is what updates the page; this is the route when the WebSocket is
+   * not open (the session page sends `set_continue_mode` on it otherwise).
+   */
+  updateContinueMode(id: string, mode: ContinueMode): Observable<Session> {
+    return this.http.patch<Session>(`api/sessions/${id}/continue-mode`, { continue_mode: mode }).pipe(
+      tap(s => this.updateLocal(s))
+    );
+  }
+
+  /** Apply a `continue_mode_changed` event to the session record. */
+  setContinueModeLocal(id: string, mode: ContinueMode): void {
+    this.sessions.update(all => all.map(s => s.id === id ? { ...s, continue_mode: mode } : s));
+    if (this.currentSession()?.id === id) {
+      this.currentSession.update(s => s ? { ...s, continue_mode: mode } : s);
+    }
   }
 
   updateLocal(session: Session): void {
