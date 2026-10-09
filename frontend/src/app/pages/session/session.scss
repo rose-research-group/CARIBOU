@@ -607,28 +607,7 @@
   to { transform: rotate(360deg); }
 }
 
-/* ── Delegation indicator ── */
-.delegation-indicator {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  padding: 0.3rem 0.75rem;
-  border-left: 2px solid var(--border);
-  margin-left: 0.25rem;
-
-  .arrow { color: var(--cividis-blue); font-weight: 700; }
-
-  code.cmd {
-    font-size: 0.72rem;
-    background: var(--surface-2);
-    padding: 0.1rem 0.4rem;
-    border-radius: 3px;
-    color: var(--cividis-blue);
-    border: 1px solid var(--border-light);
-  }
-}
+/* Delegation cards: pages/session/delegation-card. */
 
 .recovery-chat-item {
   display: flex;

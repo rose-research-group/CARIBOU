@@ -23,7 +23,7 @@
       <div class="pipe-head">
         <h2>Analysis</h2>
         @if (blocks().length > 0) {
-          <span class="dim">{{ plural(blocks().length, 'step') }}</span>
+          <span class="dim">{{ plural(cells().length, 'step') }}@if (blocks().length !== cells().length) { · {{ plural(blocks().length, 'block') }}}</span>
         }
       </div>
 
@@ -49,19 +49,19 @@
             <span class="rail fixed parent-rail" style="grid-row: 2; grid-column: 1" [title]="parentRowLabel()">{{ parentRowLabel() }}</span>
             @if (branchFlow(); as flow) {
               @if (flow.ok) {
-                @for (c of flow.parent; track c.block.block_id) {
+                @for (c of flow.parent; track c.key) {
                   <button type="button" class="blk pblk s-{{ c.block.status }}" [class.replaced]="c.replaced"
                     [attr.data-parent-block-id]="c.block.block_id"
                     [class.implicit]="c.block.implicit" [class.hl]="highlightedParentId() === c.block.block_id"
                     [style.grid-column]="c.column + 1" style="grid-row: 2"
-                    [attr.aria-label]="c.block.block_id + ' ' + c.block.title + ' in the parent session' + (c.replaced ? ', replaced by this branch' : '') + '. Opens the parent workbench.'"
+                    [attr.aria-label]="c.block.block_id + ' ' + c.block.title + ' in the parent session' + (c.versions.length > 1 ? ', latest of ' + c.versions.length + ' versions' : '') + (c.replaced ? ', replaced by this branch' : '') + '. Opens the parent workbench.'"
                     (click)="openParentBlock(c.block)">
                     <span class="n">
                       <span class="glyph" aria-hidden="true">{{ STATUS_GLYPH[c.block.status] }}</span>
                       <span class="title">{{ c.block.title }}</span>
                     </span>
                     <span class="tag">{{ STATUS_LABEL[c.block.status] }}@if (c.replaced) {<span class="inh"> · replaced</span>}</span>
-                    <span class="m">{{ c.block.block_id }} · {{ turnSpan(c.block) }}</span>
+                    <span class="m">{{ c.block.block_id }} · {{ turnSpan(c.block) }}@if (c.versions.length > 1) { · {{ c.versions.length }} versions}</span>
                   </button>
                 }
                 <div class="fork" [style.grid-column]="flow.forkColumn + 1" style="grid-row: 3" aria-hidden="true">
@@ -82,8 +82,8 @@
 
           <span class="rail fixed" [style.grid-row]="stepRow()" style="grid-column: 1">{{ isBranchView() ? 'This branch' : 'Steps' }}</span>
 
-          @for (c of cells(); track c.block.block_id) {
-            @let b = c.block;
+          @for (c of cells(); track c.key) {
+            @let b = shown(c);
             @if (plotsOpen()) {
               @if (plotsFor(b).length > 0) {
                 <div class="rd" [class.sel]="selectedId() === b.block_id"
@@ -95,34 +95,52 @@
                 <span class="rd-none" [style.grid-column]="c.column + 1" style="grid-row: 1">no plot</span>
               }
             }
-            @let gate = gateFor(b);
-            <div class="step" [attr.data-block-id]="b.block_id" [style.grid-column]="c.column + 1" [style.grid-row]="stepRow()"
-              [class.plain-next]="!gate && continuesAfter(c)">
-              <button type="button" class="blk s-{{ b.status }}"
-                [class.implicit]="b.implicit" [class.inherited]="isInherited(b)" [class.sel]="selectedId() === b.block_id"
-                [attr.aria-pressed]="selectedId() === b.block_id"
-                (click)="select(b)">
-                <span class="n">
-                  <span class="glyph" aria-hidden="true">{{ STATUS_GLYPH[b.status] }}</span>
-                  <span class="title">{{ b.title }}</span>
-                </span>
-                <span class="tag">{{ STATUS_LABEL[b.status] }}@if (isInherited(b)) {<span class="inh"> · inherited</span>}</span>
-                <span class="wi">{{ workItemLabel(b) }}</span>
-                <span class="m">{{ b.agents.join(', ') }}</span>
-                <span class="m">{{ turnSpan(b) }}</span>
-                <span class="m">
-                  {{ plural(b.action_ids.length, 'action') }}@if (b.failed_action_ids.length > 0) {<span class="failed"> · {{ b.failed_action_ids.length }} failed</span>} · {{ plural(b.artifact_paths.length, 'artifact') }}
-                </span>
-                @if (inFlightBlockId() === b.block_id) {
-                  <span class="on-block">
-                    <app-ghost-card variant="inline" [agent]="currentAgent()" [activity]="activity()" [since]="workingSince()" />
+            <!-- The gate is the latest version's, whichever version the card shows. -->
+            @let gate = gateFor(c.block);
+            <div class="step" [attr.data-block-id]="b.block_id" [attr.data-stage]="c.key"
+              [style.grid-column]="c.column + 1" [style.grid-row]="stepRow()">
+              <div class="card-wrap" [class.plain-next]="!gate && continuesAfter(c)">
+                <button type="button" class="blk s-{{ b.status }}"
+                  [class.implicit]="b.implicit" [class.inherited]="isInherited(b)" [class.sel]="selectedId() === b.block_id"
+                  [class.older]="b.block_id !== c.block.block_id"
+                  [attr.aria-pressed]="selectedId() === b.block_id"
+                  (click)="select(b)">
+                  <span class="n">
+                    <span class="glyph" aria-hidden="true">{{ STATUS_GLYPH[b.status] }}</span>
+                    <span class="title">{{ b.title }}</span>
                   </span>
+                  <span class="tag">{{ STATUS_LABEL[b.status] }}@if (isInherited(b)) {<span class="inh"> · inherited</span>}</span>
+                  <span class="wi">{{ workItemLabel(b) }}</span>
+                  @if (rerunLabel(b); as rerun) {
+                    <span class="rerun"><span aria-hidden="true">↻</span> {{ rerun }}</span>
+                  }
+                  <span class="m">{{ b.agents.join(', ') }}</span>
+                  <span class="m">{{ turnSpan(b) }}</span>
+                  <span class="m">
+                    {{ plural(b.action_ids.length, 'action') }}@if (b.failed_action_ids.length > 0) {<span class="failed"> · {{ b.failed_action_ids.length }} failed</span>} · {{ plural(b.artifact_paths.length, 'artifact') }}
+                  </span>
+                  @if (inFlightBlockId() === b.block_id) {
+                    <span class="on-block">
+                      <app-ghost-card variant="inline" [agent]="currentAgent()" [activity]="activity()" [since]="workingSince()" />
+                    </span>
+                  }
+                </button>
+                @if (gate) {
+                  <app-gate-node [block]="c.block" [gate]="gate" [selected]="selectedGateId() === c.block.block_id"
+                    [continues]="continuesAfter(c)" [retryNext]="retryNext(c, gate)" [inherited]="isInherited(c.block)"
+                    (pick)="selectGate(c.block)" />
                 }
-              </button>
-              @if (gate) {
-                <app-gate-node [block]="b" [gate]="gate" [selected]="selectedGateId() === b.block_id"
-                  [continues]="continuesAfter(c)" [retryNext]="retryNext(c, gate)" [inherited]="isInherited(b)"
-                  (pick)="selectGate(b)" />
+              </div>
+              @if (c.versions.length > 1) {
+                <div class="versions" role="group" [attr.aria-label]="'Versions of ' + c.block.title">
+                  @for (v of c.versions; track v.block_id; let last = $last) {
+                    <button type="button" class="ver s-{{ v.status }}" [class.on]="v.block_id === b.block_id"
+                      [attr.aria-pressed]="v.block_id === b.block_id"
+                      [title]="v.block_id + ' · ' + STATUS_LABEL[v.status] + ' · ' + workItemLabel(v)"
+                      (click)="select(v)">{{ versionText(c, v) }}</button>
+                    @if (!last) { <span class="sep" aria-hidden="true">·</span> }
+                  }
+                </div>
               }
             </div>
           }
@@ -170,6 +188,7 @@
         }
         <dl class="kv">
           <dt>Work item</dt><dd [class.dim]="b.implicit">{{ workItemLabel(b) }}</dd>
+          @if (rerunLabel(b); as rerun) { <dt>Redoes</dt><dd>{{ rerun }}</dd> }
           <dt>Agents</dt><dd>{{ b.agents.join(', ') || '—' }}</dd>
           <dt>Turns</dt><dd>{{ turnSpan(b) }}</dd>
           <dt>Actions</dt>
@@ -426,6 +445,18 @@
                     <p class="dim act-hint">A later attempt ({{ n.block_id }}) exists; review the item from its gate.</p>
                   }
                   @if (!isInherited(b) && !selectedGate()?.nextAttempt) {
+                  @if (latestReject(); as rej) {
+                    @if (canHumanReview(w)) {
+                      <div class="feedback" role="note">
+                        <span class="dim">{{ rej.evaluator }} asked for changes.</span>
+                        <button type="button" class="btn btn-ghost btn-xs" [class.on]="reviewForm() === 'reject' && reviewText() === rej.assessment.trim()"
+                          [disabled]="reviewPending() !== null" (click)="sendBackWithFeedback(rej)"
+                          title="Open Request changes with this assessment as the reason (you can edit it)">
+                          ↩ Send back with this feedback
+                        </button>
+                      </div>
+                    }
+                  }
                   <div class="wi-actions">
                     @if (canHumanReview(w)) {
                       <button type="button" class="btn btn-ghost btn-xs" [class.on]="reviewForm() === 'approve'"
@@ -490,6 +521,30 @@
                     <p class="act-err" role="alert">{{ err }}</p>
                   } @else if (reviewNotice(); as note) {
                     <p class="act-ok" role="status">{{ note }}</p>
+                  }
+                  @if (evidenceByItem().get(w.id); as ev) {
+                    <div class="disc evidence" [class.on]="evidenceOpen()">
+                      <button type="button" class="dh" [attr.aria-expanded]="evidenceOpen()" (click)="evidenceOpen.set(!evidenceOpen())">
+                        <span class="ch" aria-hidden="true">▶</span>What the evaluator saw ({{ plural(ev.blocks.length, 'block') }})
+                      </button>
+                      @if (evidenceOpen()) {
+                        <div class="db">
+                          <p class="dim act-hint">The last review run from here sent these blocks' code, outputs and files with the work item.</p>
+                          <ul class="ev-list">
+                            @for (eb of ev.blocks; track eb.block_id) {
+                              <li>
+                                <button type="button" class="link-btn mono" (click)="navigateTo(eb.block_id)">{{ eb.block_id }}</button>
+                                · attempt {{ eb.attempt }} · {{ eb.status }} · {{ plural(eb.actions.length, 'action') }}@if (failedEvidenceActions(eb) > 0) {<span class="failed"> ({{ failedEvidenceActions(eb) }} failed)</span>}@if (missingEvidenceRecords(eb) > 0) {<span class="failed"> ({{ missingEvidenceRecords(eb) }} without a code record)</span>} · {{ plural(eb.artifact_paths.length, 'artifact') }}
+                              </li>
+                            } @empty {
+                              <li class="dim">No blocks: the evaluator saw only the work item and its diff.</li>
+                            }
+                          </ul>
+                          @if (ev.truncated) { <p class="dim act-hint">Some code or output was cut to fit the review budget.</p> }
+                          @if (ev.note) { <p class="dim act-hint">{{ ev.note }}</p> }
+                        </div>
+                      }
+                    </div>
                   }
                   <div class="lbl sub">Reviews ({{ w.reviews.length }})</div>
                   @for (r of w.reviews; track $index) {

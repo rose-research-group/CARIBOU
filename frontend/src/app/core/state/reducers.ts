@@ -4,7 +4,7 @@
  * nothing changes (so a signal update is a no-op). No Angular, no I/O: these
  * are the unit-testable core of SessionStore.
  */
-import { Message, QueuedMessage, WorkItemSummary } from '../models/session.model';
+import { Message, QueuedMessage, WorkItemDetail, WorkItemSummary } from '../models/session.model';
 import { Block } from '../models/block.model';
 import {
   AgentEventEnvelope, AgentSwitchData, CodeSubmittedData, CodeResultData,
@@ -111,7 +111,11 @@ export function appendDelegation(items: ChatItem[], ev: AgentEventEnvelope<Agent
   const d = ev.data;
   return [
     ...items,
-    { kind: 'delegation', turn: ev.turn, delegation: { from: d.from_agent, to: d.to_agent, command: d.command } },
+    {
+      kind: 'delegation',
+      turn: ev.turn,
+      delegation: { from: d.from_agent, to: d.to_agent, command: d.command, reason: d.reason ?? null },
+    },
   ];
 }
 
@@ -175,6 +179,23 @@ export function appendStatus(log: StatusEntry[], d: StatusChangeData, timestamp:
 /** Replace a work item by id, keeping the list ordered by id. */
 export function upsertWorkItem(items: WorkItemSummary[], item: WorkItemSummary): WorkItemSummary[] {
   return [...items.filter(existing => existing.id !== item.id), item].sort((a, b) => a.id - b.id);
+}
+
+/**
+ * Pick the fresher of two copies of one work item. A work-item record only
+ * ever grows (transitions and reviews are appended), so the copy with more
+ * history is the newer one; on a tie the incoming copy wins. Needed because a
+ * replayed `work_item_changed` event can be older than the REST detail
+ * fetched on load (e.g. a review recorded after the item's last transition),
+ * and neither carries a comparable timestamp.
+ */
+export function newerWorkItemDetail(
+  current: WorkItemDetail | undefined,
+  incoming: WorkItemDetail,
+): WorkItemDetail {
+  if (current === undefined) return incoming;
+  const history = (item: WorkItemDetail) => item.transitions.length + item.reviews.length;
+  return history(incoming) >= history(current) ? incoming : current;
 }
 
 /** Replace a block by block_id (the event is the newest state), ordered by index. */

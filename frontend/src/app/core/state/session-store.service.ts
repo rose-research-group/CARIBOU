@@ -16,9 +16,9 @@ import {
 import { ApplyOutcome, ChatItem, ErrorRecord, StatusEntry } from './session-state.model';
 import {
   addRecovery, appendCodeSubmitted, appendDelegation, appendStatus, attachCodeResult,
-  errorRecordFrom, mergeBlockSnapshot, mergeServerMessages, pendingUserMessage,
-  prunePendingRemovals, replaceMessageQueue, systemMessageFrom, upsertBlock, upsertMessage,
-  upsertWorkItem, withPendingCode, withoutPendingCode,
+  errorRecordFrom, mergeBlockSnapshot, mergeServerMessages, newerWorkItemDetail,
+  pendingUserMessage, prunePendingRemovals, replaceMessageQueue, systemMessageFrom, upsertBlock,
+  upsertMessage, upsertWorkItem, withPendingCode, withoutPendingCode,
 } from './reducers';
 import {
   ActivityMark, NO_ACTIVITY, parseServerTime, reduceActivityMark,
@@ -222,7 +222,8 @@ export class SessionStore {
         if (this._selectedWorkItem()?.id === d.item.id) {
           this._selectedWorkItem.set(d.item);
         }
-        this._workItemDetails.update(m => new Map(m).set(d.item.id, d.item));
+        this._workItemDetails.update(m =>
+          new Map(m).set(d.item.id, newerWorkItemDetail(m.get(d.item.id), d.item)));
         break;
       }
       case 'brief_draft': {
@@ -357,15 +358,16 @@ export class SessionStore {
   /**
    * Fetch one work item with its reviews into `workItemDetails`, once per id
    * (later changes arrive through `work_item_changed`). A failure is kept in
-   * `workItemDetailErrors`.
+   * `workItemDetailErrors`. The fetch is made even when a replayed event
+   * already supplied a copy, because that copy can predate reviews recorded
+   * outside the runner loop; the copy with more history wins either way.
    */
   loadWorkItemDetail(itemId: number): void {
-    if (this.workItemDetailsRequested.has(itemId) || this._workItemDetails().has(itemId)) return;
+    if (this.workItemDetailsRequested.has(itemId)) return;
     this.workItemDetailsRequested.add(itemId);
     this.sessionSvc.getWorkItem(this.requireSessionId(), itemId).subscribe({
-      // Never downgrade: a work_item_changed event that arrived while the
-      // request was in flight is at least as new as this response.
-      next: item => this._workItemDetails.update(m => m.has(item.id) ? m : new Map(m).set(item.id, item)),
+      next: item => this._workItemDetails.update(m =>
+        new Map(m).set(item.id, newerWorkItemDetail(m.get(item.id), item))),
       error: (err: HttpErrorResponse) =>
         this._workItemDetailErrors.update(m => new Map(m).set(itemId, err.message)),
     });

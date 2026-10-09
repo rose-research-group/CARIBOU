@@ -1,0 +1,34 @@
+/* Styles moved from session.scss (.delegation-indicator). */
+:host {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  padding: 0.3rem 0.75rem;
+  border-left: 2px solid var(--border);
+  margin-left: 0.25rem;
+}
+
+.arrow { color: var(--cividis-blue); font-weight: 700; }
+.dim { color: var(--text-muted); }
+
+code.cmd {
+  font-size: 0.72rem;
+  background: var(--surface-2);
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  color: var(--cividis-blue);
+  border: 1px solid var(--border-light);
+}
+
+/* A work item sent back to its owner: the owner takes over, not a delegation. */
+:host(.returned) { border-left-color: var(--primary); color: var(--text); }
+:host(.returned) .arrow { color: var(--primary-dark); }
+.reason {
+  flex-basis: 100%;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}

@@ -1,0 +1,12 @@
+@let d = delegation();
+@if (returned()) {
+  <app-icon class="arrow" name="corner-down-left" [size]="14" aria-hidden="true" />
+  <span class="text">returned to <strong>{{ d.to }}</strong> for changes</span>
+  <span class="dim">(from {{ d.from }})</span>
+  @if (d.reason) { <span class="reason">{{ d.reason }}</span> }
+} @else {
+  <span>{{ d.from }}</span>
+  <app-icon class="arrow" name="arrow-right" [size]="14" aria-hidden="true" />
+  <span>{{ d.to }}</span>
+  <code class="cmd">{{ d.command }}</code>
+}

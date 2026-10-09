@@ -37,13 +37,13 @@
             @for (c of layout.cells; track c.block.block_id) {
               <button type="button" class="cell s-{{ c.block.status }}" [class.inherited]="c.inherited"
                 [style.grid-row]="firstRow() + 1 + li" [style.grid-column]="c.column + 1"
-                [title]="(c.inherited ? 'Inherited: ' : '') + c.block.title + ' (' + c.block.block_id + ')'"
+                [title]="(c.inherited ? 'Inherited: ' : '') + c.block.title + ' (' + c.block.block_id + (c.versions.length > 1 ? ', ' + c.versions.length + ' versions' : '') + ')'"
                 (click)="openBranch(br, c.block.block_id)">
                 <span class="t">
                   <span aria-hidden="true">{{ STATUS_GLYPH[c.block.status] }}</span>
                   {{ c.block.title }}
                 </span>
-                <span class="m">{{ c.block.block_id }} · {{ c.inherited ? 'inherited' : STATUS_LABEL[c.block.status] }}</span>
+                <span class="m">{{ c.block.block_id }} · {{ c.inherited ? 'inherited' : STATUS_LABEL[c.block.status] }}@if (c.versions.length > 1) { · {{ c.versions.length }} versions}</span>
               </button>
             } @empty {
               <span class="state lane-msg" [style.grid-row]="firstRow() + 1 + li" style="grid-column: 2 / -1">

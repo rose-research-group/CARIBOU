@@ -396,6 +396,11 @@ export interface WorkItemSummary {
   created_at: string;
   completed_turn: number | null;
   completed_at: string | null;
+  /**
+   * The id of the Done / In review item this one redoes (same owner, same
+   * normalized title), or null. Absent from cached copies of older servers.
+   */
+  reruns?: number | null;
 }
 
 export interface WorkItemDetail extends WorkItemSummary {
@@ -463,4 +468,38 @@ export interface WorkItemReviewResult {
   verdict: 'approve' | 'reject';
   assessment: string;
   provider_receipt: Record<string, unknown>;
+  /** What the evaluator was shown besides the item: the item's blocks, their code and outputs. */
+  evidence?: ReviewEvidence | null;
+}
+
+/** One executed action as the evaluator saw it (source and outputs are capped server-side). */
+export interface ReviewEvidenceAction {
+  action_id: string;
+  agent: string | null;
+  success: boolean | null;
+  source: string | null;
+  stdout: string | null;
+  stderr: string | null;
+  /** The action's code record was not found; it is listed, not skipped. */
+  missing_record?: boolean;
+}
+
+export interface ReviewEvidenceBlock {
+  block_id: string;
+  attempt: number;
+  status: string;
+  agents: string[];
+  turn_start: number;
+  turn_end: number;
+  actions: ReviewEvidenceAction[];
+  artifact_paths: string[];
+}
+
+/** The `evidence` of a review payload: every block of the item, oldest attempt first. */
+export interface ReviewEvidence {
+  blocks: ReviewEvidenceBlock[];
+  /** Some source or output was cut to fit the review budget. */
+  truncated: boolean;
+  /** Set when outputs had to be dropped (or no event log existed). */
+  note?: string | null;
 }

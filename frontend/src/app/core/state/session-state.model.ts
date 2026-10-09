@@ -27,7 +27,8 @@ export interface ChatItem {
   kind: 'message' | 'delegation' | 'code' | 'error' | 'recovery';
   turn?: number;
   message?: Message;
-  delegation?: { from: string; to: string; command: string };
+  /** An `agent_switch`: a delegation, or a return to a work item's owner (`reason` says why). */
+  delegation?: { from: string; to: string; command: string; reason?: string | null };
   codeEvent?: CodeEvent;
   error?: ErrorRecord;
   recovery?: RecoveryCompletedData & { id: string; timestamp: string };

@@ -374,12 +374,7 @@
             </div>
           }
           @if (item.kind === 'delegation' && item.delegation) {
-            <div class="delegation-indicator" [attr.data-turn]="item.turn">
-              <span>{{ item.delegation.from }}</span>
-              <app-icon class="arrow" name="arrow-right" [size]="14" aria-hidden="true" />
-              <span>{{ item.delegation.to }}</span>
-              <code class="cmd">{{ item.delegation.command }}</code>
-            </div>
+            <app-delegation-card [delegation]="item.delegation" [attr.data-turn]="item.turn" />
           }
           @if (item.kind === 'code' && item.codeEvent) {
             <div appCodeCard [codeEvent]="item.codeEvent" [attr.data-turn]="item.turn"

@@ -2,9 +2,13 @@ import { Component, ElementRef, Injector, afterNextRender, computed, effect, inj
 import { NgTemplateOutlet } from '@angular/common';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router } from '@angular/router';
+import { forkJoin } from 'rxjs';
 import { SessionStore } from '../../../core/state/session-store.service';
 import { Block } from '../../../core/models/block.model';
-import { Artifact, Session, WorkItemAnchor, WorkItemDetail } from '../../../core/models/session.model';
+import {
+  Artifact, ReviewEvidence, ReviewEvidenceBlock, Session, WorkItemAnchor, WorkItemDetail, WorkItemReview,
+  WorkItemSummary,
+} from '../../../core/models/session.model';
 import { BlueprintContent } from '../../../core/models/blueprint.model';
 import { SessionService } from '../../../core/services/session.service';
 import { AgentStreamService } from '../../../core/services/agent-stream.service';
@@ -27,6 +31,7 @@ import { RESTORE_MODE_LABEL, shortId } from './branching';
 import { GATE_GLYPH, GATE_LABEL, Gate, blockGate, gateIdFromFragment } from './gates';
 import { activityLine } from './activity';
 import { BranchFlow, FlowCell, branchFlow, lastColumn, ownCellsWithoutParent, sessionCells } from './flow-layout';
+import { rerunLabel, rerunLinks, shownVersion, versionText } from './stages';
 import { GhostCardComponent } from './ghost-card/ghost-card';
 import { GateNodeComponent } from './gate-node/gate-node';
 import { BranchFormComponent } from './branch-form/branch-form';
@@ -107,6 +112,8 @@ export class WorkbenchComponent {
   readonly referenceKey = referenceKey;
 
   readonly blocks = this.store.blocks;
+  /** Work item id → the item it reruns, from the session's work item list. */
+  readonly links = computed(() => rerunLinks(this.store.workItems()));
   readonly blocksRecorded = this.store.blocksRecorded;
   readonly blocksError = this.store.blocksError;
   readonly brief = this.store.frozenBrief;
@@ -200,15 +207,19 @@ export class WorkbenchComponent {
     const s = this.session();
     return !!s && s.parent_session_id != null && s.forked_from_block_id != null;
   });
-  /** The parent's GET /blocks: null while loading. */
-  readonly parentBlocks = signal<{ ok: true; blocks: Block[] } | { ok: false; error: string } | null>(null);
+  /** The parent's GET /blocks and GET /work-items (for its stage columns): null while loading. */
+  readonly parentBlocks = signal<
+    { ok: true; blocks: Block[]; items: WorkItemSummary[] } | { ok: false; error: string } | null
+  >(null);
   private parentBlocksRequested: string | null = null;
   readonly branchFlow = computed<BranchFlow | null>(() => {
     const s = this.session();
     const parent = this.parentBlocks();
     if (!this.isBranchView() || !s || parent === null) return null;
     if (!parent.ok) return { ok: false, error: parent.error };
-    return branchFlow(parent.blocks, this.blocks(), s.parent_session_id!, s.forked_from_block_id!);
+    return branchFlow(
+      parent.blocks, rerunLinks(parent.items), this.blocks(), this.links(),
+      s.parent_session_id!, s.forked_from_block_id!);
   });
   readonly parentRowLabel = computed(() => {
     const p = this.parent();
@@ -225,11 +236,23 @@ export class WorkbenchComponent {
     const id = this.focusBlock()?.block_id;
     return flow?.ok && id ? flow.parentBlockOf.get(id) ?? null : null;
   });
-  /** The step row: every block, or in a branch only its own blocks. */
+  /**
+   * The step row: one cell per stage (a chain of reruns and retries of one
+   * step), or in a branch only its own stages.
+   */
   readonly cells = computed<FlowCell[]>(() => {
-    if (!this.isBranchView()) return sessionCells(this.blocks());
+    if (!this.isBranchView()) return sessionCells(this.blocks(), this.links());
     const flow = this.branchFlow();
-    return flow?.ok ? flow.own : ownCellsWithoutParent(this.blocks());
+    return flow?.ok ? flow.own : ownCellsWithoutParent(this.blocks(), this.links());
+  });
+  /**
+   * Stage key → the version its card shows: the block the panel is about
+   * when it is one of the stage's versions, else the latest. Clicking a
+   * version in the strip selects it, so `#block:<id>` shows any version.
+   */
+  readonly shownVersions = computed(() => {
+    const focusId = this.focusBlock()?.block_id ?? null;
+    return new Map(this.cells().map(c => [c.key, shownVersion(c, focusId)]));
   });
   /** Rows: plots, [parent, fork], steps, then the Paths row. */
   readonly stepRow = computed(() => this.isBranchView() ? 4 : 2);
@@ -283,6 +306,17 @@ export class WorkbenchComponent {
   });
 
   readonly session = this.sessionSvc.currentSession;
+
+  // ── Review feedback and evidence ──
+  /** The latest verdict on the selected gate's attempt when it is a reject (evaluator or user). */
+  readonly latestReject = computed<WorkItemReview | null>(() => {
+    const gate = this.selectedGate();
+    const latest = gate ? gate.reviews[gate.reviews.length - 1] : undefined;
+    return latest?.verdict === 'reject' ? latest : null;
+  });
+  /** Work item id → what the evaluator saw in the last review run from this page. */
+  readonly evidenceByItem = signal<Map<number, ReviewEvidence>>(new Map());
+  readonly evidenceOpen = signal(false);
 
   /** A branch's parent session (for "inherited from <name>"); null when not a branch or not loaded. */
   readonly parent = signal<Session | null>(null);
@@ -388,9 +422,11 @@ export class WorkbenchComponent {
       const parentId = this.isBranchView() ? this.session()!.parent_session_id! : null;
       if (parentId && parentId !== this.parentBlocksRequested) {
         this.parentBlocksRequested = parentId;
-        untracked(() => this.sessionSvc.getBlocks(parentId).subscribe({
-          next: res => this.parentBlocks.set(res.recorded
-            ? { ok: true, blocks: res.blocks }
+        untracked(() => forkJoin([
+          this.sessionSvc.getBlocks(parentId), this.sessionSvc.getWorkItems(parentId),
+        ]).subscribe({
+          next: ([res, items]) => this.parentBlocks.set(res.recorded
+            ? { ok: true, blocks: res.blocks, items }
             : { ok: false, error: 'the parent session has no block record' }),
           error: err => this.parentBlocks.set({ ok: false, error: httpErrorMessage(err) }),
         }));
@@ -458,6 +494,36 @@ export class WorkbenchComponent {
 
   gateFor(block: Block): Gate | null {
     return this.gates().get(block.block_id) ?? null;
+  }
+
+  /** The version a stage's card shows (see `shownVersions`). */
+  shown(cell: FlowCell): Block {
+    const block = this.shownVersions().get(cell.key);
+    if (!block) throw new Error(`Stage ${cell.key} has no shown version.`);
+    return block;
+  }
+
+  /** "v2 ⚠" for a version in a stage's strip. */
+  versionText(cell: FlowCell, block: Block): string {
+    return versionText(cell, block);
+  }
+
+  /** "rerun of blk-0002" / "attempt 2", or null for a first attempt at an original step. */
+  rerunLabel(block: Block): string | null {
+    return rerunLabel(block, this.links(), this.blocks());
+  }
+
+  /** Select a block by id (the evidence list links to blocks that may be earlier versions). */
+  navigateTo(blockId: string): void {
+    this.navigateFragment(`block:${blockId}`);
+  }
+
+  failedEvidenceActions(block: ReviewEvidenceBlock): number {
+    return block.actions.filter(a => a.success === false).length;
+  }
+
+  missingEvidenceRecords(block: ReviewEvidenceBlock): number {
+    return block.actions.filter(a => a.missing_record === true).length;
   }
 
   /** The cell right after this one holds the next attempt (for the retry line). */
@@ -568,6 +634,15 @@ export class WorkbenchComponent {
     this.reviewNotice.set(null);
   }
 
+  /** Open Request changes with the rejecting review's assessment as the (editable) reason. */
+  sendBackWithFeedback(review: WorkItemReview): void {
+    if (review.verdict !== 'reject') throw new Error('Only a rejecting review can be sent back as feedback.');
+    this.reviewForm.set('reject');
+    this.reviewText.set(review.assessment.trim());
+    this.reviewError.set(null);
+    this.reviewNotice.set(null);
+  }
+
   approve(block: Block, item: WorkItemDetail): void {
     const sessionId = this.requireSessionId();
     this.startReview('approve');
@@ -625,6 +700,10 @@ export class WorkbenchComponent {
     this.sessionSvc.reviewWorkItem(sessionId, item.id).subscribe({
       next: result => {
         done();
+        if (result.evidence) {
+          const evidence = result.evidence;
+          this.evidenceByItem.update(m => new Map(m).set(item.id, evidence));
+        }
         this.finishReview(block, `Evaluator review of #${item.id} recorded: ${result.verdict}.`);
       },
       error: err => {
@@ -746,6 +825,7 @@ export class WorkbenchComponent {
     this.reviewText.set('');
     this.reviewError.set(null);
     this.reviewNotice.set(null);
+    this.evidenceOpen.set(false);
     this.ticketForm.set(null);
     this.ticketError.set(null);
   }

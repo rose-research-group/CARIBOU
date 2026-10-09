@@ -439,6 +439,28 @@ button.rail { cursor: pointer; &:hover { color: var(--primary); } }
   &:hover { border-color: var(--error); }
 }
 .wi-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+/* "Send back with this feedback": the latest reject, one click from Request changes. */
+.feedback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 9px;
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  border-radius: 7px;
+  font-size: 0.78rem;
+}
+/* "What the evaluator saw": the blocks sent with the last review. */
+.evidence { border-top: 0; margin-top: 10px; padding-top: 0; .dh { font-size: 0.82rem; } }
+.ev-list {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  font-size: 0.8rem;
+  li { margin-top: 2px; overflow-wrap: anywhere; }
+}
 .anchor { font-size: 0.78rem; margin: 4px 0 0; overflow-wrap: anywhere; }
 .owner {
   display: flex;
@@ -493,15 +515,62 @@ button.rail { cursor: pointer; &:hover { color: var(--primary); } }
   overflow-wrap: anywhere;
 }
 
-/* ── Step cell: the block, its gate in the gap, and the connector ── */
-.step { position: relative; display: grid; min-width: 0; > .blk { height: 100%; } }
-.step.plain-next::after {
+/* ── Step cell: the stage's card, its gate in the gap, the connector, and
+   under a stage with several versions (reruns, retries) the versions strip ── */
+.step { display: flex; flex-direction: column; min-width: 0; }
+.card-wrap { position: relative; flex: 1; display: grid; min-width: 0; > .blk { height: 100%; } }
+.card-wrap.plain-next::after {
   content: "";
   position: absolute;
   top: 50%;
   left: 100%;
   width: var(--wb-gap);
   border-top: 1.5px solid var(--border);
+}
+/* An earlier version shown in place of the latest. */
+.blk.older { border-style: dashed; border-left-style: solid; background: var(--surface); }
+.blk.older.sel { background: var(--primary); }
+.blk .rerun {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--primary-dark);
+  background: var(--surface);
+  border: 1px solid var(--cividis-warm);
+  border-radius: 999px;
+  padding: 0 7px;
+  align-self: flex-start;
+  margin: 1px 0;
+}
+.blk.sel .rerun { color: var(--text-on-dark); background: transparent; border-color: var(--text-on-dark); }
+.versions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  margin-top: 4px;
+  padding: 0 4px;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  .sep { opacity: 0.6; }
+}
+.ver {
+  font: inherit;
+  font-size: 0.7rem;
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  &:hover { color: var(--text); border-color: var(--border); }
+  &:focus-visible { outline: 2px solid var(--primary-dark); outline-offset: 1px; }
+  &.on { color: var(--primary-dark); background: var(--primary-bg); border-color: var(--cividis-warm); }
+  &.s-error { color: var(--error); }
+  &.s-warn { color: var(--wb-warn); }
+  &.s-ok.on, &.s-error.on, &.s-warn.on { color: var(--primary-dark); }
 }
 .on-block { margin-top: 5px; padding-top: 5px; border-top: 1px dashed currentColor; }
 .inflight { margin-bottom: 10px; padding: 7px 9px; border: 1px dashed var(--primary); border-radius: 7px; }

@@ -8,6 +8,7 @@ import { Block } from '../../../core/models/block.model';
 import {
   BranchRequest, BranchRestoreMode, RecoveryStatus, Session, SessionStatus,
 } from '../../../core/models/session.model';
+import { RerunLinks, Stage, stages } from './stages';
 
 export const BRANCH_INSTRUCTION_MAX = 4000;
 
@@ -134,8 +135,9 @@ export function buildBranchRequest(value: BranchFormValue, options: RestoreModeO
 
 // ── Paths row: lane alignment ──
 
-/** One of a branch's blocks placed under the parent's step columns (1-based). */
-export interface LaneCell {
+/** One of a branch's stages placed under the parent's step columns (1-based). */
+export interface LaneCell extends Stage {
+  /** The stage's latest block. */
   block: Block;
   column: number;
   inherited: boolean;
@@ -147,42 +149,56 @@ export type LaneLayout =
 
 /**
  * Place a branch's blocks (its own GET /blocks) under the current session's
- * blocks. Inherited copies sit at the column of the block they were copied
- * from; the branch's own blocks start at the column of the block it branched
- * from and continue in index order (they may run past the parent's last
- * column). A copy or branch point the current blocks don't contain is a
- * data inconsistency and is reported, not guessed.
+ * step columns (`currentColumns`: block id → column, every version of every
+ * stage). Inherited copies sit at the column of the block they were copied
+ * from (copies of one column make one cell); the branch's own blocks are
+ * grouped into stages by the branch's rerun links and start at the column
+ * of the block it branched from, in first-block order (they may run past
+ * the parent's last column). A copy or branch point the current blocks
+ * don't contain is a data inconsistency and is reported, not guessed.
  */
 export function laneLayout(
-  currentBlocks: Block[],
+  currentColumns: ReadonlyMap<string, number>,
   laneBlocks: Block[],
+  laneLinks: RerunLinks,
   currentSessionId: string,
   forkedFromBlockId: string,
 ): LaneLayout {
-  const columnOf = new Map(currentBlocks.map((b, i) => [b.block_id, i + 1]));
-  const start = columnOf.get(forkedFromBlockId);
+  const start = currentColumns.get(forkedFromBlockId);
   if (start === undefined) {
     return { ok: false, error: `Branch point ${forkedFromBlockId} is not among this session's blocks.` };
   }
   const sorted = [...laneBlocks].sort((a, b) => a.index - b.index);
-  const cells: LaneCell[] = [];
-  let next = start;
+  const inheritedByColumn = new Map<number, LaneCell>();
+  const own: Block[] = [];
   for (const block of sorted) {
     const origin = block.inherited_from;
-    if (origin != null) {
-      const column = origin.session_id === currentSessionId ? columnOf.get(origin.block_id) : undefined;
-      if (column === undefined) {
-        return {
-          ok: false,
-          error: `Inherited block ${block.block_id} came from ${origin.session_id}/${origin.block_id}, which is not in this session.`,
-        };
-      }
-      cells.push({ block, column, inherited: true });
+    if (origin == null) {
+      own.push(block);
+      continue;
+    }
+    const column = origin.session_id === currentSessionId ? currentColumns.get(origin.block_id) : undefined;
+    if (column === undefined) {
+      return {
+        ok: false,
+        error: `Inherited block ${block.block_id} came from ${origin.session_id}/${origin.block_id}, which is not in this session.`,
+      };
+    }
+    const cell = inheritedByColumn.get(column);
+    if (cell) {
+      cell.versions.push(block);
+      cell.latest = block;
+      cell.block = block;
     } else {
-      cells.push({ block, column: next, inherited: false });
-      next += 1;
+      inheritedByColumn.set(column, {
+        key: `inherited:${column}`, rootItemId: null, versions: [block], latest: block, block, column, inherited: true,
+      });
     }
   }
+  const cells: LaneCell[] = [...inheritedByColumn.values()];
+  stages(own, laneLinks).forEach((stage, i) => {
+    cells.push({ ...stage, block: stage.latest, column: start + i, inherited: false });
+  });
   const lastColumn = cells.reduce((max, c) => Math.max(max, c.column), 0);
   return { ok: true, cells, lastColumn };
 }

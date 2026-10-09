@@ -1,16 +1,22 @@
 import { DestroyRef, Injectable, computed, inject, signal } from '@angular/core';
 import { forkJoin, of, catchError, map } from 'rxjs';
 import { Block } from '../../../../core/models/block.model';
-import { BranchSummary } from '../../../../core/models/session.model';
+import { BranchSummary, WorkItemSummary } from '../../../../core/models/session.model';
 import { SessionService } from '../../../../core/services/session.service';
 import { SessionStore } from '../../../../core/state/session-store.service';
 import { httpErrorMessage } from '../block-actions';
 import { LaneLayout, laneLayout } from '../branching';
+import { columnByBlock, sessionCells } from '../flow-layout';
+import { rerunLinks } from '../stages';
 
-/** A lane's own GET /blocks: in flight, loaded, or failed with the reason. */
+/**
+ * A lane's own GET /blocks and GET /work-items (the items give the rerun
+ * links that group its blocks into stages): in flight, loaded, or failed
+ * with the reason.
+ */
 export type LaneBlocks =
   | { kind: 'loading' }
-  | { kind: 'loaded'; blocks: Block[] }
+  | { kind: 'loaded'; blocks: Block[]; items: WorkItemSummary[] }
   | { kind: 'error'; message: string };
 
 const POLL_MS = 5000;
@@ -36,16 +42,17 @@ export class BranchPaths {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly sessionId = computed(() => this.sessionSvc.currentSession()?.id ?? null);
 
-  /** Branch id → its layout under the current blocks (only for loaded lanes). */
+  /** Branch id → its layout under the current stage columns (only for loaded lanes). */
   readonly layouts = computed(() => {
     const id = this.sessionId();
-    const current = this.store.blocks();
+    const columns = columnByBlock(sessionCells(this.store.blocks(), rerunLinks(this.store.workItems())));
     const out = new Map<string, LaneLayout>();
     if (id === null) return out;
     for (const branch of this.branches() ?? []) {
       const lane = this.laneBlocks().get(branch.session_id);
       if (lane?.kind === 'loaded') {
-        out.set(branch.session_id, laneLayout(current, lane.blocks, id, branch.forked_from_block_id));
+        out.set(branch.session_id, laneLayout(
+          columns, lane.blocks, rerunLinks(lane.items), id, branch.forked_from_block_id));
       }
     }
     return out;
@@ -106,8 +113,10 @@ export class BranchPaths {
       return next;
     });
     // Each lane's failure is its own visible state; it doesn't fail the others.
-    forkJoin(branches.map(b => this.sessionSvc.getBlocks(b.session_id).pipe(
-      map((res): [string, LaneBlocks] => [b.session_id, { kind: 'loaded', blocks: res.blocks }]),
+    forkJoin(branches.map(b => forkJoin([
+      this.sessionSvc.getBlocks(b.session_id), this.sessionSvc.getWorkItems(b.session_id),
+    ]).pipe(
+      map(([res, items]): [string, LaneBlocks] => [b.session_id, { kind: 'loaded', blocks: res.blocks, items }]),
       catchError(err => of<[string, LaneBlocks]>([b.session_id, { kind: 'error', message: httpErrorMessage(err) }])),
     ))).subscribe(results => {
       if (generation !== this.generation) return;

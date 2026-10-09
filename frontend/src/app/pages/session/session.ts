@@ -36,6 +36,7 @@ import { SplitPaneComponent } from './split-pane/split-pane';
 import { SPLIT_MIN_VIEWPORT_PX } from './split-pane/split-ratio';
 import { blockIdFromFragment } from './workbench/block-matching';
 import { BranchBannerComponent } from './branch-banner/branch-banner';
+import { DelegationCardComponent } from './delegation-card/delegation-card';
 
 const COMPACT_AFTER_ITEMS = 40;
 const VISIBLE_RECENT_ITEMS = 20;
@@ -52,7 +53,7 @@ type ArtifactFilter = 'all' | 'plot' | 'data' | 'other';
     CommonModule, FormsModule,
     MessageBubbleComponent, CodeCardComponent, ArtifactCardComponent, StatusIndicatorComponent,
     IconComponent, TooltipDirective, WorkbenchComponent, ViewToggleComponent, BranchBannerComponent,
-    QueueBarComponent, SplitPaneComponent,
+    QueueBarComponent, SplitPaneComponent, DelegationCardComponent,
   ],
   // One store per session page: a fresh page starts from empty state.
   providers: [SessionStore],
