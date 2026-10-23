@@ -140,9 +140,12 @@ def load_persisted_sessions(sessions_dir: Path = SESSIONS_DIR) -> Dict[str, _Ses
                 }
             )
             raw_status = data.get("status", "stopped")
-            # Sessions that were mid-run when the server died are now stopped
+            # A loaded session has no runner or sandbox, so any status written
+            # by a live runtime is stale. This includes `idle`: only a runner
+            # waiting for input writes it, and a hard kill skips shutdown_all,
+            # which already turns idle sessions into stopped ones.
             interrupted_recovery = raw_status == "recovering"
-            if raw_status in ("running", "initializing", "recovering"):
+            if raw_status in ("running", "initializing", "recovering", "idle"):
                 raw_status = "stopped"
             status = SessionStatus(raw_status)
 
